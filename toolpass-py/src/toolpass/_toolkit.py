@@ -413,9 +413,10 @@ class Toolkit:
         strict: bool = False,
         intercept: bool = True,
     ) -> None:
-        if exfiltration == "approve":
-            raise ValueError("exfiltration='approve' was removed: toolpass no longer asks a person; use 'refuse' (the default) or 'off'")
         if exfiltration not in ("refuse", "off"):
+            given: object = exfiltration  # callers without a type checker can pass anything
+            if given == "approve":
+                raise ValueError("exfiltration='approve' was removed: toolpass no longer asks a person; use 'refuse' (the default) or 'off'")
             raise ValueError("exfiltration must be 'refuse' or 'off'")
         for effect, cap in (limits or {}).items():
             if effect not in EFFECTS:
