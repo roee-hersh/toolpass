@@ -7,7 +7,8 @@
 
 The package also ships the MCP gateway: `toolpass gateway on` puts toolpass in front of every MCP
 server Claude Desktop and Claude Code already use, and `toolpass dashboard` shows every tool call
-they make. See [the gateway guide](../docs/guides/gateway.md). The rest of this page is about
+they make, and, for secured tools, every request each call made inside GitHub, Jira, Slack and
+the other systems. See [the gateway guide](../docs/guides/gateway.md); `python examples/demo/run.py` shows it with five systems. The rest of this page is about
 securing the tools you write yourself.
 
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
@@ -146,7 +147,8 @@ blocking I/O in them cannot stall the event loop; pass `async def` hooks to run 
 ## Watch it live
 
 `toolpass.watch()` serves a page that shows every call the toolkit decides, as it happens: who
-asked, the arguments, ran or refused and why, the requests the body made. It is read-only: it
+asked, the arguments, ran or refused and why, each request the body made and the system it reached, with
+a map of the tools and those systems. It is read-only: it
 changes nothing in the toolkit.
 
 ```python
@@ -223,7 +225,7 @@ has the details; `toolpass routes github` prints what toolpass understands of an
 
 - **The hook sees HTTP from the libraries it patches** (urllib3 and everything on it, the standard
   library, httpx, aiohttp), in the thread or task the body runs in. gRPC, a custom httpx transport
-  and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub and Slack have route
+  and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub, Slack, Jira, Linear and Kubernetes have route
   tables today; a request to another integration is placed by host but not mapped to an action.
 - **The untrusted-input check matches words, not meaning.** A model that paraphrases injected text,
   or an argument shorter than six words, is not caught. The exfiltration guard catches a

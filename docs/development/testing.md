@@ -21,7 +21,8 @@ tree instead).
 | `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `TOOLPASS_SPECS_DIR` to validate requests (below) |
 | `tests/integrations/test_registry.py` | the coverage gate: `test_action_<name>_allow` and `_deny` for every action | nothing |
 | `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `TOOLPASS_SPECS_DIR` for the description checks |
-| `tests/gateway` | the MCP gateway: the stdio proxy against a fake MCP server (byte-for-byte forwarding, recording, a fast answer racing its record), the client config rewrite and restore, the store under two writers, the dashboard | nothing |
+| `tests/gateway` | the MCP gateway: the stdio proxy against a fake MCP server (byte-for-byte forwarding, recording, a fast answer racing its record), the client config rewrite and restore, the store under two writers, the dashboard, what a secured tool did inside a call placed under that call and no other | nothing |
+| `tests/demo` | `examples/demo`: each stand-in system answers the real integration's permission checks for Dana and Sam, and the tour through the gateway records every call with the requests under it | nothing |
 | `tests/toolkit` | the secure-tools toolkit: every check, the hook under the SDKs (`test_wire.py`), recorded entitlements, the examples | nothing |
 | `tests/sdks` | real SDKs (PyGithub, slack_sdk) under a secured tool, against the fake upstreams | `pip install PyGithub slack_sdk`; each file skips without its SDK |
 | `tests/harness`, `tests/harness_tests` | the fake upstream, spec validation, the stand-in permission engine of the wire tests (`wire.py`), and their own tests | nothing |
