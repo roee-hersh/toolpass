@@ -44,11 +44,19 @@ def _project_path(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     return {}
 
 
-def _project_of(fields: Any) -> str | None:
+def _project_of(issue: Any) -> str | None:
+    """The project an issue to create names: fields.project.key, and nothing that could name another."""
+    if not isinstance(issue, Mapping):
+        return None
+    update = issue.get("update")
+    if isinstance(update, Mapping) and "project" in update:
+        return None
+    fields = issue.get("fields")
     if not isinstance(fields, Mapping):
         return None
     project = fields.get("project")
-    if isinstance(project, Mapping):
+    # The key only: Jira takes an id (or a name) given beside it over the key.
+    if isinstance(project, Mapping) and set(project) == {"key"}:
         key = project.get("key")
         if isinstance(key, str) and _PROJECT_KEY.fullmatch(key):
             return key
@@ -58,7 +66,7 @@ def _project_of(fields: Any) -> str | None:
 def _create(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """POST /issue: the project from the body's fields.project.key."""
     body = r.json()
-    key = _project_of(body.get("fields") if isinstance(body, Mapping) else None)
+    key = _project_of(body)
     if key is None:
         return {"_unresolved": "the request does not name the project by its key (fields.project.key)"}
     return {"projectIdOrKey": key}
@@ -68,7 +76,7 @@ def _create_bulk(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """POST /issue/bulk: one project for every issue in it."""
     body = r.json()
     updates = body.get("issueUpdates") if isinstance(body, Mapping) else None
-    keys = {_project_of(u.get("fields")) if isinstance(u, Mapping) else None for u in updates} if isinstance(updates, list) and updates else {None}
+    keys = {_project_of(u) for u in updates} if isinstance(updates, list) and updates else {None}
     if None in keys or len(keys) != 1:
         return {"_unresolved": "a bulk create is checked only when every issue names the same project by its key"}
     return {"projectIdOrKey": keys.pop() or ""}
@@ -137,7 +145,6 @@ def _routes() -> list[Route]:
         _issue_route("DELETE", "/watchers", "MANAGE_WATCHERS"),
         _issue_route("POST", "/worklog", work),
         _issue_route("DELETE", "/worklog", work),
-        _issue_route("POST", "/worklog/move", work),
         _issue_route("PUT", "/worklog/{id}", work),
         _issue_route("DELETE", "/worklog/{id}", work),
         _issue_route("PUT", "/worklog/{worklogId}/properties/{propertyKey}", work),
@@ -150,6 +157,7 @@ ROUTES = RouteTable(
     _routes(),
     claims=(f"{_A}/issue",),
     unrouted={
+        ("POST", f"{_A}/issue/{{issueIdOrKey}}/worklog/move"): "moves worklogs into another issue named in the body, with no history: not routed",
         ("POST", f"{_A}/issue/archive"): "archives the issues a JQL query selects: not checkable issue by issue",
         ("PUT", f"{_A}/issue/archive"): "archiving is a Jira administrator's job, done outside agents",
         ("PUT", f"{_A}/issue/unarchive"): "unarchiving is a Jira administrator's job, done outside agents",

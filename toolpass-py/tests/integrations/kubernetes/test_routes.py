@@ -99,6 +99,8 @@ def test_discovery_checks_nothing(path):
         ("POST", "/api/v1/namespaces/Shop/pods"),  # not a valid namespace name
         ("POST", "/apis/Apps/v1/namespaces/shop/deployments"),
         ("DELETE", "/api/v1/namespaces/shop/pods/-bad-"),
+        ("GET", "/api/v1/watch/pods"),  # the old watch path: every namespace
+        ("GET", "/apis/apps/v1/watch/deployments"),
     ],
 )
 def test_proxies_and_bad_names_are_unresolved(method, path):

@@ -38,7 +38,13 @@ MUTATIONS: dict[str, tuple[str, str, str]] = {
     "issueRemoveLabel": ("issue.edit", "issue", "id"),
     "commentCreate": ("issue.edit", "issue", "input.issueId"),
     "attachmentCreate": ("issue.edit", "issue", "input.issueId"),
-    "issueRelationCreate": ("issue.edit", "issue", "input.issueId"),
+}
+
+# Input members that would act on something other than the one checked: a request carrying one is refused.
+ELSEWHERE: dict[str, frozenset[str]] = {
+    "issueCreate": frozenset({"parentId"}),
+    "issueUpdate": frozenset({"teamId", "parentId", "projectId"}),
+    "commentCreate": frozenset({"projectUpdateId", "documentContentId", "initiativeUpdateId", "postId", "issueUpdateId"}),
 }
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")  # a key (ENG, ENG-12) or a UUID
@@ -234,6 +240,8 @@ def _resolve(value: Any, variables: Mapping[str, Any]) -> Any:
 
 
 def _graphql(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    if "json" not in (r.headers.get("content-type") or "").lower():
+        return {"_unresolved": "a GraphQL request is read only as JSON (Content-Type: application/json)"}
     doc = r.json()
     if not isinstance(doc, Mapping):
         return {"_unresolved": "the GraphQL request is not a JSON object"}
@@ -259,6 +267,10 @@ def _graphql(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         value = _resolve(value.get(member), variables) if isinstance(value, Mapping) else None
     if not isinstance(value, str) or not _ID.fullmatch(value):
         return {"_unresolved": f"{name} does not name its {rtype} in {where}"}
+    given = _resolve(args.get("input"), variables)
+    other = sorted(ELSEWHERE.get(name, frozenset()) & set(given if isinstance(given, Mapping) else ()))
+    if other:
+        return {"_unresolved": f"{name} with {', '.join(other)} acts on more than the {rtype} toolpass checks; not routed"}
     return {"_action": action, "type": rtype, "id": value}
 
 

@@ -72,6 +72,9 @@ def test_routing(method, path, body, action, resource, effect):
         ("POST", "/rest/api/3/issue/bulk", {"issueUpdates": [{"fields": {"project": {"key": "PAY"}}}, {"fields": {"project": {"key": "OPS"}}}]}),
         ("POST", "/rest/api/3/issue/bulkfetch", {"issueIdsOrKeys": ["PAY-1", "OPS-2"]}),
         ("GET", "/rest/api/3/project/10000", None),
+        ("POST", "/rest/api/3/issue", {"fields": {"project": {"key": "PAY", "id": "10042"}}}),  # Jira would use the id
+        ("POST", "/rest/api/3/issue", {"fields": {"project": {"key": "PAY"}}, "update": {"project": [{"set": {"id": "10042"}}]}}),
+        ("POST", "/rest/api/3/issue/bulk", {"issueUpdates": [{"fields": {"project": {"key": "PAY", "name": "Secret"}}}]}),
     ],
 )
 def test_requests_that_do_not_name_one_key_are_unresolved(method, path, body):
@@ -92,3 +95,9 @@ def test_unrouted_writes_have_no_route():
 
 def test_the_site_is_where_the_api_lives():
     assert ROUTES.endpoints(Settings("jira-main", "jira", {"url": "https://acme.atlassian.net"})) == [("acme.atlassian.net", "")]
+
+
+def test_moving_worklogs_into_another_issue_is_not_routed():
+    path = "/rest/api/3/issue/PAY-1/worklog/move"
+    assert ROUTES.match(req("POST", path, {"ids": [1], "issueIdOrKey": "SECRET-7"})) is None
+    assert ROUTES.is_unrouted("POST", path)

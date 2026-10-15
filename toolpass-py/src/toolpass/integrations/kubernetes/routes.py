@@ -67,6 +67,9 @@ def _k8s(core: bool, namespaced: bool, depth: int) -> Callable[[Request, Mapping
             ns, resource, name, sub, namespaced_now, named = "", "namespaces", ns, resource, False, True
         else:
             namespaced_now, named = namespaced, depth >= 1
+        if resource == "watch":
+            # The old /watch/ paths watch a resource across every namespace, not one object.
+            return {"_unresolved": "the /watch/ paths are not routed; use ?watch=true on the collection"}
         for label, value, pattern in (("namespace", ns, NAMESPACE_RE), ("resource", resource, RESOURCE_RE), ("group", group, GROUP_RE)):
             if value and not pattern.fullmatch(value):
                 return {"_unresolved": f"the {label} {value!r} is not a valid Kubernetes name"}

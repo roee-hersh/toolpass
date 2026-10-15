@@ -120,3 +120,22 @@ def test_an_escaped_triple_quote_does_not_end_a_block_string():
 def test_a_bad_unicode_escape_is_unreadable():
     o = match('mutation { issueDelete(id: "\\uZZZZ") { success } }')
     assert o is not None and o.unresolved
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        'mutation { issueUpdate(id: "ENG-1", input: {teamId: "OPS"}) { success } }',  # moves it to a team not checked
+        'mutation { issueUpdate(id: "ENG-1", input: {parentId: "OPS-2"}) { success } }',
+        'mutation { commentCreate(input: {issueId: "ENG-1", projectUpdateId: "x"}) { success } }',
+        'mutation { issueRelationCreate(input: {issueId: "ENG-1", relatedIssueId: "OPS-2", type: blocks}) { success } }',
+    ],
+)
+def test_a_mutation_reaching_a_second_object_is_unresolved(query):
+    assert match(query).unresolved
+
+
+def test_a_graphql_request_that_is_not_json_is_unresolved():
+    r = Request("https", "api.linear.app", 443, "POST", "/graphql", "", {"content-type": "application/x-www-form-urlencoded"}, b"query=x")
+    o = ROUTES.match(r, "/graphql")
+    assert o is not None and o.unresolved
