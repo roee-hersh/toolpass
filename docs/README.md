@@ -28,6 +28,9 @@ agents in any language call.
 - [Add toolpass to your agent](guides/agent-tools.md): which tools to guard, where the user comes
   from, and the adapters for Strands, LangChain and LangGraph, MCP, the OpenAI Agents SDK, the
   Claude Agent SDK, Google ADK, CrewAI, Pydantic AI, LlamaIndex and the Vercel AI SDK.
+- [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
+  body makes, mapped to actions and checked before they are sent; `as_agent()`; recording a tool's
+  entitlements and holding it to them.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
 
@@ -35,10 +38,13 @@ agents in any language call.
 
 - [Python API](reference/client.md): `Toolpass` in-process and remote, `check`, `require`,
   `guarded`, the framework adapters, and the Node client.
+- [The toolkit's observed actions](reference/toolkit.md): the `permissions`, `entitlements`,
+  `record` and `strict` settings, `as_agent()`, `ActionRefused`, `ObservedAction`, the
+  entitlements file and the route tables.
 - [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`.
 - [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
   and the same connections given in code.
-- [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check` and `catalog`.
+- [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog` and `routes`.
 - [Integrations](integrations/README.md): the twenty-one systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.

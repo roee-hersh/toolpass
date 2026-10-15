@@ -47,6 +47,7 @@ from toolpass.core.integration import (
     credential_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret, SecretError
 from toolpass.integrations.slack.actions import catalog_actions, validate_resource
 from toolpass.net import httpx
@@ -98,6 +99,11 @@ class Slack(Integration):
 
     def actions(self) -> list[Action]:
         return catalog_actions()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.slack.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It does not touch the network."""

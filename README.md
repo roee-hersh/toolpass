@@ -76,6 +76,7 @@ you can run with no network and no model:
 | **Human approval** | A person confirms the exact call, out of band; the approval works once |
 | **Credential injection** | Secrets are fetched after every check and redacted from anything the tool echoes |
 | **Audit** | One event per call, refused or run, with who asked and why it was decided |
+| **Observed actions** | Leave `effect` out and every request the body makes (PyGithub, slack_sdk, boto3, ...) is mapped to an action, checked against the user and refused before it is sent; a run can record them as the tool's entitlements |
 
 Every call goes through these in a fixed order, and anything that cannot be evaluated (an
 authorizer that is down, a validator that crashes) refuses the call. The
@@ -138,6 +139,8 @@ pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=
 - Fencing helps the model tell data from instructions; it does not guarantee it.
 - Sessions, limits and the approval queue live in memory, in one process.
 - A permission check and the action after it are not atomic.
+- Observed actions cover HTTP from urllib3, the standard library, httpx and aiohttp, with route
+  tables for GitHub and Slack so far; gRPC and threads an SDK starts are not seen.
 
 ## Repository
 

@@ -23,6 +23,7 @@ from toolpass.core.log import Logger
 from toolpass.core.secret import Secret
 
 if TYPE_CHECKING:
+    from toolpass.core.routes import RouteTable
     from toolpass.net.httpx import Transport
 
 __all__ = [
@@ -442,6 +443,11 @@ class Integration(ABC):
     def match_action(self, name: str) -> Action | None:
         """For integrations whose action names are patterns; consulted only
         when an exact match in actions() fails."""
+        return None
+
+    def routes(self) -> RouteTable | None:
+        """How requests to this system's API map to its actions, for the
+        secure-tools toolkit's observed actions; None when not described."""
         return None
 
 

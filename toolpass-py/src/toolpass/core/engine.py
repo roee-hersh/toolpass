@@ -180,6 +180,10 @@ class Engine:
         c = self._conns.get(id)
         return c.integ if c is not None else None
 
+    def settings(self, id: str) -> Settings | None:
+        c = self._conns.get(id)
+        return c.settings if c is not None else None
+
     def probe(self, ctx: Context | None = None, *ids: str) -> list[ProbeReport]:
         """Probe every connection (or the listed ones). A failure never
         stops the others."""
