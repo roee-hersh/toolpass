@@ -60,6 +60,7 @@ Usage:
   toolpass check    -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] -connection ID -user EMAIL -action NAME -resource RES ...
   toolpass catalog  [INTEGRATION]
   toolpass routes   [INTEGRATION]
+  toolpass demo     [-open] [-auto] [-listen ADDR] [-timeout D]
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -615,6 +616,46 @@ def routes(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     return 0
 
 
+def demo(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
+    """An agent with a Jira-like tool, two users and one guard, on the live
+    page. No network and no model: a script plays the agent."""
+    fs = _FlagSet("demo", stderr)
+    fs.add("listen", "str", "127.0.0.1:0", "address for the live page, on the loopback interface")
+    fs.add("open", "bool", False, "open the page in the default browser")
+    fs.add("auto", "bool", False, "approve the waiting call from inside the process, and exit at the end")
+    fs.add("timeout", "duration", 120.0, "how long to wait for a person to approve on the page")
+    try:
+        fs.parse(args)
+    except _FlagError:
+        return EXIT_ERROR
+    if fs.args:
+        stderr.write(f'demo takes flags only, unexpected argument "{fs.args[0]}"\n')
+        fs.print_usage()
+        return EXIT_ERROR
+    from toolpass._demo import run as run_demo
+
+    v = fs.values
+
+    def hold() -> None:
+        stdout.write("The page stays up until you press Enter.\n")
+        stdout.flush()
+        try:
+            sys.stdin.readline()
+        except (OSError, ValueError):
+            pass
+
+    def say(line: str) -> None:
+        stdout.write(line + "\n")
+        stdout.flush()
+
+    try:
+        outcomes = run_demo(say, listen=v["listen"], auto=v["auto"], open_browser=v["open"], timeout=v["timeout"], hold=None if v["auto"] else hold)
+    except ValueError as e:
+        stderr.write(f"demo: {e}\n")
+        return EXIT_ERROR
+    return 0 if all(o != "timeout" for _, o in outcomes) else 1
+
+
 def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> int:
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
@@ -635,6 +676,8 @@ def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None =
         return catalog(rest, stdout, stderr)
     if cmd == "routes":
         return routes(rest, stdout, stderr)
+    if cmd == "demo":
+        return demo(rest, stdout, stderr)
     if cmd == "version":
         stdout.write(__version__ + "\n")
         return 0
