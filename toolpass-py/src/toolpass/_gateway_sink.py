@@ -13,11 +13,11 @@ exits is written within a couple of seconds.
 from __future__ import annotations
 
 import atexit
-import datetime
 import os
 import queue
 import sys
 import threading
+import time
 from typing import Any
 
 from toolpass._audit import AuditEvent
@@ -73,13 +73,6 @@ def _drain() -> None:
         _writer.join(2.0)
 
 
-def _epoch(iso: str) -> float:
-    try:
-        return datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return 0.0
-
-
 def emit(event: AuditEvent) -> None:
     """Queue ``event`` for the gateway's record, when this process runs under
     the gateway; otherwise do nothing."""
@@ -89,6 +82,8 @@ def emit(event: AuditEvent) -> None:
     session, db = target
     with _lock:
         q = _queue if _queue is not None else _start(db)
-    started = _epoch(event.time)
-    ended = started + (event.duration_ms or 0.0) / 1000
+    # The same clock the gateway times its calls with, read as the run is
+    # reported, which is before the server answers: comparable on every system.
+    ended = time.time()
+    started = ended - (event.duration_ms or 0.0) / 1000
     q.put((session, event.to_dict(), started, ended))

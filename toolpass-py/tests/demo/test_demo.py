@@ -60,6 +60,10 @@ def test_the_tour(tmp_path: Path) -> None:
 
     calls = sorted(_calls(tmp_path, len(run.TOUR)), key=lambda c: c["started"])  # in the order the tour sent them
     assert [c["tool"] for c in calls] == [t for _, t, _ in run.TOUR]
+    # One tool run under each call; on failure, where each call's runs went.
+    assert [len(c["inside"]) for c in calls] == [1] * len(calls), [
+        (c["id"], c["tool"], c["started"], c["ended"], [e.get("tool") for e in c["inside"]]) for c in calls
+    ]
     dana_pr, dana_prod, sam_pr, sam_bug = calls[1], calls[3], calls[6], calls[8]
     assert _actions(dana_pr) == [
         ("github:repo.read", "allowed"),
