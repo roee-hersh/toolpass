@@ -8,31 +8,50 @@
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
 scale a deployment, read customer records, post to Slack. Those tools usually run with one service
 credential for everyone who talks to the agent, and every team rebuilds the same safety checks
-by hand, or skips them. toolpass is a decorator that adds those checks to a plain Python
-function:
+by hand, or skips them. toolpass is a decorator on a plain Python function. The function declares
+nothing; toolpass watches what it does:
 
 ```python
 import toolpass
-from toolpass import ApprovalQueue, Session, Toolpass, permission_check, secured_tool
+from toolpass import Session, Toolpass, as_agent, secured_tool
+from github import Github                            # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
-tp = Toolpass.from_config("toolpass.yaml")          # permission checks; see below
-approvals = ApprovalQueue()
-toolpass.configure(approver=approvals, credentials={"github-bot": github_token}, limits={"destructive": 3})
+toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # the github-acme connection, among others
+
+
+@secured_tool()
+def propose_fix(repo: str, path: str, fix: str) -> str:
+    gh = Github(auth=token)
+    with as_agent():                                 # the agent may read on its own authority
+        current = gh.get_repo(repo).get_contents(path)
+    pr = gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main")
+    return pr.html_url                               # pr.create on repo:acme/x: checked against the user
+
+
+with Session("dana@example.com").active():           # the user your app authenticated
+    agent.run(prompt)
+```
+
+Every HTTP request the body makes is mapped to the action it is, checked against the session's
+user, and refused before it is sent when they may not do it; see
+[Actions observed at the wire](#actions-observed-at-the-wire). A tool can also declare what it
+does, and the two compose:
+
+```python
+from toolpass import ApprovalQueue, permission_check
+
+toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": github_token}, limits={"destructive": 3})
 
 
 @secured_tool(
     effect="write",
     scope={"repo": "acme/gitops-*"},                 # the tool itself can touch nothing else
-    authorize=permission_check(tp, "github-acme", "pull_request.create", "repo:{repo}"),
+    authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"),
     approve=True,                                     # a person confirms, out of band
     credential="github-bot",                          # injected below; the model never sees it
 )
 def open_gitops_pr(repo: str, title: str, change: str, *, credential: str) -> str:
     ...
-
-
-with Session("dana@example.com").active():           # the user your app authenticated
-    agent.run(prompt)
 ```
 
 The decorated function keeps its signature (minus the injected `credential`), so LangChain,
