@@ -31,24 +31,31 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
+import contextlib
 import contextvars
 import dataclasses
 import functools
 import inspect
 import json
 import logging
+import os
 import secrets
 import time
 import types
-from collections.abc import Callable, Generator, Mapping
-from typing import Any, Literal, NamedTuple, TypeVar, Union, cast, overload
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, Union, cast, overload
 
 from toolpass._approval import ApprovalRequest, Approver
 from toolpass._audit import AuditEvent, AuditSink, log_audit, shorten
 from toolpass._checks import ArgumentError, Scope, ScopeRule, Validator, check_arguments, hints
+from toolpass._context import CallContext, ObservedAction, running
+from toolpass._entitlements import ActionRecorder, Entitlements, ToolEntitlements
 from toolpass._session import Session, current_session
 from toolpass._walk import mentions as walk_mentions
 from toolpass._walk import strings
+
+if TYPE_CHECKING:
+    from toolpass._wire import Connections
 
 log = logging.getLogger("toolpass.toolkit")
 
@@ -65,8 +72,12 @@ class ToolRefused(Exception):
     ``out_of_scope``, ``limit_reached``, ``not_authorized``,
     ``authorization_error``, ``untrusted_input``, ``exfiltration_risk``,
     ``approval_unavailable``, ``approval_error``, ``preview_error``,
-    ``approval_pending``, ``approval_rejected``, ``credential_error`` or
-    ``check_error`` (a check itself failed unexpectedly).
+    ``approval_pending``, ``approval_rejected``, ``credential_error``,
+    ``check_error`` (a check itself failed unexpectedly), or one of the
+    codes a request the body made can earn (``ActionRefused``):
+    ``unknown_host``, ``unmapped_action``, ``unresolved_resource``,
+    ``unentitled_action``, ``effect_exceeded``, ``effect_mismatch``,
+    ``no_entitlements``, ``unattributed``.
     The message is written for the model: it says what happened without
     revealing credentials.
     """
@@ -101,10 +112,11 @@ class ApprovalPending(ToolRefused):
 
 @dataclasses.dataclass(frozen=True)
 class Call:
-    """One call as the checks see it. ``arguments`` is read-only."""
+    """One call as the checks see it. ``arguments`` is read-only. ``effect``
+    is None for a tool that declared none and has no recorded entitlements."""
 
     tool: str
-    effect: Effect
+    effect: Effect | None
     session: Session
     arguments: Mapping[str, Any]
 
@@ -127,10 +139,12 @@ ApproveRule = Union[bool, Callable[[Call], Any]]
 
 @dataclasses.dataclass(frozen=True)
 class ToolSpec:
-    """What a secure tool declared. ``spec_of(fn)`` returns it."""
+    """What a secure tool declared. ``spec_of(fn)`` returns it. ``effect`` is
+    None when the tool declared none: its actions are then observed at the
+    wire (and, with entitlements, known before the body runs)."""
 
     name: str
-    effect: Effect
+    effect: Effect | None
     fn: Callable[..., Any]
     signature: inspect.Signature
     types: Mapping[str, Any]
@@ -147,6 +161,8 @@ class ToolSpec:
     credential: str | None
     is_async: bool
     variadic: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    # Scope over the resources the body's requests touch, by resource type.
+    resources: Scope | None = None
 
 
 def spec_of(tool: Callable[..., Any]) -> ToolSpec | None:
@@ -297,6 +313,21 @@ def _redact(value: Any, secrets_: list[str], depth: int = 0) -> Any:
     return _redact_text(str(value), secrets_) if not walk_mentions(_redact_text(str(value), secrets_), secrets_) else "[REDACTED]"
 
 
+_RANK = {"read": 0, "write": 1, "destructive": 2}
+
+
+def _rank(effect: str | None) -> int:
+    return _RANK.get(effect or "", 0)
+
+
+def _connection_for(conns: Connections | None, integration: str) -> str | None:
+    """The one connection of an integration the toolkit knows, or None."""
+    if conns is None:
+        return None
+    ids = [c.id for c in conns._conns if c.integration == integration]
+    return ids[0] if len(ids) == 1 else None
+
+
 def _as_decision(result: Any) -> AuthDecision:
     if isinstance(result, AuthDecision):
         return result
@@ -313,6 +344,10 @@ class _State:
     taken: list[tuple[str, int]] = dataclasses.field(default_factory=list)
     body_started: bool = False
     claimed: Callable[[bool], None] | None = None  # settles a claimed approval
+    observed: list[ObservedAction] = dataclasses.field(default_factory=list)
+    arguments: Mapping[str, Any] | None = None
+    # A refusal the hook raised at a request the body made: this call's own refusal, after the body started.
+    wire_refusal: ToolRefused | None = None
 
     def release(self) -> None:
         if self.taken and self.session is not None:
@@ -338,6 +373,18 @@ class Toolkit:
     session comes from; by default, ``Session.active()``. ``on_refuse``, when
     given, turns a refusal into the tool's return value (``on_refuse=str``
     returns the message) instead of raising ``ToolRefused``.
+
+    The requests a tool's body makes are checked at the wire when the
+    toolkit knows the systems they go to. ``permissions`` is the ``Toolpass``
+    engine whose connections tell the hook which host is which system, and
+    which answers the permission checks; ``connections`` names them instead
+    (``[{"id": ..., "integration": ..., "url": ...}]``) when the engine is
+    remote. ``private`` lists the connections whose reads count as private
+    data. ``entitlements`` is the recorded-actions file (or mapping) the
+    tools are held to, and ``record`` the file a run writes them to.
+    ``strict`` refuses a request to a host the toolkit does not know, and a
+    tool with no entitlements when a file is given. ``intercept=False``
+    turns the hook off for this toolkit.
     """
 
     def __init__(
@@ -353,6 +400,13 @@ class Toolkit:
         audit_arguments: bool = True,
         session: SessionSource | None = None,
         on_refuse: Callable[[ToolRefused], Any] | None = None,
+        permissions: Any = None,
+        connections: Sequence[Mapping[str, Any]] | None = None,
+        private: Iterable[str] = (),
+        entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
+        record: str | os.PathLike[str] | None = None,
+        strict: bool = False,
+        intercept: bool = True,
     ) -> None:
         self._lenient = False  # the module-level default may be configured after its tools are declared
         self._configure(
@@ -366,6 +420,13 @@ class Toolkit:
             audit_arguments=audit_arguments,
             session=session,
             on_refuse=on_refuse,
+            permissions=permissions,
+            connections=connections,
+            private=private,
+            entitlements=entitlements,
+            record=record,
+            strict=strict,
+            intercept=intercept,
         )
 
     def _configure(
@@ -381,6 +442,13 @@ class Toolkit:
         audit_arguments: bool = True,
         session: SessionSource | None = None,
         on_refuse: Callable[[ToolRefused], Any] | None = None,
+        permissions: Any = None,
+        connections: Sequence[Mapping[str, Any]] | None = None,
+        private: Iterable[str] = (),
+        entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
+        record: str | os.PathLike[str] | None = None,
+        strict: bool = False,
+        intercept: bool = True,
     ) -> None:
         if on_untrusted_input not in ("refuse", "approve"):
             raise ValueError("on_untrusted_input must be 'refuse' or 'approve'")
@@ -391,6 +459,14 @@ class Toolkit:
                 raise ValueError(f"limits: unknown effect {effect!r}; use one of {', '.join(EFFECTS)}")
             if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
                 raise ValueError(f"limits: {effect} must be a non-negative integer")
+        if permissions is not None and not callable(getattr(permissions, "check", None)):
+            raise TypeError("permissions must be a Toolpass (anything with a check method)")
+        if isinstance(entitlements, Entitlements) or entitlements is None:
+            ents = entitlements
+        elif isinstance(entitlements, Mapping):
+            ents = Entitlements.from_mapping(entitlements)
+        else:
+            ents = Entitlements.load(entitlements)
         self.approver = approver
         self.credentials = credentials
         self.audit = audit
@@ -401,14 +477,53 @@ class Toolkit:
         self.audit_arguments = audit_arguments
         self.session_source = session
         self.on_refuse = on_refuse
+        self.permissions = permissions
+        self.connection_specs = list(connections) if connections is not None else None
+        self.private = frozenset(private)
+        self.entitlements: Entitlements | None = ents
+        self.recorder: ActionRecorder | None = ActionRecorder(record) if record is not None else None
+        self.strict = bool(strict)
+        self.intercept = bool(intercept)
+        self._conns: Connections | None = None
+        self._conns_key: Any = None
+
+    def _connections(self) -> Connections | None:
+        """The connections the hook attributes requests to, from ``permissions``
+        or ``connections``; None when the toolkit knows no systems."""
+        from toolpass._wire import Connections
+
+        key = (id(self.permissions), id(self.connection_specs))
+        if self._conns is not None and self._conns_key == key:
+            return self._conns
+        conns: Connections | None = None
+        if self.connection_specs is not None:
+            conns = Connections.from_mappings(self.connection_specs, self.private)
+        elif self.permissions is not None:
+            conns = Connections.from_toolpass(self.permissions, self.private)
+        self._conns, self._conns_key = conns, key
+        return conns
+
+    def _wants_hook(self, spec: ToolSpec) -> bool:
+        """Whether this call's requests should be checked at the wire."""
+        if not self.intercept:
+            return False
+        return (
+            spec.effect is None
+            or self.permissions is not None
+            or self.connection_specs is not None
+            or self.entitlements is not None
+            or self.recorder is not None
+            or self.strict
+        )
 
     @overload
     def tool(
         self,
         *,
-        effect: Effect,
+        effect: Effect | None = None,
         authorize: Authorizer | None = None,
         scope: Mapping[str, ScopeRule] | None = None,
+        resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
         approve: ApproveRule = False,
@@ -426,9 +541,10 @@ class Toolkit:
     def tool(
         self,
         *,
-        effect: Effect,
+        effect: Effect | None = None,
         authorize: Authorizer | None = None,
         scope: Mapping[str, ScopeRule] | None = None,
+        resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
         approve: ApproveRule = False,
@@ -445,9 +561,10 @@ class Toolkit:
     def tool(
         self,
         *,
-        effect: Effect,
+        effect: Effect | None = None,
         authorize: Authorizer | None = None,
         scope: Mapping[str, ScopeRule] | None = None,
+        resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
         approve: ApproveRule = False,
@@ -462,10 +579,15 @@ class Toolkit:
     ) -> Callable[[F], Any]:
         """Declare a secured tool. ``secured_tool`` is the same method.
 
-        ``effect`` is ``read``, ``write`` or ``destructive``. ``authorize``
+        ``effect`` is ``read``, ``write`` or ``destructive``; left out, the
+        tool's actions are observed at the wire instead (every request its
+        body makes is classified, checked and audited), and known before the
+        body runs once the tool has recorded entitlements. ``authorize``
         decides whether the session's user may make this call. ``scope`` maps
         argument names to the values the tool may touch (globs, a regex or a
-        predicate); ``validate`` maps argument names to extra validators.
+        predicate); ``resources`` does the same for the resources the body's
+        requests touch, by resource type (``{"repo": "acme/gitops-*"}``);
+        ``validate`` maps argument names to extra validators.
         ``limit`` caps calls per session. ``approve`` is True, or a predicate
         over the call, for calls a person must confirm; ``preview`` describes
         what the call will change, for that person. ``untrusted_inputs``
@@ -483,7 +605,21 @@ class Toolkit:
 
         def decorate(fn: F) -> Any:
             spec = self._spec(
-                fn, effect, authorize, scope, validate, limit, approve, preview, untrusted_inputs, untrusted_output, reads_private, sends_out, credential, name
+                fn,
+                effect,
+                authorize,
+                scope,
+                validate,
+                limit,
+                approve,
+                preview,
+                untrusted_inputs,
+                untrusted_output,
+                reads_private,
+                sends_out,
+                credential,
+                name,
+                resources,
             )
             wrapper: Callable[..., Any]
             if spec.is_async:
@@ -520,7 +656,7 @@ class Toolkit:
     def _spec(
         self,
         fn: Callable[..., Any],
-        effect: str,
+        effect: str | None,
         authorize: Authorizer | None,
         scope: Mapping[str, ScopeRule] | None,
         validate: Mapping[str, Validator] | None,
@@ -533,8 +669,9 @@ class Toolkit:
         sends_out: bool,
         credential: str | None,
         name: str | None,
+        resources: Mapping[str, ScopeRule] | None = None,
     ) -> ToolSpec:
-        if effect not in EFFECTS:
+        if effect is not None and effect not in EFFECTS:
             raise ValueError(f"effect must be one of {', '.join(EFFECTS)}, not {effect!r}")
         if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
             # Its body would run after the checks' bookkeeping, unredacted and unrecorded.
@@ -577,7 +714,8 @@ class Toolkit:
         check_untrusted = untrusted_inputs == "check" or (untrusted_inputs is None and (effect != "read" or sends_out))
         return ToolSpec(
             name=tool_name,
-            effect=cast(Effect, effect),
+            effect=cast(Effect, effect) if effect is not None else None,
+            resources=Scope(resources) if resources else None,
             fn=fn,
             signature=exposed,
             types=types.MappingProxyType({k: v for k, v in resolved.items()}),
@@ -610,13 +748,16 @@ class Toolkit:
             found = source()
         return found if isinstance(found, Session) else None
 
-    def _caps(self, spec: ToolSpec) -> list[tuple[str, int]]:
+    def _caps(self, spec: ToolSpec, effect: str | None) -> list[tuple[str, int]]:
         caps = []
         if spec.limit is not None:
             caps.append((f"tool:{spec.name}", spec.limit))
-        if spec.effect in self.limits:
-            caps.append((f"effect:{spec.effect}", self.limits[spec.effect]))
+        if effect is not None and effect in self.limits:
+            caps.append((f"effect:{effect}", self.limits[effect]))
         return caps
+
+    def _entitlements_for(self, spec: ToolSpec) -> ToolEntitlements | None:
+        return self.entitlements.for_tool(spec.name) if self.entitlements is not None else None
 
     def _credential(self, name: str, call: Call) -> Any:
         source = self.credentials
@@ -629,12 +770,17 @@ class Toolkit:
     def _steps(self, spec: ToolSpec, args: tuple[Any, ...], kwargs: dict[str, Any]) -> _Steps:
         """The audit event and the refusal around the checks and the body."""
         started = time.perf_counter()
-        ev = AuditEvent.start(spec.name, spec.effect)
+        ents = self._entitlements_for(spec)
+        ev = AuditEvent.start(spec.name, spec.effect if spec.effect is not None else (ents.effect() if ents is not None else None))
         state = _State()
+        if self._wants_hook(spec):
+            from toolpass._wire import install
+
+            install()
         try:
-            return (yield from self._pipeline(spec, args, kwargs, ev, state))
+            return (yield from self._pipeline(spec, args, kwargs, ev, state, ents))
         except ToolRefused as refused:
-            if state.body_started:  # raised by the body (a nested tool): not this call's refusal
+            if state.body_started and refused is not state.wire_refusal:  # raised by the body (a nested tool): not this call's refusal
                 raise
             return self._refuse(refused, ev, state)
         except Exception as e:
@@ -651,9 +797,19 @@ class Toolkit:
             raise
         finally:
             ev.duration_ms = round((time.perf_counter() - started) * 1000, 3)
+            if state.observed:
+                ev.actions = [a.to_dict() for a in state.observed]
             self._emit(ev)
+            if self.recorder is not None and state.observed and state.arguments is not None:
+                try:
+                    self.recorder.record(spec.name, state.arguments, state.observed)
+                except Exception:  # a recorder that cannot write must not change the call's outcome
+                    log.exception("toolpass: could not record the actions of %s", spec.name)
 
     def _refuse(self, refused: ToolRefused, ev: AuditEvent, state: _State) -> Any:
+        if state.body_started:
+            # The body ran: its limits stay taken and its approval is spent.
+            state.taken, state.claimed = [], None
         state.release()
         ev.outcome = "pending" if isinstance(refused, ApprovalPending) else "refused"
         ev.code, ev.reason = refused.code, refused.reason
@@ -661,7 +817,9 @@ class Toolkit:
             return self.on_refuse(refused)
         raise refused
 
-    def _pipeline(self, spec: ToolSpec, args: tuple[Any, ...], kwargs: dict[str, Any], ev: AuditEvent, state: _State) -> _Steps:
+    def _pipeline(
+        self, spec: ToolSpec, args: tuple[Any, ...], kwargs: dict[str, Any], ev: AuditEvent, state: _State, ents: ToolEntitlements | None = None
+    ) -> _Steps:
         # 1. Session.
         session = self._session()
         if session is None:
@@ -676,9 +834,13 @@ class Toolkit:
             raise ToolRefused(spec.name, "invalid_arguments", str(e)) from None
         bound.apply_defaults()
         arguments: Mapping[str, Any] = types.MappingProxyType(dict(bound.arguments))
+        state.arguments = arguments
         if self.audit_arguments:
             ev.arguments = shorten(arguments)
-        call = Call(spec.name, spec.effect, session, arguments)
+        effect: Effect | None = spec.effect
+        if effect is None and ents is not None:
+            effect = cast("Effect | None", ents.effect())
+        call = Call(spec.name, effect, session, arguments)
         try:
             check_arguments(arguments, spec.types, spec.validators, spec.variadic)
             if spec.scope is not None:
@@ -686,14 +848,37 @@ class Toolkit:
         except ArgumentError as e:
             raise ToolRefused(spec.name, e.code, str(e)) from None
 
+        # 2b. Entitlements: what the recorded run says this tool will do, checked
+        # before anything runs where the resource is known from the arguments.
+        hooked = self._wants_hook(spec)
+        if hooked and self.entitlements is not None and ents is None and self.strict:
+            raise ToolRefused(spec.name, "no_entitlements", f"{spec.name} has no recorded entitlements and the toolkit is strict")
+        planned: list[tuple[Any, str]] = []  # (entitlement, resource)
+        if ents is not None:
+            for ent in ents.actions:
+                if spec.effect is not None and _rank(ent.effect) > _rank(spec.effect):
+                    raise ToolRefused(
+                        spec.name, "effect_mismatch", f"{spec.name} is declared {spec.effect} but its recorded actions include a {ent.effect} ({ent.action})"
+                    )
+                filled = ent.fill(arguments)
+                if filled is None or any(c in filled for c in "*?["):
+                    continue  # known only at run time: checked at the wire
+                if spec.resources is not None:
+                    typ, _, ident = filled.partition(":")
+                    try:
+                        spec.resources.check({typ: ident})
+                    except ArgumentError as e:
+                        raise ToolRefused(spec.name, "out_of_scope", f"{filled} is outside this tool's scope ({e})") from None
+                planned.append((ent, filled))
+
         # 3. Limits, taken now and given back if the call does not reach its body.
-        caps = self._caps(spec)
+        caps = self._caps(spec, effect)
         exhausted = session._reserve(caps)
         if exhausted is not None:
             raise ToolRefused(spec.name, "limit_reached", f"this session reached its limit for {exhausted}")
         state.taken = caps
 
-        # 4. Authorization.
+        # 4. Authorization: the tool's own authorizer, then the recorded actions the user must be allowed.
         if spec.authorize is not None:
             try:
                 decision = _as_decision((yield _Ext(spec.authorize, (call,), {}, blocking=True)))
@@ -702,11 +887,36 @@ class Toolkit:
             ev.authorization = decision.reason or ("allow" if decision.allowed else "deny")
             if not decision.allowed:
                 raise ToolRefused(spec.name, "not_authorized", f"{session.user} may not run {spec.name}: {decision.reason or 'denied'}")
+        preallowed: set[tuple[str, str]] = set()
+        if planned:
+            conns = self._connections()
+            for ent, resource in planned:
+                if ent.as_ != "user":
+                    continue
+                conn_id = _connection_for(conns, ent.integration)
+                if self.permissions is None or conn_id is None:
+                    raise ToolRefused(
+                        spec.name,
+                        "authorization_error",
+                        f"{ent.action} on {resource} needs a permission check and the toolkit has no connection for {ent.integration}",
+                    )
+                try:
+                    groups = None if session.groups is None else list(session.groups)
+                    d = yield _Ext(self.permissions.check, (session.user, conn_id, ent.name, resource, groups), {}, blocking=True)
+                    allowed, why = getattr(d, "allowed", False) is True, str(getattr(d, "reason", ""))
+                except Exception as e:
+                    raise ToolRefused(spec.name, "authorization_error", f"authorization could not be decided ({type(e).__name__})") from None
+                ev.authorization = f"toolpass {'allow' if allowed else 'deny'} {ent.name} on {resource} in {conn_id}: {why}"
+                if not allowed:
+                    raise ToolRefused(spec.name, "not_authorized", f"{session.user} may not {ent.name} on {resource} in {conn_id}: {why or 'denied'}")
+                preallowed.add((ent.action, resource))
 
         # 5-7. Untrusted input, exfiltration, approval.
         reasons: list[str] = []
         if spec.approve is True:
             reasons.append("this tool always needs approval")
+        if any(ent.approve for ent, _ in planned):
+            reasons.append("this tool's recorded actions need approval: " + ", ".join(f"{ent.action} on {res}" for ent, res in planned if ent.approve))
         elif callable(spec.approve):
             try:
                 needed = yield _Ext(spec.approve, (call,), {}, blocking=True)
@@ -762,15 +972,27 @@ class Toolkit:
             call_kwargs["credential"] = secret
         hidden = _secret_strings(secret) if spec.credential is not None else []
 
-        # 9. The body.
+        # 9. The body. While it runs, the hook under the SDKs attributes every
+        # request it makes to this call (toolpass._wire).
         session._mark(untrusted=spec.untrusted_output, private=spec.reads_private)
         state.body_started = True
         if state.claimed is not None:
             settle_claim, state.claimed = state.claimed, None
             settle_claim(True)
+        ctx = CallContext(
+            self, spec, session, call, state.observed, ents, self.strict, preallowed=preallowed, preapproved={"entitlement"} if planned else set()
+        )
         try:
-            result = yield _Ext(spec.fn, bound.args, call_kwargs, body=True)
+            with running(ctx) if hooked else contextlib.nullcontext():
+                result = yield _Ext(spec.fn, bound.args, call_kwargs, body=True)
         except BaseException as e:
+            if ctx.refusal is not None and isinstance(ctx.refusal, ToolRefused):
+                # The hook refused a request the body made; whatever the body raised
+                # on top of it (an SDK's wrapper), the call's outcome is that refusal.
+                state.wire_refusal = ctx.refusal
+                if e is ctx.refusal:
+                    raise
+                raise ctx.refusal from e
             ev.outcome, ev.code, ev.reason = "raised", None, type(e).__name__
             if not isinstance(e, Exception):
                 raise
@@ -785,6 +1007,11 @@ class Toolkit:
                     message = fence(message, spec.name)
                 raise ToolError(spec.name, message, e) from None
             raise
+        if ctx.refusal is not None and isinstance(ctx.refusal, ToolRefused):
+            # The body swallowed the hook's refusal and returned anyway: the
+            # request never left, and the result is not handed to the model.
+            state.wire_refusal = ctx.refusal
+            raise ctx.refusal
         try:
             if isinstance(result, collections.abc.AsyncIterator):
                 raise TypeError(f"{spec.name} returned an async iterator; return the whole result")

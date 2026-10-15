@@ -4,7 +4,7 @@ the system that owns the resource.
     from toolpass import Toolpass, permission_check, secured_tool
     tp = Toolpass.from_config("toolpass.yaml")          # or Toolpass.remote(url, key)
 
-    @secured_tool(effect="write", authorize=permission_check(tp, "github-acme", "pull_request.create", "repo:{repo}"))
+    @secured_tool(effect="write", authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"))
     def open_pr(repo: str, title: str) -> str: ...
 
 Works with anything that has toolpass's ``check`` method, in-process or

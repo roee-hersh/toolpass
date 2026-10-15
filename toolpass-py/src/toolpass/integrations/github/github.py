@@ -54,6 +54,7 @@ from toolpass.core.integration import (
     url_field,
 )
 from toolpass.core.log import Logger
+from toolpass.core.routes import RouteTable
 from toolpass.core.template import Template, parse_email_domains, parse_template, validate_email_domains, validate_template
 from toolpass.integrations.github.actions import (
     ACTION_LIST,
@@ -172,6 +173,11 @@ class GitHub(Integration):
 
     def actions(self) -> list[Action]:
         return [Action(a.name, a.desc) for a in ACTION_LIST]
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.github.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network; the private key is

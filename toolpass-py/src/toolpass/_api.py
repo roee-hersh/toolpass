@@ -205,6 +205,14 @@ class Toolpass:
             raise TypeError("connections are known only in-process")
         return self._backend.engine.connections()
 
+    def _describe(self) -> list[tuple[str, Any, Any]]:
+        """(id, integration, settings) per connection, for the toolkit's
+        request hook; empty for a remote engine."""
+        if not isinstance(self._backend, _Local):
+            return []
+        engine = self._backend.engine
+        return [(cid, engine.integration(cid), engine.settings(cid)) for cid in engine.connections()]
+
     def __repr__(self) -> str:
         return f"Toolpass({self._backend!r})"
 

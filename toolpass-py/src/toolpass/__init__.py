@@ -7,7 +7,7 @@
     toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": token})
 
     @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, approve=True, credential="github-bot",
-                  authorize=permission_check(tp, "github-acme", "pull_request.create", "repo:{repo}"))
+                  authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"))
     def open_pr(repo: str, title: str, *, credential: str) -> str: ...
 
     with Session("dana@example.com").active():
@@ -35,7 +35,9 @@ from toolpass._api import (
 from toolpass._approval import ApprovalQueue, ApprovalRequest, Approver, approve_all
 from toolpass._audit import AuditEvent, AuditSink, log_audit
 from toolpass._checks import ScopeRule, Validator
+from toolpass._context import ObservedAction, as_agent, current_call
 from toolpass._default import configure, default_toolkit, secured_tool
+from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
 from toolpass._permissions import permission_check
 from toolpass._session import Session, current_session
 from toolpass._toolkit import (
@@ -54,6 +56,8 @@ from toolpass._toolkit import (
     spec_of,
 )
 from toolpass._version import __version__
+from toolpass._wire import ActionRefused
+from toolpass._wire import install as intercept
 from toolpass.core.secret import env, file, literal
 
 __all__ = [
@@ -61,6 +65,8 @@ __all__ = [
     "DENY",
     "EFFECTS",
     "UNKNOWN",
+    "ActionRecorder",
+    "ActionRefused",
     "ApprovalPending",
     "ApprovalQueue",
     "ApprovalRequest",
@@ -73,10 +79,14 @@ __all__ = [
     "CredentialSource",
     "Decision",
     "Effect",
+    "Entitlement",
+    "Entitlements",
     "GroupsSource",
+    "ObservedAction",
     "PermissionDenied",
     "ScopeRule",
     "Session",
+    "ToolEntitlements",
     "ToolError",
     "ToolRefused",
     "ToolSpec",
@@ -86,14 +96,17 @@ __all__ = [
     "Validator",
     "__version__",
     "approve_all",
+    "as_agent",
     "configure",
     "current",
+    "current_call",
     "current_session",
     "default_toolkit",
     "env",
     "fence",
     "file",
     "guarded",
+    "intercept",
     "literal",
     "log_audit",
     "permission_check",

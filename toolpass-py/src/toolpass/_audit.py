@@ -24,13 +24,15 @@ class AuditEvent:
     """What happened to one call.
 
     ``outcome`` is ``ran`` (the body returned), ``raised`` (the body raised),
-    ``refused`` (a check stopped it before the body) or ``pending`` (it waits
-    for approval). ``code`` names the check that refused it.
+    ``refused`` (a check stopped it, before the body or at a request the
+    body made) or ``pending`` (it waits for approval). ``code`` names the
+    check that refused it. ``actions`` lists the requests the body made, as
+    toolpass understood them (``ObservedAction.to_dict()``), allowed or not.
     """
 
     time: str
     tool: str
-    effect: str
+    effect: str | None
     outcome: str = "refused"
     code: str | None = None
     reason: str | None = None
@@ -41,9 +43,10 @@ class AuditEvent:
     approval: str | None = None
     approval_reasons: list[str] | None = None
     duration_ms: float | None = None
+    actions: list[dict[str, Any]] | None = None
 
     @staticmethod
-    def start(tool: str, effect: str) -> AuditEvent:
+    def start(tool: str, effect: str | None) -> AuditEvent:
         return AuditEvent(time=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"), tool=tool, effect=effect)
 
     def to_dict(self) -> dict[str, Any]:

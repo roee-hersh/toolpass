@@ -1,6 +1,6 @@
 # Command-line reference
 
-One command, `toolpass`, with five subcommands plus `toolpass version`. `pip install toolpass`
+One command, `toolpass`, with six subcommands plus `toolpass version`. `pip install toolpass`
 installs it, and it is the entry point of the Docker image. Every subcommand that reads a config
 takes `-config FILE`, defaulting to `/etc/toolpass/toolpass.yaml`. Flags take one dash (`-config
 FILE`); `--config=FILE` works too.
@@ -13,6 +13,7 @@ FILE`); `--config=FILE` works too.
 | `toolpass check -config FILE -connection ID -user EMAIL -action NAME -resource RES [-group G]... [-json]` | Answer one question from the command line |
 | `toolpass check -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] ...` | Ask a running toolpass the same question; `-fresh` skips its caches |
 | `toolpass catalog [INTEGRATION]` | List integrations, config keys and actions |
+| `toolpass routes [INTEGRATION]` | List how requests to an integration's API map to its actions (the secure-tools toolkit's [observed actions](../guides/intercepted-actions.md)) |
 
 At startup `serve` reads the API key and exits with an error when it cannot (a server that could
 not would report healthy and refuse every check), then probes every connection and logs warnings.

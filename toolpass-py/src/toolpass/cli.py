@@ -6,6 +6,7 @@
     toolpass check    -config FILE -connection id -user email -action name -resource res
     toolpass check    -server URL -api-key env:TOOLPASS_API_KEY -connection id ... [-fresh]
     toolpass catalog  [integration]
+    toolpass routes   [integration]
 
 Flags keep the single-dash form the command has always taken (``-config
 FILE``, ``--config=FILE`` works too), so scripts and the Helm chart do not
@@ -58,6 +59,7 @@ Usage:
   toolpass check    -config FILE -connection ID -user EMAIL -action NAME -resource RES [-group G]... [-json]
   toolpass check    -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] -connection ID -user EMAIL -action NAME -resource RES ...
   toolpass catalog  [INTEGRATION]
+  toolpass routes   [INTEGRATION]
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -575,6 +577,44 @@ def catalog(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     return 0
 
 
+def routes(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
+    """``toolpass routes [INTEGRATION]``: how requests to an integration's API
+    map to its actions, for the secure-tools toolkit's observed actions."""
+    reg = all_registry()
+    if not args:
+        for n in reg.names():
+            i = reg.lookup(n)
+            assert i is not None
+            table = i.routes()
+            stdout.write(f"{n:<18} {len(table.routes) if table is not None else 'no'} route(s)\n")
+        return 0
+    i = reg.lookup(args[0])
+    if i is None:
+        stderr.write(f'unknown integration "{args[0]}" (known: {", ".join(reg.names())})\n')
+        return 1
+    table = i.routes()
+    if table is None:
+        stderr.write(f"{i.name()}: requests to this API are not described yet; its tools' actions are observed by host only\n")
+        return 1
+    stdout.write(f"integration: {i.name()}\n\nroutes (method, path, action, resource, effect):\n")
+    for r in table.routes:
+        effect = r.effect or ("by method" if r.method == "*" else {"GET": "read", "HEAD": "read", "DELETE": "destructive"}.get(r.method.upper(), "write"))
+        flags = []
+        if r.sends_out:
+            flags.append("sends out")
+        if r.body is not None:
+            flags.append("resource from the body")
+        line = f"  {r.method:<7} {r.path:<70} {r.action or '-':<18} {r.resource or '-':<28} {effect}"
+        if flags:
+            line += f"  ({'; '.join(flags)})"
+        stdout.write(line + "\n")
+    if table.unrouted:
+        stdout.write("\nleft out on purpose:\n")
+        for (method, path), reason in table.unrouted.items():
+            stdout.write(f"  {method:<7} {path:<70} {reason}\n")
+    return 0
+
+
 def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> int:
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
@@ -593,6 +633,8 @@ def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None =
         return check(rest, stdout, stderr)
     if cmd == "catalog":
         return catalog(rest, stdout, stderr)
+    if cmd == "routes":
+        return routes(rest, stdout, stderr)
     if cmd == "version":
         stdout.write(__version__ + "\n")
         return 0

@@ -20,6 +20,9 @@ tree instead).
 | `tests/core`, `tests/authx`, `tests/net`, `test_cli.py`, `test_server.py` | the engine, config, caches, signing, the HTTP client, the command and the server | nothing |
 | `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `TOOLPASS_SPECS_DIR` to validate requests (below) |
 | `tests/integrations/test_registry.py` | the coverage gate: `test_action_<name>_allow` and `_deny` for every action | nothing |
+| `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `TOOLPASS_SPECS_DIR` for the description checks |
+| `tests/toolkit` | the secure-tools toolkit: every check, the hook under the SDKs (`test_wire.py`), recorded entitlements, the examples | nothing |
+| `tests/sdks` | real SDKs (PyGithub, slack_sdk) under a secured tool, against the fake upstreams | `pip install PyGithub slack_sdk`; each file skips without its SDK |
 | `tests/harness`, `tests/harness_tests` | the fake upstream, spec validation, and their own tests | nothing |
 | `tests/frameworks` | each framework adapter through the framework's real agent loop, with a scripted model and a real in-process engine | the framework's extra, e.g. `pip install -e ".[strands]"`; each file skips without it. `ANTHROPIC_API_KEY` for the live tests, which drive the same scenario with Claude |
 | `tests/real` | the vault integration against a real Vault dev server in Docker, every answer compared with Vault's own `sys/capabilities` | Docker and the `hashicorp/vault:1.17` image, present locally (never pulled); `TOOLPASS_REAL=1` turns a skip into a failure |
