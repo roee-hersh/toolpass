@@ -7,8 +7,8 @@ code is written.
 
 You use Claude Desktop, Claude Code or Cursor with MCP servers: GitHub, Slack, a database. You run
 one command, keep working exactly as before, and open one page that shows every MCP server your
-agents use, every tool call they ever made, who asked, what it did, what was refused, and what
-waited for you and who approved it.
+agents use, every tool call they ever made, from which client, with what arguments, and what came
+back.
 
 Two rules shape everything below:
 
@@ -46,7 +46,7 @@ Claude Desktop / Cursor / Claude Code
         |  stdio: toolpass mcp -- <the original command>
         |  HTTP:  http://127.0.0.1:<port>/mcp/<server>   (upstream: the original URL)
         v
-   toolpass  -- tool calls: record, check, hold for approval --> local store
+   toolpass  -- tool calls and their results: recorded --> local store
         |
         v
    the real server: a child process, or the hosted URL
@@ -58,26 +58,22 @@ Claude Desktop / Cursor / Claude Code
   upstream. Everything is forwarded, including the OAuth discovery endpoints and the bearer token,
   so signing in to a hosted server works as before. toolpass only looks at the tool calls.
 - **The gateway daemon** is `toolpass serve` on localhost, started by the first wrapper that needs
-  it. It holds the store, the approval queue and the page, so every session from every client lands
+  it. It holds the store and the page, so every session from every client lands
   in one place. A stdio wrapper that cannot reach it keeps working on its own and hands over what it
   saw once the daemon is back.
 
 A tool's schema is passed to the client exactly as the server declares it. The canary test that led
 to this design showed why: a wrapper that hid the real arguments made the model call tools wrongly.
 
-## What is checked, with nothing configured
+## What it does to a call: nothing
 
-MCP tools carry annotations: `readOnlyHint`, `destructiveHint`, `openWorldHint`. Most maintained
-servers set them. They give a default with no table:
+The gateway records; it never blocks, holds or changes a call. MCP clients already ask "Allow this
+tool?" before a call runs, and a second approval would only ask the same person twice. Each call
+is recorded when it is sent and again when its result comes back: server, tool, arguments, result,
+success or error, and how long it took.
 
-- every call is recorded;
-- a tool marked destructive waits for Approve on the page;
-- a tool with no annotations is recorded and runs, and the page marks it unclassified.
-
-The page has a switch per tool to change that: always run, always ask, never. Scope, limits and the
-permission engine from the toolkit stay available in `toolpass.yaml` for teams that want them, for
-example a permission check for a server that runs on one shared credential. A single user never
-has to open that file.
+MCP tools carry annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`). The page shows
+them next to each tool, so a destructive call stands out in the history.
 
 ## The page
 
@@ -86,14 +82,12 @@ The live page from `toolpass.watch()` becomes one tab of it.
 - **Servers:** what the gateway found, in which client, stdio or HTTP, wrapped or not.
 - **Calls:** every tool call ever made, with server, tool, arguments, result, ran or refused and why,
   filtered by server, tool, client, session and time.
-- **Waiting:** calls held for a person, with Approve and Reject.
-- **Decisions:** who approved or rejected what, and when.
 
 It binds to the loopback interface with a token in every path, as the live page does today.
 
 ## Storage
 
-One SQLite file in the user's data folder, holding servers, calls and approvals. Arguments and
+One SQLite file in the user's data folder, holding servers and calls. Arguments and
 results are stored shortened, as the audit events are today, and an injected credential never
 reaches the store. The file is the user's own: nothing is sent anywhere.
 
@@ -103,16 +97,15 @@ reaches the store. The file is the user's own: nothing is sent anywhere.
   page can list it as seen in a client but not wrapped, when the client reports it.
 - A client whose config format is unknown is not covered until it is added to the table above.
 - For a hosted server that acts with the user's own login, such as GitHub's, the server already
-  enforces that user's permissions. There the gateway adds the record and the approval, not the
-  permission check.
+  enforces that user's permissions. There the gateway adds the record, not a permission check.
 
 ## Order of work
 
 1. **Stdio and the store.** `toolpass mcp`, the daemon with the SQLite store and the page, and
    `gateway on|off|status` for Claude Desktop and Claude Code. The first real demo: your own Claude
-   Desktop, your own GitHub server, a pull request waiting on the page until you approve it.
+   Desktop, your own GitHub server, and every call it makes on the page as it happens.
 2. **HTTP.** Hosted servers with OAuth passthrough, and the other clients in the table.
-3. **Defaults and switches.** The annotation-driven defaults and the per-tool switch on the page.
+3. **The history.** Search and filters on the page, by server, tool, client and day.
 
 Each step is one pull request, with its tests and its documentation.
 

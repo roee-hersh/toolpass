@@ -1,12 +1,12 @@
 """toolpass: a pass for every tool call. Secure-by-default tools for AI agents.
 
     import toolpass
-    from toolpass import ApprovalQueue, Session, Toolpass, permission_check, secured_tool
+    from toolpass import Session, Toolpass, permission_check, secured_tool
 
     tp = Toolpass.from_config("toolpass.yaml")            # permission checks, live
-    toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": token})
+    toolpass.configure(credentials={"github-bot": token})
 
-    @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, approve=True, credential="github-bot",
+    @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot",
                   authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"))
     def open_pr(repo: str, title: str, *, credential: str) -> str: ...
 
@@ -32,7 +32,6 @@ from toolpass._api import (
     current,
     guarded,
 )
-from toolpass._approval import ApprovalQueue, ApprovalRequest, Approver, approve_all
 from toolpass._audit import AuditEvent, AuditSink, log_audit
 from toolpass._checks import ScopeRule, Validator
 from toolpass._context import ObservedAction, as_agent, current_call
@@ -42,7 +41,6 @@ from toolpass._permissions import permission_check
 from toolpass._session import Session, current_session
 from toolpass._toolkit import (
     EFFECTS,
-    ApprovalPending,
     AuthDecision,
     Authorizer,
     Call,
@@ -68,10 +66,6 @@ __all__ = [
     "UNKNOWN",
     "ActionRecorder",
     "ActionRefused",
-    "ApprovalPending",
-    "ApprovalQueue",
-    "ApprovalRequest",
-    "Approver",
     "AuditEvent",
     "AuditSink",
     "AuthDecision",
@@ -97,7 +91,6 @@ __all__ = [
     "Validator",
     "Watch",
     "__version__",
-    "approve_all",
     "as_agent",
     "configure",
     "current",

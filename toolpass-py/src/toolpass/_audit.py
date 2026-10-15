@@ -25,7 +25,7 @@ class AuditEvent:
 
     ``outcome`` is ``ran`` (the body returned), ``raised`` (the body raised),
     ``refused`` (a check stopped it, before the body or at a request the
-    body made) or ``pending`` (it waits for approval). ``code`` names the
+    body made). ``code`` names the
     check that refused it. ``actions`` lists the requests the body made, as
     toolpass understood them (``ObservedAction.to_dict()``), allowed or not.
     """
@@ -40,8 +40,6 @@ class AuditEvent:
     user: str | None = None
     arguments: dict[str, Any] | None = None
     authorization: str | None = None
-    approval: str | None = None
-    approval_reasons: list[str] | None = None
     duration_ms: float | None = None
     actions: list[dict[str, Any]] | None = None
 

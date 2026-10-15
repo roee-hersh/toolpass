@@ -20,9 +20,7 @@ def test_ops_agent_example():
         "untrusted_input",  # delete with the email's words
         "ran",  # private tickets
         "out_of_scope",  # #random
-        "approval_pending",  # the trifecta
+        "exfiltration_risk",  # the trifecta: private data, untrusted content, and a way out
         "not_authorized",  # dana's PR, denied by toolpass (or the stand-in)
-        "approval_pending",  # admin's PR waits
-        "ran",  # approved, runs once
-        "approval_pending",  # the approval was used up
+        "ran",  # the admin's PR
     ]

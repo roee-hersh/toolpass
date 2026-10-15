@@ -228,7 +228,7 @@ def test_default_audit_logs_json(dana, caplog):
     [
         {"effect": "delete"},
         {"effect": "read", "limit": -1},
-        {"effect": "read", "approve": "yes"},
+        {"effect": "read", "approve": True},  # approval was removed: an unknown keyword
         {"effect": "read", "untrusted_inputs": "maybe"},
     ],
 )
@@ -247,6 +247,6 @@ def test_bad_toolkit_settings():
     with pytest.raises(ValueError):
         Toolkit(limits={"write": -1})
     with pytest.raises(ValueError):
-        Toolkit(on_untrusted_input="ignore")  # type: ignore[arg-type]
-    with pytest.raises(ValueError):
         Toolkit(exfiltration="maybe")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        Toolkit(exfiltration="approve")  # type: ignore[arg-type]

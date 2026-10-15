@@ -1,12 +1,12 @@
 """The module-level ``secured_tool``, on a default toolkit set up by ``configure``.
 
     import toolpass
-    from toolpass import ApprovalQueue, secured_tool
+    from toolpass import secured_tool
 
-    toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": token})
+    toolpass.configure(credentials={"github-bot": token})
 
-    @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, approve=True)
-    def open_pr(repo: str, title: str) -> str: ...
+    @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot")
+    def open_pr(repo: str, title: str, *, credential: str) -> str: ...
 
 Tools declared before ``configure`` use its settings too: they read them at
 call time. A program that needs two sets of settings makes its own

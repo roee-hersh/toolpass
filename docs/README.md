@@ -1,7 +1,7 @@
 # toolpass documentation
 
 These pages cover toolpass's permission checks: the engine behind `Toolpass`, `guarded` and
-`permission_check`. For the secure-tools toolkit (scope limits, approval, the untrusted-input and
+`permission_check`. For the secure-tools toolkit (scope limits, the untrusted-input and
 exfiltration guards, credential injection), see [the package README](../toolpass-py/README.md).
 
 toolpass answers one question before your agent acts for someone: *may this user do this action on
@@ -53,7 +53,7 @@ agents in any language call.
 ## Design
 
 - [The MCP gateway](design/mcp-gateway.md): a proposal. Every MCP server your clients use, over stdio
-  or HTTP, found and wrapped with nothing to add, and one page with every call and approval.
+  or HTTP, found and wrapped with nothing to add, and one page with every call.
 
 ## Development
 

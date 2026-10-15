@@ -1,6 +1,6 @@
 """The toolkit: secured tools and the fixed order of checks around every call.
 
-    tools = Toolkit(approver=ApprovalQueue(), credentials={"github-bot": token})
+    tools = Toolkit(credentials={"github-bot": token})
 
     @tools.secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot")
     def open_pr(repo: str, title: str, *, credential: str) -> str: ...
@@ -18,10 +18,9 @@ through ``as_tool=``. On every call, in this order:
 5. untrusted input: do the arguments repeat untrusted content;
 6. exfiltration: would this send data out of a session that has read
    private data and seen untrusted content;
-7. approval: when the tool, step 5 or step 6 asks for it;
-8. the credential, injected only now;
-9. the body; then its output is redacted, recorded and fenced;
-10. one audit event, whatever happened.
+7. the credential, injected only now;
+8. the body; then its output is redacted, recorded and fenced;
+9. one audit event, whatever happened.
 
 Any failed step refuses the call before the body runs. Anything that cannot
 be evaluated refuses too.
@@ -45,7 +44,6 @@ import types
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, Union, cast, overload
 
-from toolpass._approval import ApprovalRequest, Approver
 from toolpass._audit import AuditEvent, AuditSink, log_audit, shorten
 from toolpass._checks import ArgumentError, Scope, ScopeRule, Validator, check_arguments, hints
 from toolpass._context import CallContext, ObservedAction, running
@@ -72,8 +70,7 @@ class ToolRefused(Exception):
     ``code`` names the check: ``no_session``, ``invalid_arguments``,
     ``out_of_scope``, ``limit_reached``, ``not_authorized``,
     ``authorization_error``, ``untrusted_input``, ``exfiltration_risk``,
-    ``approval_unavailable``, ``approval_error``, ``preview_error``,
-    ``approval_pending``, ``approval_rejected``, ``credential_error``,
+    ``credential_error``,
     ``check_error`` (a check itself failed unexpectedly), or one of the
     codes a request the body made can earn (``ActionRefused``):
     ``unknown_host``, ``unmapped_action``, ``unresolved_resource``,
@@ -97,18 +94,6 @@ class ToolError(Exception):
     def __init__(self, tool: str, message: str, original: BaseException) -> None:
         self.tool, self.original = tool, original
         super().__init__(message)
-
-
-class ApprovalPending(ToolRefused):
-    """The call waits for a person to approve it. ``request.id`` names it."""
-
-    def __init__(self, tool: str, request: ApprovalRequest) -> None:
-        self.request = request
-        super().__init__(
-            tool,
-            "approval_pending",
-            f"waiting for approval {request.id} ({'; '.join(request.reasons)}). Ask the user to approve it, then call {tool} again with the same arguments.",
-        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,7 +120,6 @@ Authorizer = Callable[[Call], Any]
 # Credentials by name: a mapping, or a callable (name, call) -> secret; may be async.
 CredentialSource = Union[Mapping[str, Any], Callable[[str, Call], Any]]
 SessionSource = Union["contextvars.ContextVar[Session]", Callable[[], Session | None]]
-ApproveRule = Union[bool, Callable[[Call], Any]]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,8 +137,6 @@ class ToolSpec:
     scope: Scope | None
     limit: int | None
     authorize: Authorizer | None
-    approve: ApproveRule
-    preview: Callable[[Call], Any] | None
     check_untrusted: bool
     untrusted_output: bool
     reads_private: bool
@@ -174,7 +156,7 @@ def spec_of(tool: Callable[..., Any]) -> ToolSpec | None:
 
 class _Ext(NamedTuple):
     """A call the check pipeline hands to its driver: the body, or a hook
-    (authorizer, approver, preview, credentials) that may block or be async."""
+    (authorizer, credentials) that may block or be async."""
 
     fn: Callable[..., Any]
     args: tuple[Any, ...]
@@ -337,7 +319,6 @@ class _State:
     session: Session | None = None
     taken: list[tuple[str, int]] = dataclasses.field(default_factory=list)
     body_started: bool = False
-    claimed: Callable[[bool], None] | None = None  # settles a claimed approval
     observed: list[ObservedAction] = dataclasses.field(default_factory=list)
     arguments: Mapping[str, Any] | None = None
     # A refusal the hook raised at a request the body made: this call's own refusal, after the body started.
@@ -347,23 +328,17 @@ class _State:
         if self.taken and self.session is not None:
             self.session._release(self.taken)
             self.taken = []
-        if self.claimed is not None:
-            settle, self.claimed = self.claimed, None
-            settle(False)
 
 
 class Toolkit:
     """Shared settings for a set of secure tools.
 
-    ``approver`` decides calls that need approval (``ApprovalQueue`` for the
-    out-of-band flow); without one, such calls are refused. ``credentials``
+    ``credentials``
     supplies the secrets tools ask for by name. ``audit`` receives one
     ``AuditEvent`` per call. ``limits`` caps calls per session by effect,
-    e.g. ``{"destructive": 3}``. ``on_untrusted_input`` is what happens when
-    arguments repeat untrusted content (``refuse`` or ``approve``);
-    ``exfiltration`` is what happens when a tool that sends data out runs in a
+    e.g. ``{"destructive": 3}``. ``exfiltration`` is what happens when a tool that sends data out runs in a
     session that has read private data and seen untrusted content
-    (``approve``, ``refuse`` or ``off``). ``session`` says where the current
+    (``refuse``, the default, or ``off``). ``session`` says where the current
     session comes from; by default, ``Session.active()``. ``on_refuse``, when
     given, turns a refusal into the tool's return value (``on_refuse=str``
     returns the message) instead of raising ``ToolRefused``.
@@ -384,12 +359,10 @@ class Toolkit:
     def __init__(
         self,
         *,
-        approver: Approver | None = None,
         credentials: CredentialSource | None = None,
         audit: AuditSink | None = log_audit,
         limits: Mapping[str, int] | None = None,
-        on_untrusted_input: Literal["refuse", "approve"] = "refuse",
-        exfiltration: Literal["approve", "refuse", "off"] = "approve",
+        exfiltration: Literal["refuse", "off"] = "refuse",
         fence_untrusted: bool = True,
         audit_arguments: bool = True,
         session: SessionSource | None = None,
@@ -404,11 +377,9 @@ class Toolkit:
     ) -> None:
         self._lenient = False  # the module-level default may be configured after its tools are declared
         self._configure(
-            approver=approver,
             credentials=credentials,
             audit=audit,
             limits=limits,
-            on_untrusted_input=on_untrusted_input,
             exfiltration=exfiltration,
             fence_untrusted=fence_untrusted,
             audit_arguments=audit_arguments,
@@ -426,12 +397,10 @@ class Toolkit:
     def _configure(
         self,
         *,
-        approver: Approver | None = None,
         credentials: CredentialSource | None = None,
         audit: AuditSink | None = log_audit,
         limits: Mapping[str, int] | None = None,
-        on_untrusted_input: Literal["refuse", "approve"] = "refuse",
-        exfiltration: Literal["approve", "refuse", "off"] = "approve",
+        exfiltration: Literal["refuse", "off"] = "refuse",
         fence_untrusted: bool = True,
         audit_arguments: bool = True,
         session: SessionSource | None = None,
@@ -444,10 +413,8 @@ class Toolkit:
         strict: bool = False,
         intercept: bool = True,
     ) -> None:
-        if on_untrusted_input not in ("refuse", "approve"):
-            raise ValueError("on_untrusted_input must be 'refuse' or 'approve'")
-        if exfiltration not in ("approve", "refuse", "off"):
-            raise ValueError("exfiltration must be 'approve', 'refuse' or 'off'")
+        if exfiltration not in ("refuse", "off"):
+            raise ValueError("exfiltration must be 'refuse' or 'off'")
         for effect, cap in (limits or {}).items():
             if effect not in EFFECTS:
                 raise ValueError(f"limits: unknown effect {effect!r}; use one of {', '.join(EFFECTS)}")
@@ -461,11 +428,9 @@ class Toolkit:
             ents = Entitlements.from_mapping(entitlements)
         else:
             ents = Entitlements.load(entitlements)
-        self.approver = approver
         self.credentials = credentials
         self.audit = audit
         self.limits = dict(limits or {})
-        self.on_untrusted_input = on_untrusted_input
         self.exfiltration = exfiltration
         self.fence_untrusted = fence_untrusted
         self.audit_arguments = audit_arguments
@@ -520,8 +485,6 @@ class Toolkit:
         resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
-        approve: ApproveRule = False,
-        preview: Callable[[Call], Any] | None = None,
         untrusted_inputs: Literal["check", "ignore"] | None = None,
         untrusted_output: bool = False,
         reads_private: bool = False,
@@ -541,8 +504,6 @@ class Toolkit:
         resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
-        approve: ApproveRule = False,
-        preview: Callable[[Call], Any] | None = None,
         untrusted_inputs: Literal["check", "ignore"] | None = None,
         untrusted_output: bool = False,
         reads_private: bool = False,
@@ -561,8 +522,6 @@ class Toolkit:
         resources: Mapping[str, ScopeRule] | None = None,
         validate: Mapping[str, Validator] | None = None,
         limit: int | None = None,
-        approve: ApproveRule = False,
-        preview: Callable[[Call], Any] | None = None,
         untrusted_inputs: Literal["check", "ignore"] | None = None,
         untrusted_output: bool = False,
         reads_private: bool = False,
@@ -582,9 +541,7 @@ class Toolkit:
         predicate); ``resources`` does the same for the resources the body's
         requests touch, by resource type (``{"repo": "acme/gitops-*"}``);
         ``validate`` maps argument names to extra validators.
-        ``limit`` caps calls per session. ``approve`` is True, or a predicate
-        over the call, for calls a person must confirm; ``preview`` describes
-        what the call will change, for that person. ``untrusted_inputs``
+        ``limit`` caps calls per session. ``untrusted_inputs``
         checks arguments for untrusted content (default: on, except for
         ``read`` tools that do not send data out). ``untrusted_output`` marks
         the tool's output as untrusted (an email, a web page);
@@ -605,8 +562,6 @@ class Toolkit:
                 scope,
                 validate,
                 limit,
-                approve,
-                preview,
                 untrusted_inputs,
                 untrusted_output,
                 reads_private,
@@ -655,8 +610,6 @@ class Toolkit:
         scope: Mapping[str, ScopeRule] | None,
         validate: Mapping[str, Validator] | None,
         limit: int | None,
-        approve: ApproveRule,
-        preview: Callable[[Call], Any] | None,
         untrusted_inputs: str | None,
         untrusted_output: bool,
         reads_private: bool,
@@ -701,8 +654,6 @@ class Toolkit:
             raise TypeError(f"{tool_name}: the authorizer's resource names no such parameter: {', '.join(sorted(unknown_fields))}")
         if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 0):
             raise ValueError(f"{tool_name}: limit must be a non-negative integer")
-        if not (approve is True or approve is False or callable(approve)):
-            raise TypeError(f"{tool_name}: approve must be True, False or a predicate over the call")
         if untrusted_inputs not in (None, "check", "ignore"):
             raise ValueError(f"{tool_name}: untrusted_inputs must be 'check' or 'ignore'")
         check_untrusted = untrusted_inputs == "check" or (untrusted_inputs is None and (effect != "read" or sends_out))
@@ -717,8 +668,6 @@ class Toolkit:
             scope=Scope(scope) if scope else None,
             limit=limit,
             authorize=authorize,
-            approve=approve,
-            preview=preview,
             check_untrusted=check_untrusted,
             untrusted_output=untrusted_output,
             reads_private=reads_private,
@@ -802,15 +751,11 @@ class Toolkit:
 
     def _refuse(self, refused: ToolRefused, ev: AuditEvent, state: _State) -> Any:
         if state.body_started:
-            # The body ran: its limits stay taken and its approval is spent.
-            state.taken, state.claimed = [], None
+            # The body ran: its limits stay taken.
+            state.taken = []
         state.release()
-        ev.outcome = "pending" if isinstance(refused, ApprovalPending) else "refused"
+        ev.outcome = "refused"
         ev.code, ev.reason = refused.code, refused.reason
-        if isinstance(refused, ApprovalPending):
-            # Raised from inside the body (a request checked at the wire) as well as before it.
-            ev.approval = refused.request.id
-            ev.approval_reasons = ev.approval_reasons or list(refused.request.reasons)
         if self.on_refuse is not None:
             return self.on_refuse(refused)
         raise refused
@@ -909,56 +854,15 @@ class Toolkit:
                     raise ToolRefused(spec.name, "not_authorized", f"{session.user} may not {ent.name} on {resource} in {conn_id}: {why or 'denied'}")
                 preallowed.add((ent.action, resource))
 
-        # 5-7. Untrusted input, exfiltration, approval.
-        reasons: list[str] = []
-        if spec.approve is True:
-            reasons.append("this tool always needs approval")
-        if any(ent.approve for ent, _ in planned):
-            reasons.append("this tool's recorded actions need approval: " + ", ".join(f"{ent.action} on {res}" for ent, res in planned if ent.approve))
-        elif callable(spec.approve):
-            try:
-                needed = yield _Ext(spec.approve, (call,), {}, blocking=True)
-            except Exception as e:
-                raise ToolRefused(spec.name, "approval_error", f"the approval rule failed ({type(e).__name__})") from None
-            if needed is not False:  # anything but a plain "no" asks a person
-                reasons.append("this call matches the tool's approval rule")
+        # 5-6. Untrusted input, exfiltration.
         if spec.check_untrusted and session._carries_untrusted(arguments.values()):
-            message = "an argument repeats content from an untrusted source seen in this session, so the call may have been injected"
-            if self.on_untrusted_input == "refuse":
-                raise ToolRefused(spec.name, "untrusted_input", message)
-            reasons.append(message)
+            raise ToolRefused(
+                spec.name, "untrusted_input", "an argument repeats content from an untrusted source seen in this session, so the call may have been injected"
+            )
         if spec.sends_out and self.exfiltration != "off" and session.read_private and session.saw_untrusted:
-            message = "this session has read private data and seen untrusted content, and this tool sends data out"
-            if self.exfiltration == "refuse":
-                raise ToolRefused(spec.name, "exfiltration_risk", message)
-            reasons.append(message)
-        if reasons:
-            ev.approval_reasons = reasons
-            if self.approver is None:
-                raise ToolRefused(spec.name, "approval_unavailable", f"this call needs approval ({'; '.join(reasons)}) and no approver is configured")
-            preview = None
-            if spec.preview is not None:
-                try:
-                    shown = yield _Ext(spec.preview, (call,), {}, blocking=True)
-                except Exception as e:
-                    raise ToolRefused(spec.name, "preview_error", f"the preview failed ({type(e).__name__})") from None
-                preview = None if shown is None else str(shown)
-            request = ApprovalRequest.make(call, tuple(reasons), preview)
-            ev.approval = request.id
-            try:
-                # A sync approver runs off the event loop: its listeners may post to Slack.
-                verdict = yield _Ext(self.approver, (request,), {}, blocking=True)
-            except Exception as e:
-                raise ToolRefused(spec.name, "approval_error", f"the approver failed ({type(e).__name__})") from None
-            if verdict is None:
-                raise ApprovalPending(spec.name, request)
-            if verdict is not True:
-                raise ToolRefused(spec.name, "approval_rejected", f"approval {request.id} was rejected")
-            settle = getattr(self.approver, "settle", None)
-            if callable(settle):
-                state.claimed = functools.partial(settle, request.id)
+            raise ToolRefused(spec.name, "exfiltration_risk", "this session has read private data and seen untrusted content, and this tool sends data out")
 
-        # 8. The credential, only after every check passed.
+        # 7. The credential, only after every check passed.
         call_kwargs = dict(bound.kwargs)
         secret: Any = None
         if spec.credential is not None:
@@ -970,13 +874,10 @@ class Toolkit:
             call_kwargs["credential"] = secret
         hidden = _secret_strings(secret) if spec.credential is not None else []
 
-        # 9. The body. While it runs, the hook under the SDKs attributes every
+        # 8. The body. While it runs, the hook under the SDKs attributes every
         # request it makes to this call (toolpass._wire).
         session._mark(untrusted=spec.untrusted_output, private=spec.reads_private)
         state.body_started = True
-        if state.claimed is not None:
-            settle_claim, state.claimed = state.claimed, None
-            settle_claim(True)
         ctx = CallContext(
             self,
             spec,
@@ -986,7 +887,6 @@ class Toolkit:
             ents,
             self.strict,
             preallowed=preallowed,
-            preapproved={(ent.action, res) for ent, res in planned if ent.approve},
         )
         try:
             with running(ctx) if hooked else contextlib.nullcontext():

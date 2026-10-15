@@ -11,7 +11,7 @@ import pytest
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
-from toolpass import ActionRefused, ApprovalPending, ApprovalQueue, Entitlement, Session, Toolkit
+from toolpass import ActionRefused, Entitlement, Session, Toolkit
 from toolpass._wire import Connections
 from toolpass.core.integration import Settings
 from toolpass.core.routes import Request, endpoint_of_url, host_key
@@ -35,32 +35,6 @@ def engine(gh: harness.Server) -> Engine:
     e.allow[("admin@example.com", "repo.read")] = True
     e.allow[("admin@example.com", "pr.create")] = True
     return e
-
-
-def test_an_approve_entitlement_deferred_to_the_wire_still_asks(gh, engine, events):
-    """A planned action without approval must not pre-approve a glob one with it."""
-    approvals = ApprovalQueue()
-    ents = {
-        "tools": {
-            "propose": {
-                "actions": [
-                    {"action": "github:repo.read", "resource": "repo:{repo}", "as": "user", "effect": "read"},
-                    {"action": "github:pr.create", "resource": "repo:acme/*", "as": "user", "effect": "write", "approve": True},
-                ]
-            }
-        }
-    }
-    tools = Toolkit(audit=events, permissions=engine, entitlements=ents, approver=approvals)
-
-    @tools.tool()
-    def propose(repo: str) -> str:
-        http("GET", f"{gh.url}/api/v3/repos/{repo}")
-        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
-        return "opened"
-
-    with Session("admin@example.com").active(), pytest.raises(ApprovalPending):
-        propose("acme/x")
-    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"]
 
 
 def test_a_glob_in_an_argument_does_not_widen_an_exact_entitlement(gh, engine, events):

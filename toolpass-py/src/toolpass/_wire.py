@@ -8,7 +8,7 @@ made while a secured tool's body runs is seen here first. The request is
 mapped to a connection of the configured permission engine by host, then to
 an action by the integration's route table, and the action goes through the
 toolkit's checks: scope, limits, the permission check of the session's
-user, the untrusted-input and exfiltration guards, approval. A failed check
+user, the untrusted-input and exfiltration guards. A failed check
 raises ``ActionRefused`` (a ``ToolRefused``) from inside the client call,
 so the request never leaves the process; the toolkit then reports the call
 as refused even if the body swallowed the exception.
@@ -33,9 +33,8 @@ import urllib.parse
 from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from toolpass._approval import ApprovalRequest
 from toolpass._context import CallContext, ObservedAction, current_call, in_agent_block
-from toolpass._toolkit import ApprovalPending, ToolRefused
+from toolpass._toolkit import ToolRefused
 from toolpass.core.routes import Request, RouteTable, effect_of_method, host_key, rank
 
 if TYPE_CHECKING:
@@ -145,8 +144,8 @@ def _key(r: Request) -> str:
     return f"{r.method} {r.scheme}://{r.host}:{r.port} {r.raw_path}?{r.query} {h.hexdigest()}"
 
 
-def _refuse(ctx: CallContext, key: str, obs: ObservedAction, exc: ToolRefused, pending: bool = False) -> ToolRefused:
-    obs.outcome = "pending" if pending else "refused"
+def _refuse(ctx: CallContext, key: str, obs: ObservedAction, exc: ToolRefused) -> ToolRefused:
+    obs.outcome = "refused"
     obs.code, obs.reason = exc.code, exc.reason
     with ctx.lock:
         ctx.observed.append(obs)
@@ -252,7 +251,7 @@ def _check(ctx: CallContext, request: Request, key: str) -> None:
         if exhausted is not None:
             raise _refuse(ctx, key, obs, ActionRefused(tool, "limit_reached", f"this session reached its limit for {exhausted}", obs))
     try:
-        _authorize_and_approve(ctx, request, key, obs, conn, agent, ent)
+        _authorize(ctx, request, key, obs, conn, agent, ent)
     except ToolRefused:
         if taken:
             session._release(taken)
@@ -262,7 +261,7 @@ def _check(ctx: CallContext, request: Request, key: str) -> None:
         ctx.observed.append(obs)
 
 
-def _authorize_and_approve(ctx: CallContext, request: Request, key: str, obs: ObservedAction, conn: _Conn, agent: bool, ent: Any) -> None:
+def _authorize(ctx: CallContext, request: Request, key: str, obs: ObservedAction, conn: _Conn, agent: bool, ent: Any) -> None:
     tk, spec, session = ctx.toolkit, ctx.spec, ctx.session
     tool = spec.name
     if obs.action is not None and obs.resource is not None and not agent and (obs.name, obs.resource) not in ctx.preallowed:
@@ -290,45 +289,12 @@ def _authorize_and_approve(ctx: CallContext, request: Request, key: str, obs: Ob
                 ActionRefused(tool, "not_authorized", f"{session.user} may not {obs.action} on {obs.resource} in {conn.id}: {reason or 'denied'}", obs),
             )
 
-    reasons: list[str] = []
     if (spec.check_untrusted or obs.effect != "read") and session._carries_untrusted(request.text()):
         message = f"the request {request.describe()} repeats content from an untrusted source seen in this session, so it may have been injected"
-        if tk.on_untrusted_input == "refuse":
-            raise _refuse(ctx, key, obs, ActionRefused(tool, "untrusted_input", message, obs))
-        reasons.append(message)
+        raise _refuse(ctx, key, obs, ActionRefused(tool, "untrusted_input", message, obs))
     if obs.sends_out and tk.exfiltration != "off" and session.read_private and session.saw_untrusted:
         message = f"this session has read private data and seen untrusted content, and {request.describe()} sends data out"
-        if tk.exfiltration == "refuse":
-            raise _refuse(ctx, key, obs, ActionRefused(tool, "exfiltration_risk", message, obs))
-        reasons.append(message)
-    if ent is not None and ent.approve and (obs.name or "", obs.resource or "") not in ctx.preapproved:
-        reasons.append(f"{obs.name} on {obs.resource} needs approval")
-    if not reasons:
-        return
-    if tk.approver is None:
-        raise _refuse(
-            ctx,
-            key,
-            obs,
-            ActionRefused(tool, "approval_unavailable", f"{request.describe()} needs approval ({'; '.join(reasons)}) and no approver is configured", obs),
-        )
-    preview = f"{request.describe()}: {obs.name or 'request'} on {obs.resource or request.host}"
-    req = ApprovalRequest.make(ctx.call, tuple(reasons), preview)
-    try:
-        verdict = tk.approver(req)
-        if asyncio.iscoroutine(verdict):
-            verdict.close()
-            raise TypeError("an async approver cannot decide a request made inside the tool's body")
-    except Exception as e:  # noqa: BLE001 - fail closed
-        raise _refuse(ctx, key, obs, ActionRefused(tool, "approval_error", f"the approver failed ({type(e).__name__})", obs)) from None
-    if verdict is None:
-        pending = ApprovalPending(tool, req)
-        raise _refuse(ctx, key, obs, pending, pending=True)
-    if verdict is not True:
-        raise _refuse(ctx, key, obs, ActionRefused(tool, "approval_rejected", f"approval {req.id} was rejected", obs))
-    settle = getattr(tk.approver, "settle", None)
-    if callable(settle):
-        settle(req.id, True)
+        raise _refuse(ctx, key, obs, ActionRefused(tool, "exfiltration_risk", message, obs))
 
 
 # -- the patches ---------------------------------------------------------------

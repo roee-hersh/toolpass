@@ -1,6 +1,6 @@
 # Command-line reference
 
-One command, `toolpass`, with seven subcommands plus `toolpass version`. `pip install toolpass`
+One command, `toolpass`, with six subcommands plus `toolpass version`. `pip install toolpass`
 installs it, and it is the entry point of the Docker image. Every subcommand that reads a config
 takes `-config FILE`, defaulting to `/etc/toolpass/toolpass.yaml`. Flags take one dash (`-config
 FILE`); `--config=FILE` works too.
@@ -14,7 +14,6 @@ FILE`); `--config=FILE` works too.
 | `toolpass check -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] ...` | Ask a running toolpass the same question; `-fresh` skips its caches |
 | `toolpass catalog [INTEGRATION]` | List integrations, config keys and actions |
 | `toolpass routes [INTEGRATION]` | List how requests to an integration's API map to its actions (the secure-tools toolkit's [observed actions](../guides/intercepted-actions.md)) |
-| `toolpass demo [-open] [-auto] [-listen ADDR] [-timeout D]` | A scripted agent with a Jira-like tool, two users and one guard, on the [live page](../../toolpass-py/README.md#watch-it-live). No network, no model |
 
 At startup `serve` reads the API key and exits with an error when it cannot (a server that could
 not would report healthy and refuse every check), then probes every connection and logs warnings.
@@ -48,12 +47,3 @@ toolpass check -server https://toolpass.internal -connection jira-main \
 
 `serve` also takes `-listen ADDR`, which overrides `listen` in the file, and
 `-log-level debug|info|warn|error` (default `info`).
-
-`demo` runs the session the [README](../../README.md) opens with: Dana asks the agent to delete an
-issue and is refused, because the permission engine says she may not; an admin asks the same, the
-call waits on the live page until a person presses Approve, then runs once; a key outside the
-tool's scope is refused. `-open` opens the page in the default browser. `-auto` approves the waiting
-call from inside the process and exits at the end, for a terminal with nobody at it; otherwise the
-demo waits `-timeout` (default `2m`) for the person and then keeps the page up until Enter is
-pressed. `-listen` is the page's address, on the loopback interface only (default `127.0.0.1:0`,
-any free port). Exit code 0, or 1 when nobody approved in time.
