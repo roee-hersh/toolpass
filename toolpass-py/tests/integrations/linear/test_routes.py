@@ -107,3 +107,16 @@ def test_read_operation():
         "mutation",
         [("f", {"a": ("$", "i"), "b": [("literal", "1"), ("literal", "2")], "c": {"d": "e"}})],
     )
+
+
+def test_an_escaped_triple_quote_does_not_end_a_block_string():
+    # The server reads issueUpdate on ENG-1 and then issueDelete on ENG-9; so must toolpass.
+    q = 'mutation { issueUpdate(id: "ENG-1", input: {title: """a\\""", description: """ }) { success } issueDelete(id: "ENG-9") { success } } # """ }) { success } }'
+    o = match(q)
+    assert o is not None and o.unresolved, "two mutations: not one toolpass can check as one"
+    assert [f for f, _ in read_operation('query { issue(id: "x") { title(f: """a\\"""b""") } }')[1]] == ["issue"]
+
+
+def test_a_bad_unicode_escape_is_unreadable():
+    o = match('mutation { issueDelete(id: "\\uZZZZ") { success } }')
+    assert o is not None and o.unresolved

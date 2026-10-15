@@ -120,3 +120,49 @@ def test_two_tools_running_at_once_are_told_apart_by_name(tmp_path: Path) -> Non
     rows = {r["id"]: r for r in store.calls(0)[0]}
     assert [e["tool"] for e in rows[a]["inside"]] == ["status"]
     assert [e["tool"] for e in rows[b]["inside"]] == ["ship"]
+
+
+def test_two_calls_of_one_tool_at_once_pair_up_in_the_order_they_were_sent(tmp_path: Path) -> None:
+    # Parallel tool use: A and B sent 1 ms apart; each run starts after both were sent.
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    a = store.start_call("c", "cfg", "srv", "sess", "open_pr", {"n": "a"}, started=t)
+    b = store.start_call("c", "cfg", "srv", "sess", "open_pr", {"n": "b"}, started=t + 0.001)
+    store.record_tool_event("sess", {"tool": "open_pr", "n": "a"}, t + 0.002, t + 0.2)
+    store.record_tool_event("sess", {"tool": "open_pr", "n": "b"}, t + 0.003, t + 0.3)
+    store.finish_call(a, "ok", "", 210.0, ended=t + 0.21)
+    store.finish_call(b, "ok", "", 310.0, ended=t + 0.31)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [e["n"] for e in rows[a]["inside"]] == ["a"]
+    assert [e["n"] for e in rows[b]["inside"]] == ["b"]
+
+
+def test_a_tool_named_differently_by_the_server_lands_on_the_call_running_then(tmp_path: Path) -> None:
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    call = store.start_call("c", "cfg", "srv", "sess", "github_open_pr", {}, started=t)
+    store.record_tool_event("sess", {"tool": "open_pr"}, t + 0.01, t + 0.1)
+    store.finish_call(call, "ok", "", 110.0, ended=t + 0.11)
+    assert [e["tool"] for e in store.calls(0)[0][0]["inside"]] == ["open_pr"]
+
+
+def test_an_event_recorded_before_its_call_is_placed_when_the_call_is(tmp_path: Path) -> None:
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    store.record_tool_event("sess", {"tool": "open_pr"}, t + 0.01, t + 0.1)  # the proxy's writer was slower
+    call = store.start_call("c", "cfg", "srv", "sess", "open_pr", {}, started=t)
+    store.finish_call(call, "ok", "", 110.0, ended=t + 0.11)
+    assert [e["tool"] for e in store.calls(0)[0][0]["inside"]] == ["open_pr"]
+
+
+def test_two_servers_upgrading_one_old_record_at_once(tmp_path: Path) -> None:
+    # Both read the old schema; the second adds a column the first already added.
+    import sqlite3
+
+    from toolpass._store import _add_column
+
+    db = sqlite3.connect(tmp_path / "g.db")
+    db.execute("CREATE TABLE calls (id INTEGER PRIMARY KEY)")
+    _add_column(db, "calls", "ended", "REAL")
+    _add_column(db, "calls", "ended", "REAL")
+    assert [r[1] for r in db.execute("PRAGMA table_info(calls)").fetchall()] == ["id", "ended"]

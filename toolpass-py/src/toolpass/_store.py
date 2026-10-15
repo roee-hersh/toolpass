@@ -62,16 +62,18 @@ CREATE TABLE IF NOT EXISTS calls (
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
-CREATE INDEX IF NOT EXISTS calls_session ON calls (session, tool, started);
+CREATE INDEX IF NOT EXISTS calls_session ON calls (session, started);
 CREATE TABLE IF NOT EXISTS tool_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session TEXT NOT NULL,
   tool TEXT NOT NULL,
   started REAL NOT NULL,
   ended REAL NOT NULL,
+  call_id INTEGER,
   event TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, tool, started);
+CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, started);
+CREATE INDEX IF NOT EXISTS tool_events_call ON tool_events (call_id);
 CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
 
@@ -82,12 +84,20 @@ _MAX_EVENT = 64000
 _SLACK = max(0.002, 2 * time.get_clock_info("time").resolution)
 
 
-# The call a tool event belongs to: in its session, of its tool, the latest
-# one sent before the event started. Calls of one tool in one session run one
-# after another in practice; two at once are told apart by when they were sent.
-def _owner(session: str, tool: str, at: str) -> str:
-    """SQL for that call's id, given SQL expressions for the event's session, tool and start."""
-    return f"SELECT c.id FROM calls c WHERE c.session = {session} AND c.tool = {tool} AND c.started <= {at} ORDER BY c.started DESC, c.id DESC LIMIT 1"
+# The call a tool event belongs to, chosen once, when the event is recorded:
+# among the calls of its session that were sent before the tool started and
+# had not been answered before it ended, one of the same tool first, then one
+# that holds no event yet, then the first sent. Calls one after another leave
+# a single candidate; two of one tool at once (parallel tool use) pair up in
+# the order they were sent, as a server starts them; a tool the MCP server
+# names differently, or a secured tool another one calls, lands on the call
+# running at that time.
+_OWNER = (
+    "SELECT c.id FROM calls c WHERE c.session = :session AND c.started <= :started + :slack"
+    " AND (c.ended IS NULL OR c.ended >= :ended - :slack)"
+    " ORDER BY c.tool = :tool DESC, NOT EXISTS (SELECT 1 FROM tool_events e WHERE e.call_id = c.id) DESC, c.started, c.id"
+    " LIMIT 1"
+)
 
 
 def _cut_event(event: Mapping[str, Any]) -> str:
@@ -127,6 +137,15 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
 
 
+def _add_column(db: sqlite3.Connection, table: str, column: str, kind: str) -> None:
+    """Add a column; one another server opening the same record added first is fine."""
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")  # fixed names, no input
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e):
+            raise
+
+
 def _cut(text: str) -> str:
     return text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + f"...({len(text)} chars)"
 
@@ -161,7 +180,7 @@ class Store:
         have = {r[1] for r in self._db.execute("PRAGMA table_info(calls)").fetchall()}
         for column, kind in (("started", "REAL NOT NULL DEFAULT 0"), ("ended", "REAL")):
             if column not in have:
-                self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} {kind}")  # fixed names, no input
+                _add_column(self._db, "calls", column, kind)
 
     def _private_side_files(self) -> None:
         """SQLite's WAL and shared-memory files carry recent rows too: same
@@ -229,13 +248,19 @@ class Store:
     def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any], started: float | None = None) -> int:
         """Record a call that was just sent to the server; returns its id.
         ``started`` is when it was sent (wall clock), now by default."""
+        at = started or time.time()
         with self._write() as (db, rev):
             cur = db.execute(
                 "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, rev)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
-                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), started or time.time(), rev),
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), at, rev),
             )
             call_id = int(cur.lastrowid or 0)
+            # Tool events of this call that were recorded before it.
+            db.execute(
+                "UPDATE tool_events SET call_id = ? WHERE call_id IS NULL AND session = ? AND started >= ? - ?",
+                (call_id, session, at, _SLACK),
+            )
         self._private_side_files()
         return call_id
 
@@ -251,16 +276,19 @@ class Store:
     def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
         """What a toolpass-secured tool inside a wrapped server did during a
         call: its audit event, with the requests it made to GitHub, Jira, ...
-        It belongs to the latest call of the same tool in the same session
-        sent before it started (see ``_owner``); that call's rev moves so the
-        dashboard shows it."""
+        It is placed under its call (``_OWNER``), whose rev moves so the
+        dashboard shows it; an event recorded before its call is placed when
+        the call is."""
         tool = str(event.get("tool", ""))
         with self._write() as (db, rev):
+            found = db.execute(_OWNER, {"session": session, "tool": tool, "started": started, "ended": ended, "slack": _SLACK}).fetchone()
+            call_id = int(found[0]) if found else None
             db.execute(
-                "INSERT INTO tool_events (session, tool, started, ended, event) VALUES (?, ?, ?, ?, ?)",
-                (session, tool, started, ended, _cut_event(event)),
+                "INSERT INTO tool_events (session, tool, started, ended, call_id, event) VALUES (?, ?, ?, ?, ?, ?)",
+                (session, tool, started, ended, call_id, _cut_event(event)),
             )
-            db.execute(f"UPDATE calls SET rev = ? WHERE id = ({_owner('?', '?', '?')})", (rev, session, tool, started + _SLACK))
+            if call_id is not None:
+                db.execute("UPDATE calls SET rev = ? WHERE id = ?", (rev, call_id))
 
     def prune(self, days: float = 90) -> int:
         """Delete calls older than ``days``; returns how many."""
@@ -298,27 +326,18 @@ class Store:
         return out, nxt
 
     def _events_for(self, rows: Sequence[sqlite3.Row]) -> dict[int, list[dict[str, Any]]]:
-        """The tool events inside each call: those it owns (``_owner``) that
-        started before it ended. Called with the lock held."""
+        """The tool events placed under each call. Called with the lock held."""
         out: dict[int, list[dict[str, Any]]] = {}
-        for r in rows:
-            if not r["started"]:
-                continue
-            ended = r["ended"] if r["ended"] is not None else time.time()
-            found = self._db.execute(
-                "SELECT e.event FROM tool_events e WHERE e.session = ? AND e.tool = ? AND e.started >= ? AND e.started <= ?"
-                f" AND ({_owner('e.session', 'e.tool', 'e.started + ?')}) = ?"
-                " ORDER BY e.started",
-                (r["session"], r["tool"], r["started"] - _SLACK, ended + _SLACK, _SLACK, r["id"]),
-            ).fetchall()
-            events = []
+        ids = [int(r["id"]) for r in rows]
+        for chunk in range(0, len(ids), 500):
+            part = ids[chunk : chunk + 500]
+            marks = ",".join("?" * len(part))
+            found = self._db.execute(f"SELECT call_id, event FROM tool_events WHERE call_id IN ({marks}) ORDER BY started, id", part).fetchall()
             for e in found:
                 try:
-                    events.append(json.loads(e["event"]))
+                    out.setdefault(int(e["call_id"]), []).append(json.loads(e["event"]))
                 except ValueError:
                     continue
-            if events:
-                out[r["id"]] = events
         return out
 
     def servers(self) -> list[dict[str, Any]]:

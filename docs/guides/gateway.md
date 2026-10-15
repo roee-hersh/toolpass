@@ -91,10 +91,10 @@ Each line is the action toolpass named from the request (the integration's route
 `github:pr.create on repo:acme/shop`), and the decision the system itself gave for the session's
 user. A refused request is never sent, and the tool stops there. The gateway passes the server two
 environment variables, `TOOLPASS_GATEWAY_SESSION` and `TOOLPASS_GATEWAY_DB`, and the toolkit
-writes each tool run to the same record; nothing needs configuring. A run is placed under the
-latest call of the same tool in the same session sent before it started, so the secured tool's
-name must be the MCP tool's name (the function's name, for both, unless you rename one). A server
-whose tools are not secured tools shows the MCP call only.
+writes each tool run to the same record; nothing needs configuring. A run is placed under
+the call of its session that was running when it ran; when several were (parallel tool use), the
+one of the same tool, paired in the order they were sent. A server whose tools are not secured
+tools shows the MCP call only.
 
 GitHub, Slack, Jira, Linear and Kubernetes have route tables today; a request to another
 integration's connection is recorded by host, without an action.

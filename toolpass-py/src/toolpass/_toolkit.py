@@ -942,7 +942,10 @@ class Toolkit:
         return result
 
     def _emit(self, ev: AuditEvent) -> None:
-        _gateway_sink.emit(ev)  # under `toolpass mcp`: the gateway's record too; otherwise nothing
+        try:
+            _gateway_sink.emit(ev)  # under `toolpass mcp`: the gateway's record too; otherwise nothing
+        except Exception:  # the record must never change the call's outcome
+            log.debug("toolpass: could not queue the call for the gateway's record", exc_info=True)
         if self.audit is None:
             return
         try:

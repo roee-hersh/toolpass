@@ -51,6 +51,9 @@ def test_every_route_names_a_known_action():
         ("POST", "/rest/api/3/issue/PAY-12/worklog", {"timeSpent": "1h"}, "WORK_ON_ISSUES", "issue:PAY-12", "write"),
         ("POST", "/rest/api/3/issue/PAY-12/watchers", None, "MANAGE_WATCHERS", "issue:PAY-12", "write"),
         ("GET", "/rest/api/3/myself", None, None, "", "read"),
+        ("GET", "/rest/api/3/issue/createmeta", None, None, "", "read"),
+        ("GET", "/rest/api/3/issue/createmeta/PAY/issuetypes", None, "BROWSE_PROJECTS", "project:PAY", "read"),
+        ("GET", "/rest/api/3/issue/picker", None, None, "", "read"),
         ("POST", "/rest/api/3/search/jql", {"jql": "project = PAY"}, None, "", "read"),
     ],
 )

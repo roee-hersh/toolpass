@@ -60,18 +60,31 @@ def _tokens(text: str) -> list[tuple[str, str]]:
             while i < n and text[i] not in "\r\n":
                 i += 1
         elif text.startswith('"""', i):
-            end = text.find('"""', i + 3)
-            if end < 0:
-                raise _Unreadable("an unterminated block string")
-            out.append(("s", text[i + 3 : end]))
-            i = end + 3
+            # A block string ends at the first """ not escaped as \""", as the server reads it.
+            j, parts = i + 3, []
+            while True:
+                if j >= n:
+                    raise _Unreadable("an unterminated block string")
+                if text.startswith('\\"""', j):
+                    parts.append('"""')
+                    j += 4
+                elif text.startswith('"""', j):
+                    break
+                else:
+                    parts.append(text[j])
+                    j += 1
+            out.append(("s", "".join(parts)))
+            i = j + 3
         elif c == '"':
             j, buf = i + 1, []
             while j < n and text[j] != '"':
                 if text[j] == "\\" and j + 1 < n:
                     esc = text[j + 1]
-                    if esc == "u" and j + 5 < n:
-                        buf.append(chr(int(text[j + 2 : j + 6], 16)))
+                    if esc == "u":
+                        digits = text[j + 2 : j + 6]
+                        if len(digits) != 4 or any(d not in "0123456789abcdefABCDEF" for d in digits):
+                            raise _Unreadable("a bad \\u escape")
+                        buf.append(chr(int(digits, 16)))
                         j += 6
                         continue
                     buf.append({"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}.get(esc, esc))

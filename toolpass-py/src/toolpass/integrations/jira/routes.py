@@ -104,6 +104,13 @@ def _routes() -> list[Route]:
         Route("POST", f"{_A}/search/jql", None, "", effect="read", description="JQL search"),
         Route("POST", f"{_A}/issue/bulkfetch", b, _PROJECT, effect="read", body=_fetch_bulk),
         Route("POST", f"{_A}/issue/watching", None, "", effect="read", description="whether the agent watches some issues"),
+        # Fixed reads under /issue/ that are not an issue key.
+        Route("GET", f"{_A}/issue/createmeta", None, "", description="what can be created where, as the agent sees it"),
+        Route("GET", f"{_A}/issue/createmeta/{{projectIdOrKey}}/issuetypes", b, _PROJECT, body=_project_path),
+        Route("GET", f"{_A}/issue/createmeta/{{projectIdOrKey}}/issuetypes/{{issueTypeId}}", b, _PROJECT, body=_project_path),
+        Route("GET", f"{_A}/issue/picker", None, "", description="issue suggestions, filtered by the agent's own access"),
+        Route("GET", f"{_A}/issue/limit/report", None, "", untrusted_output=False),
+        Route("GET", f"{_A}/issue/limit/adf/report", None, "", untrusted_output=False),
         _issue_route("POST", "/changelog/list", b, effect="read"),
         # Creating issues.
         Route("POST", f"{_A}/issue", "CREATE_ISSUES", _PROJECT, body=_create),

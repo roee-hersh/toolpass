@@ -10,10 +10,10 @@ and custom resource:
 The verb comes from the method and whether a name is given, as the API
 server derives it: GET is get (with a name), list, or watch (``?watch=true``);
 POST create; PUT update; PATCH patch; DELETE delete, or deletecollection
-without a name. The action is ``raw:<verb>:<resource>[.<group>][/<sub>]``
+without a name; any other method is not routed. The action is ``raw:<verb>:<resource>[.<group>][/<sub>]``
 and the resource ``namespace:<ns>?resource=...&name=...`` or
-``cluster?resource=...``. Exec, attach and port-forward count as writes
-whatever the method. Proxying through the API server (``.../proxy/...``)
+``cluster?resource=...``. Exec, attach and port-forward are create, a
+write, whatever the method. Proxying through the API server (``.../proxy/...``)
 is not routed: what it reaches is not a Kubernetes resource.
 """
 
@@ -31,17 +31,24 @@ _STREAMS = frozenset({"exec", "attach", "portforward"})
 _NAMESPACE_SUBRESOURCES = frozenset({"status", "finalize"})
 
 
-def _verb(method: str, named: bool, r: Request) -> str:
-    if method == "GET":
+_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
+
+
+def _verb(method: str, named: bool, sub: str, r: Request) -> str:
+    if sub in _STREAMS:
+        # Exec, attach and port-forward run something in the pod whatever the method (the
+        # WebSocket form is a GET); the API server authorizes them as create since 1.30.
+        return "create"
+    if method in ("GET", "HEAD"):
         if named:
             return "get"
         return "watch" if r.params().get("watch", "").lower() in ("true", "1") else "list"
-    return {"POST": "create", "PUT": "update", "PATCH": "patch"}.get(method) or ("delete" if named else "deletecollection")
+    if method == "DELETE":
+        return "delete" if named else "deletecollection"
+    return {"POST": "create", "PUT": "update", "PATCH": "patch"}[method]
 
 
 def _effect(verb: str, sub: str) -> str:
-    if sub in _STREAMS:
-        return "write"
     if verb in ("get", "list", "watch"):
         return "read"
     return "destructive" if verb in ("delete", "deletecollection") else "write"
@@ -67,7 +74,7 @@ def _k8s(core: bool, namespaced: bool, depth: int) -> Callable[[Request, Mapping
             return {"_unresolved": f"the object name {name!r} is not a valid Kubernetes name"}
         if sub and not RESOURCE_RE.fullmatch(sub):
             return {"_unresolved": f"the subresource {sub!r} is not valid"}
-        verb = _verb(r.method.upper(), named, r)
+        verb = _verb(r.method.upper(), named, sub, r)
         target = resource + (f".{group}" if group else "")
         action = f"raw:{verb}:{target}" + (f"/{sub}" if sub else "")
         query = f"resource={target}" + (f"&name={name}" if name else "") + (f"&subresource={sub}" if sub else "")
@@ -86,8 +93,8 @@ def _shapes(base: str, core: bool) -> list[Route]:
     for namespaced in (True, False):
         root = f"{base}/namespaces/{{namespace}}" if namespaced else base
         for depth, tail in enumerate(("/{resource}", "/{resource}/{name}", "/{resource}/{name}/{subresource}")):
-            out.append(Route("*", root + tail, "raw", "", body=_k8s(core, namespaced, depth), spec=False))
-        out.append(Route("*", root + "/{resource}/{name}/{subresource}/{rest+}", None, "", body=_deeper, spec=False))
+            out += [Route(m, root + tail, "raw", "", body=_k8s(core, namespaced, depth), spec=False) for m in _METHODS]
+        out += [Route(m, root + "/{resource}/{name}/{subresource}/{rest+}", None, "", body=_deeper, spec=False) for m in _METHODS]
     return out
 
 

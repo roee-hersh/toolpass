@@ -18,6 +18,7 @@ gateway record. Nothing is written to your Claude configuration.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -109,20 +110,19 @@ def main() -> None:
     parser.add_argument("-open", action="store_true", help="open the dashboard in a browser")
     a = parser.parse_args()
     systems = Systems()
-    with tempfile.TemporaryDirectory(prefix="toolpass-demo-") as data:
-        env = {**os.environ, "TOOLPASS_DATA_DIR": data, "DEMO_SYSTEMS": systems.shared()}
-        print("Two people use the shop MCP server through the toolpass gateway:\n")
-        tour(env)
-        if a.no_dashboard:
-            return
-        print("\nThe dashboard shows each call and, under it, every request the tool made. Ctrl-C to stop.\n")
-        cmd = toolpass("dashboard", "-no-wrap", "-listen", a.listen, *(["-open"] if a.open else []))
-        try:
-            subprocess.run(cmd, env=env, check=False)
-        except KeyboardInterrupt:
-            pass
-    systems.close()
-
+    try:
+        with tempfile.TemporaryDirectory(prefix="toolpass-demo-") as data:
+            env = {**os.environ, "TOOLPASS_DATA_DIR": data, "DEMO_SYSTEMS": systems.shared()}
+            print("Two people use the shop MCP server through the toolpass gateway:\n")
+            tour(env)
+            if a.no_dashboard:
+                return
+            print("\nThe dashboard shows each call and, under it, every request the tool made. Ctrl-C to stop.\n")
+            cmd = toolpass("dashboard", "-no-wrap", "-listen", a.listen, *(["-open"] if a.open else []))
+            with contextlib.suppress(KeyboardInterrupt):
+                subprocess.run(cmd, env=env, check=False)
+    finally:
+        systems.close()
 
 if __name__ == "__main__":
     main()

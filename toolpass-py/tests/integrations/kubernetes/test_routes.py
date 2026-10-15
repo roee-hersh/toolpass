@@ -32,7 +32,7 @@ def test_routes_match_the_api_description():
             "GET",
             "/api/v1/namespaces/shop/pods/web-1/exec",
             "command=sh",
-            "raw:get:pods/exec",
+            "raw:create:pods/exec",
             "namespace:shop?resource=pods&name=web-1&subresource=exec",
             "write",
         ),
@@ -104,3 +104,9 @@ def test_discovery_checks_nothing(path):
 def test_proxies_and_bad_names_are_unresolved(method, path):
     o = ROUTES.match(req(method, path))
     assert o is not None and o.unresolved, o
+
+
+def test_head_reads_and_other_methods_are_not_routed():
+    o = ROUTES.match(req("HEAD", "/api/v1/namespaces/shop/pods/web-1"))
+    assert o is not None and (o.action, o.effect) == ("raw:get:pods", "read")
+    assert ROUTES.match(req("OPTIONS", "/api/v1/namespaces/shop/pods/web-1")) is None
