@@ -83,4 +83,4 @@ def test_enterprise_server_prefix():
     o = ROUTES.match(req("POST", "/base/api/v3/repos/acme/x/pulls"), prefix="/base/api/v3")
     assert o is not None and o.action == "pr.create"
     s = type("S", (), {"get": lambda self, k: ""})()
-    assert ROUTES.endpoints(s) == [("api.github.com", "")]
+    assert ROUTES.endpoints(s) == [("api.github.com", ""), ("uploads.github.com", "")]

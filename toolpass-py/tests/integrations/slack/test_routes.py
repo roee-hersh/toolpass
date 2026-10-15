@@ -46,7 +46,7 @@ def test_every_route_names_a_known_action():
         ("/api/conversations.history", b"channel=C0123456789", FORM, "channel.read", "channel:C0123456789", "read", False),
         ("/api/conversations.join", b"channel=C0123456789", FORM, "channel.join", "channel:C0123456789", "write", False),
         ("/api/conversations.archive", b"channel=C0123456789", FORM, "channel.archive", "channel:C0123456789", "destructive", False),
-        ("/api/conversations.create", b"name=x", FORM, "channel.create", "workspace", "write", False),
+        ("/api/conversations.create", b"name=x", FORM, "channel.create", "workspace", "write", True),
         (
             "/api/files.completeUploadExternal",
             {"files": [], "channel_id": "C0123456789"},

@@ -165,6 +165,31 @@ class Request:
         """Query parameters (first value per key)."""
         return {k: v[0] for k, v in urllib.parse.parse_qs(self.query, keep_blank_values=True).items()}
 
+    def ambiguous(self) -> set[str]:
+        """The names given more than once, or both in the query and in the
+        body with different values: a route must not pick one, because the
+        server may pick the other."""
+        out: set[str] = set()
+        query = urllib.parse.parse_qs(self.query, keep_blank_values=True)
+        out.update(k for k, v in query.items() if len(v) > 1)
+        form: dict[str, list[str]] = {}
+        if self.body and "json" not in self.content_type and "multipart" not in self.content_type:
+            try:
+                form = urllib.parse.parse_qs(self.body.decode("utf-8"), keep_blank_values=True)
+            except UnicodeDecodeError:
+                form = {}
+            out.update(k for k, v in form.items() if len(v) > 1)
+        elif self.body and "multipart" in self.content_type:
+            out.update(_multipart_duplicates(self.body, self.content_type_params.get("boundary", "")))
+        body_values = {k: v[0] for k, v in form.items()}
+        doc = self.json()
+        if isinstance(doc, dict):
+            body_values.update({str(k): str(v) for k, v in doc.items() if isinstance(v, (str, int, float))})
+        for k, v in query.items():
+            if k in body_values and body_values[k] != v[0]:
+                out.add(k)
+        return out
+
     def fields(self) -> dict[str, str]:
         """Every named value the request carries: query, then form, then the
         top-level string, number and boolean members of a JSON object body.
@@ -203,6 +228,26 @@ def _decode_segment(s: str) -> str:
         return urllib.parse.unquote(s, errors="strict")
     except UnicodeDecodeError:
         return s
+
+
+def _multipart_duplicates(body: bytes, boundary: str) -> set[str]:
+    """The non-file field names that appear more than once in a multipart body."""
+    if not boundary:
+        return set()
+    seen: set[str] = set()
+    out: set[str] = set()
+    for part in body.split(b"--" + boundary.encode()):
+        head, sep, _ = part.partition(b"\r\n\r\n")
+        if not sep or b"filename=" in head:
+            continue
+        m = re.search(rb'name="([^"]+)"', head)
+        if m is None:
+            continue
+        name = m.group(1).decode("utf-8", "replace")
+        if name in seen:
+            out.add(name)
+        seen.add(name)
+    return out
 
 
 def _multipart_fields(body: bytes, boundary: str) -> dict[str, str]:

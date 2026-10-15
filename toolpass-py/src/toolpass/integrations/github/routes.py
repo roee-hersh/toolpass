@@ -43,6 +43,8 @@ def _branch_of_ref(ref: str) -> str | None:
 
 def _ref_body(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """POST /git/refs: the branch from the body's ref."""
+    if "ref" in r.ambiguous():
+        return {"_unresolved": "ref is given more than once"}
     return _at(_branch_of_ref(r.fields().get("ref", "")))
 
 
@@ -53,6 +55,8 @@ def _ref_path(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
 
 def _branch_field(name: str) -> Any:
     def extract(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+        if name in r.ambiguous():
+            return {"_unresolved": f"{name} is given more than once"}
         return _at(r.fields().get(name) or None)
 
     return extract
@@ -62,19 +66,105 @@ def _branch_var(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     return _at(vars_.get("branch"))
 
 
-_GRAPHQL_OP = re.compile(r"^\s*(query|mutation|subscription)?\b", re.IGNORECASE)
+_GRAPHQL_STRING = re.compile(r'"""(?:\\.|[^\\])*?"""|"(?:\\.|[^"\\\n])*"', re.DOTALL)
+_GRAPHQL_COMMENT = re.compile(r"#[^\n\r]*")
+_GRAPHQL_WRITE = re.compile(r"\b(mutation|subscription)\b")
+_GRAPHQL_QUERY = re.compile(r"\bquery\b")
 
 
 def _graphql(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    """A GraphQL document is routed as a read only when it provably holds one
+    query: strings and comments are blanked first, so a keyword inside a
+    string does not count and a comment cannot hide one; a mutation or
+    subscription anywhere, more than one operation, or a document that is
+    not a query at all are refused."""
     doc = r.json()
     query = doc.get("query", "") if isinstance(doc, dict) else ""
-    if not isinstance(query, str):
+    if not isinstance(query, str) or not query.strip():
         return {"_unresolved": "the GraphQL request has no query"}
-    m = _GRAPHQL_OP.match(query)
-    kind = (m.group(1) or "query").lower() if m else "query"
-    if kind == "query":
-        return {}
-    return {"_unresolved": f"a GraphQL {kind} is not routed; use the REST API for writes"}
+    text = _GRAPHQL_COMMENT.sub(" ", _GRAPHQL_STRING.sub('""', query.lstrip("\ufeff")))
+    if _GRAPHQL_WRITE.search(text):
+        return {"_unresolved": "a GraphQL mutation or subscription is not routed; use the REST API for writes"}
+    operations = 0
+    depth = 0
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "{":
+            if depth == 0:
+                operations += 1  # a shorthand query, or the selection set of a named one
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth < 0:
+                return {"_unresolved": "the GraphQL document is not well formed"}
+        i += 1
+    if depth != 0:
+        return {"_unresolved": "the GraphQL document is not well formed"}
+    # Named operations and fragments each own one top-level selection set;
+    # fragments are not operations.
+    stripped = re.sub(r"\{[^{}]*\}", "", text)
+    while "{" in stripped:
+        stripped = re.sub(r"\{[^{}]*\}", "", stripped)
+    top = stripped  # what is left at depth 0: keywords, names, variables
+    fragments = len(re.findall(r"\bfragment\b", top))
+    named = len(_GRAPHQL_QUERY.findall(top))
+    unnamed = operations - fragments - named
+    if unnamed < 0 or (named + unnamed) != 1:
+        return {"_unresolved": "a GraphQL request may hold one query; send one operation per request"}
+    if not _well_formed_top_level(top):
+        return {"_unresolved": "the GraphQL document is not well formed"}
+    return {}
+
+
+def _well_formed_top_level(top: str) -> bool:
+    """Whether what sits outside the selection sets is only what a document
+    may have there: ``query [Name] [(variables)] [@directives]`` and
+    ``fragment Name on Type [@directives]``, with commas and whitespace."""
+    rest = re.sub(r"\([^()]*\)", " ", top)  # variable definitions and directive arguments
+    rest = re.sub(r"@[A-Za-z_]\w*", " ", rest)  # directives
+    if re.sub(r"[\w\s,]", "", rest).strip():
+        return False
+    tokens = re.findall(r"[A-Za-z_]\w*", rest)
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "query":
+            i += 1
+            if i < len(tokens) and tokens[i] not in ("query", "fragment"):
+                i += 1  # the operation's name
+        elif tokens[i] == "fragment":
+            if i + 3 >= len(tokens) or tokens[i + 2] != "on":
+                return False
+            i += 4
+        else:
+            return False
+    return True
+
+
+def _new_repo_target(field_name: str) -> Any:
+    """A fork lands in the caller's own account (read access to the source is
+    enough) or, when the body names an organization, in that organization:
+    then it is creating a repository there."""
+
+    def extract(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+        if field_name in r.ambiguous():
+            return {"_unresolved": f"{field_name} is given more than once"}
+        org = r.fields().get(field_name)
+        if org:
+            return {"target": f"org:{org}", "_action": "org.repo.create"}
+        return {"target": f"repo:{vars_['owner']}/{vars_['repo']}"}
+
+    return extract
+
+
+def _owner_required(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    """Generating a repository from a template creates it under ``owner``."""
+    if "owner" in r.ambiguous():
+        return {"_unresolved": "owner is given more than once"}
+    owner = r.fields().get("owner")
+    if not owner:
+        return {"_unresolved": "the request does not say which organization the new repository is created in (owner)"}
+    return {"owner": owner}
 
 
 def _routes() -> list[Route]:
@@ -111,17 +201,17 @@ def _routes() -> list[Route]:
         Route("POST", "/markdown", None, "", untrusted_output=False),
         Route("POST", "/markdown/raw", None, "", untrusted_output=False),
         # Issues and pull requests.
-        Route("POST", "/repos/{owner}/{repo}/issues", "issue.create", _REPO),
-        Route("POST", "/repos/{owner}/{repo}/pulls", "pr.create", _REPO),
+        Route("POST", "/repos/{owner}/{repo}/issues", "issue.create", _REPO, sends_out=True),
+        Route("POST", "/repos/{owner}/{repo}/pulls", "pr.create", _REPO, sends_out=True),
         Route("PUT", "/repos/{owner}/{repo}/pulls/{pull_number}/merge", "pr.merge", _REPO),
         Route("PUT", "/repos/{owner}/{repo}/pulls/{pull_number}/merge-async", "pr.merge", _REPO),
-        Route("POST", "/repos/{owner}/{repo}/forks", rd, _REPO),
+        Route("POST", "/repos/{owner}/{repo}/forks", rd, "{target}", body=_new_repo_target("organization")),
         Route("POST", "/repos/{owner}/{repo}/codespaces", rd, _REPO),
         Route("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/codespaces", rd, _REPO),
         Route("PUT", "/repos/{owner}/{repo}/subscription", rd, _REPO),
         Route("DELETE", "/repos/{owner}/{repo}/subscription", rd, _REPO, effect="write"),
         Route("PUT", "/repos/{owner}/{repo}/notifications", rd, _REPO),
-        Route("POST", "/repos/{template_owner}/{template_repo}/generate", rd, "repo:{template_owner}/{template_repo}"),
+        Route("POST", "/repos/{template_owner}/{template_repo}/generate", "org.repo.create", "org:{owner}", body=_owner_required),
     ]
     # Comments, reviews and reactions publish text: pull access, sends out.
     for method, path in (
@@ -193,13 +283,16 @@ def _routes() -> list[Route]:
         out.append(Route(method, path, tr, _REPO))
     # Push: the repository's contents, refs, releases, statuses and runs.
     out += [
-        Route("PUT", "/repos/{owner}/{repo}/contents/{path+}", pu, _REPO_AT, body=_branch_field("branch")),
+        Route("PUT", "/repos/{owner}/{repo}/contents/{path+}", pu, _REPO_AT, body=_branch_field("branch"), sends_out=True),
         Route("DELETE", "/repos/{owner}/{repo}/contents/{path+}", pu, _REPO_AT, body=_branch_field("branch")),
         Route("POST", "/repos/{owner}/{repo}/git/refs", pu, _REPO_AT, body=_ref_body),
         Route("PATCH", "/repos/{owner}/{repo}/git/refs/{ref+}", pu, _REPO_AT, body=_ref_path),
         Route("DELETE", "/repos/{owner}/{repo}/git/refs/{ref+}", pu, _REPO_AT, body=_ref_path),
         Route("POST", "/repos/{owner}/{repo}/merges", pu, _REPO_AT, body=_branch_field("base")),
         Route("POST", "/repos/{owner}/{repo}/branches/{branch}/rename", pu, _REPO_AT, body=_branch_var),
+        Route("POST", "/repos/{owner}/{repo}/releases", pu, _REPO, sends_out=True),
+        Route("PATCH", "/repos/{owner}/{repo}/releases/{release_id}", pu, _REPO, sends_out=True),
+        Route("POST", "/repos/{owner}/{repo}/releases/{release_id}/assets", pu, _REPO, sends_out=True, description="served on uploads.github.com"),
     ]
     for method, path in (
         ("POST", "/repos/{owner}/{repo}/git/blobs"),
@@ -207,11 +300,8 @@ def _routes() -> list[Route]:
         ("POST", "/repos/{owner}/{repo}/git/tags"),
         ("POST", "/repos/{owner}/{repo}/git/trees"),
         ("POST", "/repos/{owner}/{repo}/merge-upstream"),
-        ("POST", "/repos/{owner}/{repo}/releases"),
         ("POST", "/repos/{owner}/{repo}/releases/generate-notes"),
-        ("PATCH", "/repos/{owner}/{repo}/releases/{release_id}"),
         ("DELETE", "/repos/{owner}/{repo}/releases/{release_id}"),
-        ("POST", "/repos/{owner}/{repo}/releases/{release_id}/assets"),
         ("PATCH", "/repos/{owner}/{repo}/releases/assets/{asset_id}"),
         ("DELETE", "/repos/{owner}/{repo}/releases/assets/{asset_id}"),
         ("PUT", "/repos/{owner}/{repo}/pulls/{pull_number}/update-branch"),
@@ -261,7 +351,7 @@ def _routes() -> list[Route]:
         out.append(Route(method, path, pu, _REPO))
     # Admin: settings, protection, hooks, access and secrets.
     out += [
-        Route("PATCH", "/repos/{owner}/{repo}", ad, _REPO),
+        Route("PATCH", "/repos/{owner}/{repo}", ad, _REPO, sends_out=True),
         Route("DELETE", "/repos/{owner}/{repo}", ad, _REPO),
         Route("PUT", "/repos/{owner}/{repo}/branches/{branch}/protection", ad, _REPO_AT, body=_branch_var),
         Route("DELETE", "/repos/{owner}/{repo}/branches/{branch}/protection", ad, _REPO_AT, body=_branch_var),
@@ -346,13 +436,14 @@ def _routes() -> list[Route]:
 
 
 def _locate(settings: Any) -> Sequence[tuple[str, str]]:
-    """api.github.com, or <url>/api/v3 (REST) and <url>/api (GraphQL) on
-    GitHub Enterprise Server. Anything else on that host is not GitHub's API."""
+    """api.github.com and uploads.github.com (release assets), or <url>/api/v3
+    (REST) and <url>/api (GraphQL, uploads) on GitHub Enterprise Server.
+    Anything else on that host is not GitHub's API."""
     from toolpass.core.routes import endpoint_of_url
 
     url = settings.get("url") if hasattr(settings, "get") else ""
     if not url:
-        return [("api.github.com", "")]
+        return [("api.github.com", ""), ("uploads.github.com", "")]
     ep = endpoint_of_url(url)
     if ep is None:
         return []

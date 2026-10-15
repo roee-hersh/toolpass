@@ -25,7 +25,10 @@ def _channel(*names: str) -> Extractor:
 
     def extract(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         fields = r.fields()
+        ambiguous = r.ambiguous()
         for name in names:
+            if name in ambiguous:
+                return {"_unresolved": f"{name} is given more than once; name one channel, once"}
             raw = fields.get(name, "")
             if not raw:
                 continue
@@ -74,10 +77,10 @@ def _routes() -> list[Route]:
         Route("*", "/conversations.kick", "channel.invite", _CHANNEL, effect="destructive", body=ch),
         Route("*", "/conversations.archive", "channel.archive", _CHANNEL, effect="destructive", body=ch),
         Route("*", "/conversations.unarchive", "channel.archive", _CHANNEL, effect="write", body=ch),
-        Route("*", "/conversations.rename", "channel.rename", _CHANNEL, effect="write", body=ch),
-        Route("*", "/conversations.setTopic", "channel.rename", _CHANNEL, effect="write", body=ch),
-        Route("*", "/conversations.setPurpose", "channel.rename", _CHANNEL, effect="write", body=ch),
-        Route("*", "/conversations.create", "channel.create", _WORKSPACE, effect="write"),
+        Route("*", "/conversations.rename", "channel.rename", _CHANNEL, effect="write", sends_out=True, body=ch),
+        Route("*", "/conversations.setTopic", "channel.rename", _CHANNEL, effect="write", sends_out=True, body=ch),
+        Route("*", "/conversations.setPurpose", "channel.rename", _CHANNEL, effect="write", sends_out=True, body=ch),
+        Route("*", "/conversations.create", "channel.create", _WORKSPACE, effect="write", sends_out=True),
         Route("*", "/conversations.open", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/conversations.list", "user.active", _WORKSPACE, effect="read"),
         Route("*", "/users.conversations", "user.active", _WORKSPACE, effect="read"),
@@ -119,7 +122,7 @@ def _routes() -> list[Route]:
         Route("*", "/stars.add", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/stars.remove", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/stars.list", "user.active", _WORKSPACE, effect="read"),
-        Route("*", "/reminders.add", "user.active", _WORKSPACE, effect="write"),
+        Route("*", "/reminders.add", "user.active", _WORKSPACE, effect="write", sends_out=True),
         Route("*", "/reminders.complete", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/reminders.delete", "user.active", _WORKSPACE, effect="destructive"),
         Route("*", "/reminders.info", "user.active", _WORKSPACE, effect="read"),
@@ -131,7 +134,7 @@ def _routes() -> list[Route]:
         Route("*", "/users.getPresence", "user.active", _WORKSPACE, effect="read"),
         Route("*", "/users.identity", "user.active", _WORKSPACE, effect="read"),
         Route("*", "/users.profile.get", "user.active", _WORKSPACE, effect="read"),
-        Route("*", "/users.profile.set", "user.active", _WORKSPACE, effect="write"),
+        Route("*", "/users.profile.set", "user.active", _WORKSPACE, effect="write", sends_out=True),
         Route("*", "/users.setPresence", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/users.setActive", "user.active", _WORKSPACE, effect="write"),
         Route("*", "/users.setPhoto", "user.active", _WORKSPACE, effect="write"),
