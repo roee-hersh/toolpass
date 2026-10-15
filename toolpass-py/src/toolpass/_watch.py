@@ -22,12 +22,18 @@ no accounts.
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import logging
+import os
+import pathlib
 import secrets
+import shutil
 import socket
 import sys
+import tempfile
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -38,7 +44,7 @@ from toolpass._audit import AuditEvent, AuditSink
 from toolpass._default import default_toolkit
 from toolpass._toolkit import Toolkit
 
-__all__ = ["Watch", "watch"]
+__all__ = ["Watch", "open_in_browser", "watch"]
 
 log = logging.getLogger("toolpass.watch")
 
@@ -53,8 +59,30 @@ def watch(toolkit: Toolkit | None = None, *, listen: str = "127.0.0.1:0", open_b
     ``open_browser`` opens the page in the default browser."""
     page = Watch(toolkit if toolkit is not None else default_toolkit(), listen=listen)
     if open_browser:
-        webbrowser.open(page.url)
+        open_in_browser(page.url)
     return page
+
+
+def open_in_browser(url: str) -> str:
+    """Open ``url`` in the default browser without putting it on a command
+    line: ``webbrowser`` hands the browser its argument through ``xdg-open``
+    and the browser's own argv, both readable by other local users in
+    ``ps``. The browser gets a file only this user can read, which forwards
+    to the page and is deleted shortly after. Returns the file's path."""
+    folder = tempfile.mkdtemp(prefix="toolpass-watch-")
+    path = os.path.join(folder, "open.html")
+    body = f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={html.escape(url, quote=True)}"><title>toolpass</title>'
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(body)
+    webbrowser.open("file://" + pathlib.Path(path).as_posix())
+
+    def tidy() -> None:
+        time.sleep(30)
+        shutil.rmtree(folder, ignore_errors=True)
+
+    threading.Thread(target=tidy, name="toolpass-watch-tidy", daemon=True).start()
+    return path
 
 
 class Watch:
@@ -194,16 +222,20 @@ class Watch:
                 self.wfile.write(body)
 
             def _discard_body(self) -> bool:
-                """Read and drop a request body; False when it is too large
-                (the connection is then closed instead of read)."""
-                length = self.headers.get("Content-Length")
-                if not length:
-                    return True
-                try:
-                    n = int(length)
-                except ValueError:
-                    n = -1
-                if n < 0 or n > _MAX_BODY or self.headers.get("Transfer-Encoding"):
+                """Read and drop a request body; False when the request is
+                not framed by one plain Content-Length, or is too large (the
+                connection is then closed instead of read, so nothing of it
+                is taken for the next request)."""
+                # One framing only, stated once, as the main server: a chunked
+                # body, two lengths or a length that is not digits closes the
+                # connection rather than leaving bytes behind on it.
+                tes = self.headers.get_all("Transfer-Encoding") or []
+                cls = self.headers.get_all("Content-Length") or []
+                if tes or len(cls) > 1 or (cls and not (cls[0].isascii() and cls[0].isdigit())):
+                    self.close_connection = True
+                    return False
+                n = int(cls[0]) if cls else 0
+                if n > _MAX_BODY:
                     self.close_connection = True
                     return False
                 while n > 0:

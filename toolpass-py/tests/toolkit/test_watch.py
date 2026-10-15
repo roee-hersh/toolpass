@@ -132,6 +132,44 @@ def test_nothing_without_the_token_or_from_another_host(kit: tuple[Toolkit, Watc
     assert _request(page, "GET", "events", body=b"x" * 70000)[0] == 413
 
 
+def test_a_body_not_framed_by_one_plain_length_closes_the_connection(kit: tuple[Toolkit, Watch]) -> None:
+    """A chunked body, two lengths or a length that is not digits is not
+    read, so none of it is parsed as the next request on the connection."""
+    _, port, prefix = _parts(kit[1].url)
+    smuggled = f"GET {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode()
+    for headers in (b"Transfer-Encoding: chunked", b"Content-Length: 5\r\nContent-Length: 5", b"Content-Length: +5", b"Content-Length: 5_0"):
+        raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+        raw.sendall(f"POST {prefix}reject/x HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode() + headers + b"\r\n\r\n" + smuggled)
+        raw.settimeout(2)
+        got = b""
+        try:
+            while chunk := raw.recv(4096):
+                got += chunk
+        except TimeoutError:
+            pass
+        raw.close()
+        assert got.startswith(b"HTTP/1.1 413"), (headers, got[:80])
+        assert got.count(b"HTTP/1.1 ") == 1, f"the smuggled request was answered: {headers!r}"
+
+
+def test_open_in_browser_keeps_the_token_off_the_command_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import stat
+
+    from toolpass import _watch
+
+    opened: list[str] = []
+    monkeypatch.setattr(_watch.webbrowser, "open", lambda url: opened.append(url) or True)
+    url = "http://127.0.0.1:1/t/secret-token/"
+    path = _watch.open_in_browser(url)
+    assert opened == ["file://" + path] and "secret-token" not in opened[0]
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    with open(path, encoding="utf-8") as f:
+        assert f'content="0;url={url}"' in f.read()
+    os.remove(path)
+    os.rmdir(os.path.dirname(path))
+
+
 def test_loopback_only() -> None:
     with pytest.raises(ValueError, match="loopback"):
         Watch(Toolkit(audit=None), listen="0.0.0.0:0")
