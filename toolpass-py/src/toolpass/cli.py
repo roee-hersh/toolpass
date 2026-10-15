@@ -7,6 +7,9 @@
     toolpass check    -server URL -api-key env:TOOLPASS_API_KEY -connection id ... [-fresh]
     toolpass catalog  [integration]
     toolpass routes   [integration]
+    toolpass gateway  on|off|status
+    toolpass dashboard [-open] [-listen ADDR]
+    toolpass mcp      -server NAME -client CLIENT -- COMMAND [ARGS...]
 
 Flags keep the single-dash form the command has always taken (``-config
 FILE``, ``--config=FILE`` works too), so scripts and the Helm chart do not
@@ -60,6 +63,9 @@ Usage:
   toolpass check    -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] -connection ID -user EMAIL -action NAME -resource RES ...
   toolpass catalog  [INTEGRATION]
   toolpass routes   [INTEGRATION]
+  toolpass gateway  on|off|status
+  toolpass dashboard [-open] [-listen ADDR] [-no-wrap]
+  toolpass mcp      -server NAME -client CLIENT -- COMMAND [ARGS...]
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -615,6 +621,107 @@ def routes(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     return 0
 
 
+def _print_found(found: list[Any], stdout: IO[str]) -> None:
+    if not found:
+        stdout.write("no MCP servers found in Claude Desktop or Claude Code\n")
+        return
+    for f in found:
+        state = "found (HTTP, not recorded yet)" if f.transport == "http" else ("recording" if f.wrapped else "not wrapped")
+        stdout.write(f"{f.client:<15} {f.name:<24} {state:<32} {f.config}\n")
+
+
+def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
+    """Put toolpass in front of every MCP server the clients already list
+    (on), put them back (off), or show what is there (status)."""
+    if len(args) != 1 or args[0] not in ("on", "off", "status"):
+        stderr.write("usage: toolpass gateway on|off|status\n")
+        return EXIT_ERROR
+    from toolpass import _gateway
+    from toolpass._store import Store
+
+    store = Store()
+    try:
+        found = {"on": _gateway.on, "off": _gateway.off, "status": _gateway.scan}[args[0]](store=store)
+    finally:
+        store.close()
+    _print_found(found, stdout)
+    if args[0] != "status" and found:
+        stdout.write("\nrestart your MCP clients to pick the change up; `toolpass dashboard` shows every call\n")
+    return 0
+
+
+def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading.Event | None = None) -> int:
+    """Serve the dashboard over the gateway's record until interrupted.
+    Wraps servers added to the clients since the last run, unless -no-wrap."""
+    fs = _FlagSet("dashboard", stderr)
+    fs.add("listen", "str", "127.0.0.1:0", "address for the page, on the loopback interface")
+    fs.add("open", "bool", False, "open the page in the default browser")
+    fs.add("no-wrap", "bool", False, "do not wrap servers added to the clients since the last run")
+    try:
+        fs.parse(args)
+    except _FlagError:
+        return EXIT_ERROR
+    if fs.args:
+        stderr.write(f'dashboard takes flags only, unexpected argument "{fs.args[0]}"\n')
+        return EXIT_ERROR
+    from toolpass import _gateway
+    from toolpass._dashboard import Dashboard
+    from toolpass._store import Store
+    from toolpass._watch import open_in_browser
+
+    store = Store()
+    try:
+        found = _gateway.scan(store=store) if fs.values["no-wrap"] else _gateway.on(store=store)
+        try:
+            page = Dashboard(store, listen=fs.values["listen"])
+        except (ValueError, OSError) as e:
+            stderr.write(f"dashboard: {e}\n")
+            return EXIT_ERROR
+        stdout.write(f"toolpass dashboard: {page.url}\n")
+        wrapped = sum(1 for f in found if f.wrapped)
+        stdout.write(f"{len(found)} MCP server(s) found, {wrapped} recording; press Ctrl-C to stop\n")
+        stdout.flush()
+        if fs.values["open"]:
+            open_in_browser(page.url)
+        stop = stop or threading.Event()
+        try:
+            stop.wait()
+        except KeyboardInterrupt:
+            pass
+        page.close()
+    finally:
+        store.close()
+    return 0
+
+
+def mcp(args: list[str], stderr: IO[str]) -> int:
+    """Run an MCP server behind toolpass: forward its stdio unchanged and
+    record every tool call. Clients start this; `toolpass gateway on` writes it."""
+    fs = _FlagSet("mcp", stderr)
+    fs.add("server", "str", "", "the server's name in the client's config")
+    fs.add("client", "str", "", "the client that starts it (claude-desktop, claude-code)")
+    try:
+        fs.parse(args)
+    except _FlagError:
+        return EXIT_ERROR
+    if not fs.args:
+        stderr.write("mcp: missing the server command after --\n")
+        return EXIT_ERROR
+    from toolpass import _mcp_proxy
+    from toolpass._store import Store
+
+    try:
+        store: Store | None = Store()
+    except Exception as e:  # noqa: BLE001 - no record is better than no server
+        stderr.write(f"toolpass: cannot open the record ({type(e).__name__}: {e}); the server runs unrecorded\n")
+        store = None
+    try:
+        return _mcp_proxy.run(fs.args, server=fs.values["server"] or fs.args[0], client=fs.values["client"] or "unknown", store=store)
+    finally:
+        if store is not None:
+            store.close()
+
+
 def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> int:
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
@@ -635,6 +742,12 @@ def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None =
         return catalog(rest, stdout, stderr)
     if cmd == "routes":
         return routes(rest, stdout, stderr)
+    if cmd == "gateway":
+        return gateway(rest, stdout, stderr)
+    if cmd == "dashboard":
+        return dashboard(rest, stdout, stderr)
+    if cmd == "mcp":
+        return mcp(rest, stderr)
     if cmd == "version":
         stdout.write(__version__ + "\n")
         return 0

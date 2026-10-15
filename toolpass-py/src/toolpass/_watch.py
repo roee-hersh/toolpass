@@ -40,7 +40,7 @@ from toolpass._audit import AuditEvent, AuditSink
 from toolpass._default import default_toolkit
 from toolpass._toolkit import Toolkit
 
-__all__ = ["Watch", "open_in_browser", "watch"]
+__all__ = ["Watch", "open_in_browser", "watch"]  # _Page is shared with the gateway's dashboard
 
 log = logging.getLogger("toolpass.watch")
 
@@ -81,68 +81,52 @@ def open_in_browser(url: str) -> str:
     return path
 
 
-class Watch:
-    """The page's server, attached to one toolkit. ``url`` is its address;
-    ``close()`` stops it and detaches. Usable as a context manager."""
+class _Page:
+    """A read-only page on the loopback interface, behind a random token.
+    Subclasses say what it shows: ``events(since)``, and ``servers()`` for
+    the gateway's dashboard. ``url`` is its address; ``close()`` stops it.
+    Usable as a context manager."""
 
-    def __init__(self, toolkit: Toolkit, *, listen: str = "127.0.0.1:0", keep: int = 1000) -> None:
+    kind = "toolkit"
+    title = "toolpass"
+
+    def __init__(self, *, listen: str = "127.0.0.1:0") -> None:
         host, _, port = listen.rpartition(":")
         host = host.strip("[]") or "127.0.0.1"
         if host not in _LOOPBACK_HOSTS:
-            raise ValueError(f"watch binds to the loopback interface only, not {host!r}")
-        self.toolkit = toolkit
+            raise ValueError(f"the page binds to the loopback interface only, not {host!r}")
         self._token = secrets.token_urlsafe(24)
-        self._lock = threading.Lock()
-        self._events: list[dict[str, Any]] = []
-        self._seq = 0
-        self._keep = keep
         self._closed = False
-        self._previous_audit: AuditSink | None = toolkit.audit
-        self._sink: AuditSink = self._audit  # one bound method, so close() can tell it is still ours
-        toolkit.audit = self._sink
         server_class = _V6Server if host == "::1" else _V4Server
         self._httpd = server_class((host if host != "localhost" else "127.0.0.1", int(port or 0)), self._handler_class())
         self._httpd.daemon_threads = True
         bound_host, bound_port = str(self._httpd.server_address[0]), int(self._httpd.server_address[1])
         shown = f"[{bound_host}]" if ":" in bound_host else bound_host
         self.url = f"http://{shown}:{bound_port}/t/{self._token}/"
-        self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.2}, name="toolpass-watch", daemon=True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.2}, name="toolpass-page", daemon=True)
         self._thread.start()
 
-    # -- the toolkit side ---------------------------------------------------
-
-    def _audit(self, event: AuditEvent) -> None:
-        if not self._closed:
-            self._record(event)
-        if self._previous_audit is not None:
-            self._previous_audit(event)
-
-    def _record(self, event: AuditEvent) -> None:
-        row = event.to_dict()
-        with self._lock:
-            self._seq += 1
-            row["seq"] = self._seq
-            self._events.append(row)
-            if len(self._events) > self._keep:
-                del self._events[: len(self._events) - self._keep]
-
     def events(self, since: int = 0) -> tuple[list[dict[str, Any]], int]:
-        """The recorded events with a sequence number above ``since``, and
-        the number to pass next time."""
-        with self._lock:
-            return [e for e in self._events if e["seq"] > since], self._seq
+        """Rows added or changed after ``since``, and the number to pass next time."""
+        raise NotImplementedError
+
+    def servers(self) -> list[dict[str, Any]] | None:
+        """The servers tab, or None when the page has none."""
+        return None
+
+    def _detach(self) -> None:
+        pass
 
     def close(self) -> None:
-        """Stop the server and give the toolkit its audit sink back."""
+        """Stop the server."""
         if self._closed:
             return
         self._closed = True
-        if self.toolkit.audit is self._sink:
-            self.toolkit.audit = self._previous_audit
+        self._detach()
         self._httpd.shutdown()
         self._httpd.server_close()
 
-    def __enter__(self) -> Watch:
+    def __enter__(self) -> _Page:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -229,9 +213,56 @@ class Watch:
             except ValueError:
                 since = 0
             events, nxt = self.events(since)
-            payload = {"events": events, "next": nxt}
+            payload = {"kind": self.kind, "title": self.title, "events": events, "next": nxt}
             return 200, "application/json", json.dumps(payload, default=repr, ensure_ascii=False).encode()
+        if method == "GET" and rest == ["servers"]:
+            servers = self.servers()
+            if servers is not None:
+                return 200, "application/json", json.dumps({"servers": servers}, default=repr, ensure_ascii=False).encode()
         return 404, "text/plain; charset=utf-8", b"not found\n"
+
+
+class Watch(_Page):
+    """The live page of one toolkit. It replaces the toolkit's audit sink
+    with one that records each call and then hands it on to the old sink;
+    ``close()`` puts the old sink back."""
+
+    def __init__(self, toolkit: Toolkit, *, listen: str = "127.0.0.1:0", keep: int = 1000) -> None:
+        self.toolkit = toolkit
+        self._lock = threading.Lock()
+        self._events: list[dict[str, Any]] = []
+        self._seq = 0
+        self._keep = keep
+        super().__init__(listen=listen)  # first: a bad address leaves the toolkit untouched
+        self._previous_audit: AuditSink | None = toolkit.audit
+        self._sink: AuditSink = self._audit  # one bound method, so close() can tell it is still ours
+        toolkit.audit = self._sink
+
+    def _audit(self, event: AuditEvent) -> None:
+        if not self._closed:
+            self._record(event)
+        if self._previous_audit is not None:
+            self._previous_audit(event)
+
+    def _record(self, event: AuditEvent) -> None:
+        row = event.to_dict()
+        with self._lock:
+            self._seq += 1
+            row["seq"] = self._seq
+            self._events.append(row)
+            if len(self._events) > self._keep:
+                del self._events[: len(self._events) - self._keep]
+
+    def events(self, since: int = 0) -> tuple[list[dict[str, Any]], int]:
+        with self._lock:
+            return [e for e in self._events if e["seq"] > since], self._seq
+
+    def _detach(self) -> None:
+        if self.toolkit.audit is self._sink:
+            self.toolkit.audit = self._previous_audit
+
+    def __enter__(self) -> Watch:
+        return self
 
 
 def _loopback(host_header: str) -> bool:
@@ -269,17 +300,28 @@ _PAGE = b"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>toolpass watch</title>
+<title>toolpass</title>
 <link rel="stylesheet" href="watch.css">
 </head>
 <body>
 <header>
   <h1>toolpass</h1>
+  <nav id="tabs" hidden>
+    <button type="button" id="tab-calls" class="tab on">Calls</button>
+    <button type="button" id="tab-servers" class="tab">Servers</button>
+  </nav>
+  <input id="filter" type="search" placeholder="Filter" aria-label="Filter calls">
   <p id="status">connecting</p>
 </header>
 <main>
-  <p id="empty">Waiting for the first call.</p>
-  <ol id="calls" reversed></ol>
+  <section id="calls-view">
+    <p id="empty" class="empty">Waiting for the first call.</p>
+    <ol id="calls"></ol>
+  </section>
+  <section id="servers-view" hidden>
+    <p id="no-servers" class="empty" hidden>No MCP servers found. toolpass looks in the Claude Desktop and Claude Code config files.</p>
+    <ul id="servers"></ul>
+  </section>
 </main>
 <script src="watch.js"></script>
 </body>
@@ -288,80 +330,151 @@ _PAGE = b"""<!doctype html>
 
 _STYLE = b"""
 :root { color-scheme: light dark;
-  --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #e4e3df; --card: #ffffff;
-  --ran: #1f7a3a; --refused: #b4232c; --raised: #5a5a56; }
+  --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #e4e3df; --card: #ffffff; --accent: #2458c7;
+  --ok: #1f7a3a; --bad: #b4232c; --run: #9a6400; --neutral: #5a5a56; }
 @media (prefers-color-scheme: dark) { :root {
-  --bg: #151514; --fg: #ecebe6; --muted: #9c9b94; --line: #2c2c2a; --card: #1d1d1b;
-  --ran: #5fcf7e; --refused: #ff7a81; --raised: #a3a39e; } }
+  --bg: #151514; --fg: #ecebe6; --muted: #9c9b94; --line: #2c2c2a; --card: #1d1d1b; --accent: #8fb0ff;
+  --ok: #5fcf7e; --bad: #ff7a81; --run: #f2b84b; --neutral: #a3a39e; } }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; }
-header { display: flex; align-items: baseline; gap: 16px; padding: 18px 16px 10px; border-bottom: 1px solid var(--line); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line); }
 h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
-#status { margin: 0; color: var(--muted); font-size: 13px; }
-main { max-width: 960px; margin: 0 auto; padding: 12px 16px 40px; }
-#empty { color: var(--muted); }
-ol { list-style: none; margin: 0; padding: 0; }
+nav { display: flex; gap: 4px; }
+.tab { font: inherit; font-size: 14px; padding: 4px 12px; border-radius: 6px; border: 1px solid transparent;
+  background: none; color: var(--muted); cursor: pointer; }
+.tab.on { border-color: var(--line); background: var(--card); color: var(--fg); }
+#filter { font: inherit; font-size: 14px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--card); color: var(--fg); min-width: 0; flex: 0 1 260px; }
+#status { margin: 0 0 0 auto; color: var(--muted); font-size: 13px; }
+main { max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; }
+.empty { color: var(--muted); }
+ol, ul { list-style: none; margin: 0; padding: 0; }
 li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
-.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
 .badge { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
-.badge.ran { color: var(--ran); } .badge.refused { color: var(--refused); }
-.badge.raised { color: var(--raised); }
-.tool { font: 600 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.who, .when { color: var(--muted); font-size: 13px; }
+.ok, .ran { color: var(--ok); } .error, .refused { color: var(--bad); } .running { color: var(--run); } .raised, .muted { color: var(--neutral); }
+.tool { font: 600 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-word; }
+.who, .when, .took { color: var(--muted); font-size: 13px; }
 .when { margin-left: auto; }
-.args, .reason, .action { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
-.args { color: var(--muted); }
-.reason { color: var(--fg); }
-.action { color: var(--muted); padding-left: 1em; }
-.action.refused { color: var(--refused); }
+.line, .action, pre { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
+.args, .action { color: var(--muted); }
+.action.refused { color: var(--bad); }
+details { margin-top: 6px; }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 4px; }
+.tag.destructive { color: var(--bad); border-color: currentColor; }
+.tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
 """
 
 _SCRIPT = b"""
 'use strict';
-const calls = document.getElementById('calls');
-const empty = document.getElementById('empty');
-const status = document.getElementById('status');
-let next = 0, total = 0;
+const $ = (id) => document.getElementById(id);
+const calls = $('calls'), empty = $('empty'), status = $('status'), filter = $('filter');
+const rows = new Map();   // row key -> its list item
+let next = 0, kind = 'toolkit', serversShown = false;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
+  if (text !== undefined && text !== null) e.textContent = String(text);
   return e;
 }
 
-function when(iso) {
-  const t = iso ? iso.slice(11, 19) : '';
-  return t;
+function when(iso) { return iso ? iso.slice(0, 10) + ' ' + iso.slice(11, 19) : ''; }
+
+function argsText(args) {
+  if (!args || typeof args !== 'object') return '';
+  return Object.entries(args).map(([k, v]) => k + '=' + JSON.stringify(v)).join(', ');
 }
 
-function label(e) {
-  return e.outcome || 'refused';
-}
-
-function render(e) {
-  const li = el('li', label(e));
+function renderToolkit(e) {
+  const li = el('li');
   const head = el('div', 'head');
-  head.appendChild(el('span', 'badge ' + label(e), label(e)));
+  const outcome = e.outcome || 'refused';
+  head.appendChild(el('span', 'badge ' + outcome, outcome));
   head.appendChild(el('span', 'tool', e.tool + '(' + argsText(e.arguments) + ')'));
   if (e.user) head.appendChild(el('span', 'who', e.user));
   head.appendChild(el('span', 'when', when(e.time)));
   li.appendChild(head);
-  if (e.reason) li.appendChild(el('p', 'reason', (e.code ? e.code + ': ' : '') + e.reason));
-  else if (e.authorization) li.appendChild(el('p', 'reason', e.authorization));
+  if (e.reason) li.appendChild(el('p', 'line', (e.code ? e.code + ': ' : '') + e.reason));
+  else if (e.authorization) li.appendChild(el('p', 'line', e.authorization));
   for (const a of e.actions || []) {
-    const refused = a.refused || a.outcome === 'refused';
+    const refused = a.outcome === 'refused';
     const text = [a.method, a.host + (a.path || ''), a.action ? '-> ' + a.action : '', a.resource || '', refused ? '(refused)' : ''].filter(Boolean).join(' ');
     li.appendChild(el('p', 'action' + (refused ? ' refused' : ''), text));
   }
   return li;
 }
 
-function argsText(args) {
-  if (!args) return '';
-  return Object.entries(args).map(([k, v]) => k + '=' + (typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v))).join(', ');
+function renderCall(c) {
+  const li = el('li');
+  const head = el('div', 'head');
+  head.appendChild(el('span', 'badge ' + c.outcome, c.outcome));
+  head.appendChild(el('span', 'tool', c.server + ' \\u00b7 ' + c.tool));
+  head.appendChild(el('span', 'who', c.client));
+  if (c.duration_ms !== null && c.duration_ms !== undefined) head.appendChild(el('span', 'took', Math.round(c.duration_ms) + ' ms'));
+  head.appendChild(el('span', 'when', when(c.time)));
+  li.appendChild(head);
+  const args = argsText(c.arguments);
+  if (args) li.appendChild(el('p', 'line args', args));
+  if (c.result) {
+    const d = el('details');
+    d.appendChild(el('summary', null, c.outcome === 'error' ? 'error' : 'result'));
+    d.appendChild(el('pre', null, c.result));
+    li.appendChild(d);
+  }
+  return li;
+}
+
+function applyFilter(li) {
+  const q = filter.value.trim().toLowerCase();
+  li.hidden = q !== '' && !li.textContent.toLowerCase().includes(q);
+}
+
+function show(which) {
+  $('calls-view').hidden = which !== 'calls';
+  $('servers-view').hidden = which !== 'servers';
+  $('tab-calls').classList.toggle('on', which === 'calls');
+  $('tab-servers').classList.toggle('on', which === 'servers');
+  filter.hidden = which !== 'calls';
+}
+$('tab-calls').addEventListener('click', () => show('calls'));
+$('tab-servers').addEventListener('click', () => { show('servers'); loadServers(); });
+filter.addEventListener('input', () => { for (const li of rows.values()) applyFilter(li); });
+
+async function loadServers() {
+  try {
+    const r = await fetch('servers', {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    const list = $('servers');
+    list.replaceChildren();
+    $('no-servers').hidden = d.servers.length > 0;
+    for (const s of d.servers) {
+      const li = el('li');
+      const head = el('div', 'head');
+      const state = s.transport === 'http' ? 'found' : (s.wrapped ? 'recording' : 'not wrapped');
+      head.appendChild(el('span', 'badge ' + (s.wrapped ? 'ok' : 'muted'), state));
+      head.appendChild(el('span', 'tool', s.name));
+      head.appendChild(el('span', 'who', s.client + ', ' + s.transport));
+      head.appendChild(el('span', 'when', s.calls + (s.calls === 1 ? ' call' : ' calls') + (s.last_call ? ', last ' + when(s.last_call) : '')));
+      li.appendChild(head);
+      li.appendChild(el('p', 'line args', s.target));
+      if (s.transport === 'http') li.appendChild(el('p', 'line muted', 'HTTP servers are listed, not recorded yet.'));
+      if (s.tools && s.tools.length) {
+        const tools = el('div', 'tools');
+        for (const t of s.tools) {
+          const a = t.annotations || {};
+          const cls = a.destructiveHint === true ? 'tag destructive' : 'tag';
+          tools.appendChild(el('span', cls, t.name + (a.readOnlyHint === true ? ' (read-only)' : a.destructiveHint === true ? ' (destructive)' : '')));
+        }
+        li.appendChild(tools);
+      }
+      list.appendChild(li);
+    }
+  } catch (err) { /* the next click tries again */ }
 }
 
 async function poll() {
@@ -369,17 +482,24 @@ async function poll() {
     const r = await fetch('events?since=' + next, {cache: 'no-store'});
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
+    kind = d.kind;
+    if (kind === 'gateway' && !serversShown) { serversShown = true; $('tabs').hidden = false; }
     for (const e of d.events) {
-      calls.prepend(render(e));
-      total += 1;
+      const key = kind === 'gateway' ? 'c' + e.id : 's' + e.seq;
+      const li = kind === 'gateway' ? renderCall(e) : renderToolkit(e);
+      applyFilter(li);
+      const old = rows.get(key);
+      if (old) old.replaceWith(li); else calls.prepend(li);
+      rows.set(key, li);
     }
     next = d.next;
-    empty.hidden = total > 0;
-    status.textContent = total + (total === 1 ? ' call' : ' calls');
+    empty.hidden = rows.size > 0;
+    if (kind === 'gateway' && rows.size === 0) empty.textContent = 'No calls yet. Run toolpass gateway on, restart your MCP client, and use a tool.';
+    status.textContent = rows.size + (rows.size === 1 ? ' call' : ' calls');
   } catch (err) {
     status.textContent = 'disconnected';
   }
-  setTimeout(poll, 700);
+  setTimeout(poll, 800);
 }
 
 poll();
