@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>toolpass</title>
+<link rel="stylesheet" href="watch.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <span class="name">toolpass</span>
+    <span id="live" class="live off"><i></i><span id="live-text">connecting</span></span>
+  </div>
+  <nav id="tabs" class="tabs" hidden>
+    <button type="button" id="tab-activity" class="tab on">Activity</button>
+    <button type="button" id="tab-servers" class="tab">Servers <span id="server-count" class="count"></span></button>
+  </nav>
+</header>
+
+<main>
+  <section id="activity-view">
+    <div class="stats">
+      <button type="button" class="stat" id="stat-calls" data-outcome="all"><span class="label">Tool calls</span><span class="value" id="n-calls">0</span><span class="hint" id="h-calls">&nbsp;</span></button>
+      <button type="button" class="stat good" id="stat-ok" data-outcome="ok"><span class="label">Went through</span><span class="value" id="n-ok">0</span><span class="hint" id="h-ok">&nbsp;</span></button>
+      <button type="button" class="stat bad" id="stat-refused" data-outcome="refused"><span class="label">Refused</span><span class="value" id="n-refused">0</span><span class="hint" id="h-refused">&nbsp;</span></button>
+      <div class="stat static"><span class="label">Systems reached</span><span class="value" id="n-systems">0</span><span class="hint" id="h-systems">&nbsp;</span></div>
+    </div>
+
+    <section class="panel" id="map-panel" hidden>
+      <div class="panel-head">
+        <h2>Where the calls went</h2>
+        <p class="sub" id="map-sub">MCP server, then tool, then the systems each tool reached</p>
+      </div>
+      <div id="map" class="map"></div>
+    </section>
+
+    <div class="toolbar">
+      <div id="people" class="chips" role="group" aria-label="Person"></div>
+      <div class="seg" role="group" aria-label="Outcome">
+        <button type="button" class="on" data-outcome="all">All</button>
+        <button type="button" data-outcome="ok">Went through</button>
+        <button type="button" data-outcome="refused">Refused</button>
+      </div>
+      <input id="filter" type="search" placeholder="Search tools, systems, arguments" aria-label="Search calls">
+    </div>
+
+    <ol id="feed" class="feed"></ol>
+    <div id="empty" class="empty">
+      <p class="empty-title">Waiting for the first call</p>
+      <p class="empty-text" id="empty-text">Calls show up here as soon as a tool runs.</p>
+    </div>
+    <button type="button" id="more" class="more" hidden>Show more</button>
+  </section>
+
+  <section id="servers-view" hidden>
+    <div id="servers" class="servers"></div>
+    <div id="no-servers" class="empty" hidden>
+      <p class="empty-title">No MCP servers found</p>
+      <p class="empty-text">toolpass looks in the Claude Desktop and Claude Code config files. Run <code>toolpass gateway on</code>.</p>
+    </div>
+  </section>
+</main>
+<script src="watch.js"></script>
+</body>
+</html>
