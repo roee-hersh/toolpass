@@ -598,7 +598,7 @@ def routes(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
         return 1
     stdout.write(f"integration: {i.name()}\n\nroutes (method, path, action, resource, effect):\n")
     for r in table.routes:
-        effect = r.effect or ("by method" if r.method == "*" else {"GET": "read", "HEAD": "read", "DELETE": "destructive"}.get(r.method.upper(), "write"))
+        effect = r.effect or ("by method" if r.method == "*" else r.effect_for(r.method))
         flags = []
         if r.sends_out:
             flags.append("sends out")

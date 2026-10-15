@@ -86,8 +86,8 @@ class CallContext:
     refusal: BaseException | None = None
     # Actions the pre-body checks already allowed for this call: (name, resource).
     preallowed: set[tuple[str, str]] = dataclasses.field(default_factory=set)
-    # Approvals already granted before the body: the reasons they covered.
-    preapproved: set[str] = dataclasses.field(default_factory=set)
+    # Actions whose approval was granted before the body: (name, resource).
+    preapproved: set[tuple[str, str]] = dataclasses.field(default_factory=set)
     # Requests refused once; a retry of the same request gets the same answer.
     refused: dict[str, BaseException] = dataclasses.field(default_factory=dict)
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
@@ -95,13 +95,6 @@ class CallContext:
 
 _current: contextvars.ContextVar[CallContext | None] = contextvars.ContextVar("toolpass_call", default=None)
 _agent_depth: contextvars.ContextVar[int] = contextvars.ContextVar("toolpass_as_agent", default=0)
-
-# How many tool bodies are running anywhere in the process, and how many of
-# them under a strict toolkit. A request that arrives with no call context
-# while a strict body runs is refused: a thread that lost the context.
-_bodies = 0
-_strict_bodies = 0
-_bodies_lock = threading.Lock()
 
 
 def current_call() -> CallContext | None:
@@ -139,25 +132,10 @@ def as_agent() -> Iterator[None]:
 @contextlib.contextmanager
 def running(ctx: CallContext) -> Iterator[None]:
     """Make ``ctx`` the current call for the block (the toolkit, around the body)."""
-    global _bodies, _strict_bodies
     token = _current.set(ctx)
     agent_token = _agent_depth.set(0)  # a nested tool starts outside any as_agent() block
-    with _bodies_lock:
-        _bodies += 1
-        if ctx.strict:
-            _strict_bodies += 1
     try:
         yield
     finally:
-        with _bodies_lock:
-            _bodies -= 1
-            if ctx.strict:
-                _strict_bodies -= 1
         _agent_depth.reset(agent_token)
         _current.reset(token)
-
-
-def strict_body_running() -> bool:
-    """True while any strict toolkit's tool body runs somewhere in the process."""
-    with _bodies_lock:
-        return _strict_bodies > 0

@@ -53,6 +53,7 @@ from toolpass._entitlements import ActionRecorder, Entitlements, ToolEntitlement
 from toolpass._session import Session, current_session
 from toolpass._walk import mentions as walk_mentions
 from toolpass._walk import strings
+from toolpass.core.routes import rank
 
 if TYPE_CHECKING:
     from toolpass._wire import Connections
@@ -77,7 +78,7 @@ class ToolRefused(Exception):
     codes a request the body made can earn (``ActionRefused``):
     ``unknown_host``, ``unmapped_action``, ``unresolved_resource``,
     ``unentitled_action``, ``effect_exceeded``, ``effect_mismatch``,
-    ``no_entitlements``, ``unattributed``.
+    ``no_entitlements``.
     The message is written for the model: it says what happened without
     revealing credentials.
     """
@@ -311,13 +312,6 @@ def _redact(value: Any, secrets_: list[str], depth: int = 0) -> Any:
             pass
     # Anything else that mentions the secret becomes its redacted text.
     return _redact_text(str(value), secrets_) if not walk_mentions(_redact_text(str(value), secrets_), secrets_) else "[REDACTED]"
-
-
-_RANK = {"read": 0, "write": 1, "destructive": 2}
-
-
-def _rank(effect: str | None) -> int:
-    return _RANK.get(effect or "", 0)
 
 
 def _connection_for(conns: Connections | None, integration: str) -> str | None:
@@ -856,12 +850,12 @@ class Toolkit:
         planned: list[tuple[Any, str]] = []  # (entitlement, resource)
         if ents is not None:
             for ent in ents.actions:
-                if spec.effect is not None and _rank(ent.effect) > _rank(spec.effect):
+                if spec.effect is not None and rank(ent.effect) > rank(spec.effect):
                     raise ToolRefused(
                         spec.name, "effect_mismatch", f"{spec.name} is declared {spec.effect} but its recorded actions include a {ent.effect} ({ent.action})"
                     )
                 filled = ent.fill(arguments)
-                if filled is None or any(c in filled for c in "*?["):
+                if filled is None or ent.is_glob:
                     continue  # known only at run time: checked at the wire
                 if spec.resources is not None:
                     typ, _, ident = filled.partition(":")
@@ -893,13 +887,13 @@ class Toolkit:
             for ent, resource in planned:
                 if ent.as_ != "user":
                     continue
-                conn_id = _connection_for(conns, ent.integration)
-                if self.permissions is None or conn_id is None:
+                if self.permissions is None:
                     raise ToolRefused(
-                        spec.name,
-                        "authorization_error",
-                        f"{ent.action} on {resource} needs a permission check and the toolkit has no connection for {ent.integration}",
+                        spec.name, "authorization_error", f"{ent.action} on {resource} needs a permission check and the toolkit has no permissions engine"
                     )
+                conn_id = _connection_for(conns, ent.integration)
+                if conn_id is None:
+                    continue  # several connections (or none) for this integration: the wire places the request by host and checks it there
                 try:
                     groups = None if session.groups is None else list(session.groups)
                     d = yield _Ext(self.permissions.check, (session.user, conn_id, ent.name, resource, groups), {}, blocking=True)
@@ -980,7 +974,15 @@ class Toolkit:
             settle_claim, state.claimed = state.claimed, None
             settle_claim(True)
         ctx = CallContext(
-            self, spec, session, call, state.observed, ents, self.strict, preallowed=preallowed, preapproved={"entitlement"} if planned else set()
+            self,
+            spec,
+            session,
+            call,
+            state.observed,
+            ents,
+            self.strict,
+            preallowed=preallowed,
+            preapproved={(ent.action, res) for ent, res in planned if ent.approve},
         )
         try:
             with running(ctx) if hooked else contextlib.nullcontext():

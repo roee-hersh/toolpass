@@ -34,9 +34,9 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from toolpass._approval import ApprovalRequest
-from toolpass._context import CallContext, ObservedAction, current_call, in_agent_block, strict_body_running
+from toolpass._context import CallContext, ObservedAction, current_call, in_agent_block
 from toolpass._toolkit import ApprovalPending, ToolRefused
-from toolpass.core.routes import Request, RouteTable, effect_of_method, host_key, stronger
+from toolpass.core.routes import Request, RouteTable, effect_of_method, host_key, rank
 
 if TYPE_CHECKING:
     from toolpass._entitlements import ToolEntitlements
@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 __all__ = ["ActionRefused", "Connections", "install", "installed", "observe"]
 
 log = logging.getLogger("toolpass.toolkit")
-
-_RANK = {"read": 0, "write": 1, "destructive": 2}
 
 
 class ActionRefused(ToolRefused):
@@ -163,9 +161,7 @@ def observe(request: Request) -> None:
     Returns when it may be sent; raises ``ToolRefused`` when it may not."""
     ctx = current_call()
     if ctx is None:
-        if strict_body_running():
-            raise ToolRefused("<unknown tool>", "unattributed", f"{request.describe()} was made outside any tool call's context while a strict tool ran")
-        return
+        return  # not a tool body's request (or a thread that lost the context; see the docs)
     tool = ctx.spec.name
     key = _key(request)
     with ctx.lock:
@@ -238,7 +234,7 @@ def _check(ctx: CallContext, request: Request, key: str) -> None:
             agent = True
     obs.as_agent = agent
 
-    if spec.effect is not None and _RANK.get(found.effect, 0) > _RANK.get(spec.effect, 0):
+    if spec.effect is not None and rank(found.effect) > rank(spec.effect):
         raise _refuse(
             ctx, key, obs, ActionRefused(tool, "effect_exceeded", f"{request.describe()} is a {found.effect} action; this tool is declared {spec.effect}", obs)
         )
@@ -305,7 +301,7 @@ def _authorize_and_approve(ctx: CallContext, request: Request, key: str, obs: Ob
         if tk.exfiltration == "refuse":
             raise _refuse(ctx, key, obs, ActionRefused(tool, "exfiltration_risk", message, obs))
         reasons.append(message)
-    if ent is not None and ent.approve and "entitlement" not in ctx.preapproved:
+    if ent is not None and ent.approve and (obs.name or "", obs.resource or "") not in ctx.preapproved:
         reasons.append(f"{obs.name} on {obs.resource} needs approval")
     if not reasons:
         return
@@ -412,6 +408,16 @@ def _guarded(fn: Callable[..., Any], request: Request) -> Any:
         _inner.reset(token)
 
 
+def _observe_inner(request: Request) -> None:
+    """``observe`` with the hook marked as applied: the permission engine's
+    own lookups made from inside the check are not checked themselves."""
+    token = _inner.set(True)
+    try:
+        observe(request)
+    finally:
+        _inner.reset(token)
+
+
 def _patch_urllib3_module(mod: Any) -> None:
     pool_cls = mod.connectionpool.HTTPConnectionPool
     original = pool_cls.urlopen
@@ -420,7 +426,7 @@ def _patch_urllib3_module(mod: Any) -> None:
 
     @functools.wraps(original)
     def urlopen(self: Any, method: str, url: str, body: Any = None, headers: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if _inner.get() or (current_call() is None and not strict_body_running()):
+        if _inner.get() or current_call() is None:
             return original(self, method, url, body, headers, *args, **kwargs)
         scheme, host, port, path, query = _split(url, self.scheme, self.host, self.port)
         req = Request(
@@ -450,7 +456,7 @@ def _patch_http_client() -> None:
     @functools.wraps(original)
     def request(self: Any, method: str, url: str, body: Any = None, headers: Any = None, **kwargs: Any) -> Any:
         hdrs = headers if headers is not None else {}
-        if _inner.get() or (current_call() is None and not strict_body_running()):
+        if _inner.get() or current_call() is None:
             return original(self, method, url, body, hdrs, **kwargs)
         scheme = "https" if isinstance(self, hc.HTTPSConnection) else "http"
         host = getattr(self, "_tunnel_host", None) or self.host
@@ -483,15 +489,15 @@ def _patch_httpx() -> None:
 
     @functools.wraps(sync_original)
     def handle_request(self: Any, request: Any) -> Any:
-        if _inner.get() or (current_call() is None and not strict_body_running()):
+        if _inner.get() or current_call() is None:
             return sync_original(self, request)
         return _guarded(lambda: sync_original(self, request), _httpx_request(request))
 
     @functools.wraps(async_original)
     async def handle_async_request(self: Any, request: Any) -> Any:
-        if _inner.get() or (current_call() is None and not strict_body_running()):
+        if _inner.get() or current_call() is None:
             return await async_original(self, request)
-        await asyncio.to_thread(observe, _httpx_request(request))  # the permission check is blocking I/O
+        await asyncio.to_thread(_observe_inner, _httpx_request(request))  # the permission check is blocking I/O
         token = _inner.set(True)
         try:
             return await async_original(self, request)
@@ -513,7 +519,7 @@ def _patch_aiohttp() -> None:
 
     @functools.wraps(original)
     async def _request(self: Any, method: str, str_or_url: Any, **kwargs: Any) -> Any:
-        if _inner.get() or (current_call() is None and not strict_body_running()):
+        if _inner.get() or current_call() is None:
             return await original(self, method, str_or_url, **kwargs)
         url = self._build_url(str_or_url) if hasattr(self, "_build_url") else str_or_url
         body: bytes | None
@@ -529,7 +535,7 @@ def _patch_aiohttp() -> None:
             else:
                 body = _bytes(data)
         req = Request(str(url.scheme), str(url.host or ""), url.port, method.upper(), url.raw_path or "/", url.raw_query_string or "", headers, body)
-        await asyncio.to_thread(observe, req)
+        await asyncio.to_thread(_observe_inner, req)
         token = _inner.set(True)
         try:
             return await original(self, method, str_or_url, **kwargs)
@@ -547,11 +553,3 @@ _PATCHERS: dict[str, Callable[[], None]] = {
     "httpx": _patch_httpx,
     "aiohttp": _patch_aiohttp,
 }
-
-
-def effective_effect(declared: str | None, ents: ToolEntitlements | None) -> str | None:
-    """The effect a tool counts as: the declared one, else the strongest recorded."""
-    return declared if declared is not None else (ents.effect() if ents is not None else None)
-
-
-__all__ += ["effective_effect", "stronger"]

@@ -14,7 +14,7 @@ fits together.
 | `private` | iterable of connection ids | Reads from these connections count as reading private data (the exfiltration guard). |
 | `entitlements` | path, mapping or `Entitlements` | The recorded actions the tools are held to. |
 | `record` | path | Write every call's allowed actions to this file (`ActionRecorder`). |
-| `strict` | bool | Refuse requests to unknown hosts, requests that arrive with no call context while a strict body runs, and tools without entitlements when a file is given. |
+| `strict` | bool | Refuse requests to unknown hosts, and tools without entitlements when a file is given. |
 | `intercept` | bool, default True | Turn the hook off for this toolkit. |
 
 ## `secured_tool(...)`
@@ -44,7 +44,6 @@ A `ToolRefused` raised from inside the client library when a request the body ma
 | `effect_exceeded` | A request stronger than the tool's declared effect (a write from a `read` tool). |
 | `effect_mismatch` | A declared effect weaker than a recorded action (refused before the body). |
 | `no_entitlements` | A strict toolkit with an entitlements file, and this tool is not in it. |
-| `unattributed` | A request with no call context while a strict tool body runs. |
 
 ## `ObservedAction`
 
@@ -81,8 +80,8 @@ tools:
 ```
 
 A template (`repo:{repo}`) names the tool's arguments; it is filled from them and compared
-exactly, or as a glob when it contains `*`. A template whose argument the call does not have covers
-nothing. `ActionRecorder(path).record(tool, arguments, observed)` merges one call's allowed actions
+exactly, or as a glob when the template's own text contains `*` (an argument value is never a
+glob). A template whose argument the call does not have covers nothing. `ActionRecorder(path).record(tool, arguments, observed)` merges one call's allowed actions
 into the file, atomically.
 
 ## Routes

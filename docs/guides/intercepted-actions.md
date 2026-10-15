@@ -62,7 +62,7 @@ A request the toolkit cannot place is handled by what it knows:
 | A read on a known host with no route | allowed as `read`, audited `unmapped` | the same |
 | A write on a known host with no route | refused `unmapped_action` | the same |
 | A route whose resource the request does not name (a Slack channel by name) | refused `unresolved_resource` | the same |
-| From a thread that lost the call's context | allowed, unchecked | refused `unattributed` |
+| From a thread that lost the call's context | allowed, unchecked (see below) | the same |
 
 Requests about the agent's own identity (`GET /user`, `auth.test`), search and rate limits need no
 user permission: they are allowed and audited with no action.
@@ -123,8 +123,11 @@ earlier request) is written as a glob (`repo:acme/*`) or a literal and checked a
 - A client library the hook does not patch (urllib3 and everything on it, the standard library,
   httpx and aiohttp are covered; gRPC is not yet), or a custom httpx transport.
 - A request made from a thread the SDK started (boto3's managed transfers, pubsub's `publish()`,
-  Azure's pollers): the call's context does not reach it. `strict=True` refuses such requests;
-  `TransferConfig(use_threads=False)` keeps boto3's transfers in the caller's thread.
+  Azure's pollers): the call's context does not reach it, so it is not attributed to the call and
+  not checked. toolpass cannot tell such a request from the application's own traffic in another
+  thread, so it does not refuse it either. `TransferConfig(use_threads=False)` keeps boto3's
+  transfers in the caller's thread; `contextvars.copy_context().run(...)` carries the context into
+  a thread you start yourself.
 - The response: toolpass does not read what comes back. A read from an untrusted route marks the
   session as having seen untrusted content; the tool's return value is recorded and fenced as
   always.

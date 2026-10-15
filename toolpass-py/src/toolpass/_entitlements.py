@@ -53,6 +53,11 @@ class EntitlementsError(ValueError):
     """The entitlements file or mapping is not usable."""
 
 
+def _glob_escape(value: str) -> str:
+    """``value`` with every glob character made literal (``[*]``, ``[?]``, ``[[]``)."""
+    return re.sub(r"([*?\[])", r"[\1]", value)
+
+
 @dataclasses.dataclass(frozen=True)
 class Entitlement:
     """One action a tool may perform."""
@@ -82,9 +87,16 @@ class Entitlement:
     def fields(self) -> tuple[str, ...]:
         return template_fields(self.resource)
 
-    def fill(self, arguments: Mapping[str, Any]) -> str | None:
+    @property
+    def is_glob(self) -> bool:
+        """Whether the template's own text (not its fields) is a glob."""
+        return any(c in _FIELD_RE.sub("", self.resource) for c in "*?[")
+
+    def fill(self, arguments: Mapping[str, Any], *, escape: bool = False) -> str | None:
         """The resource for these arguments; None when a field is missing or
-        not a plain string or integer (a bool is neither)."""
+        not a plain string or integer (a bool is neither). With ``escape``,
+        glob characters in the values are escaped, so a value never widens a
+        glob template."""
         values: dict[str, str] = {}
         for f in self.fields():
             if f not in arguments:
@@ -92,20 +104,21 @@ class Entitlement:
             v = arguments[f]
             if type(v) not in (str, int):
                 return None
-            values[f] = str(v)
+            values[f] = _glob_escape(str(v)) if escape else str(v)
         return _FIELD_RE.sub(lambda m: values[m.group(1)], self.resource)
 
     def matches(self, resource: str, arguments: Mapping[str, Any]) -> bool:
         """Whether an observed resource is one this entitlement covers: the
-        template filled from the arguments, compared exactly or as a glob.
+        template filled from the arguments, compared exactly, or as a glob
+        when the template itself is one (argument values are never globs).
         A template whose argument the call does not have covers nothing."""
-        filled = self.fill(arguments)
-        if filled is None:
+        if not self.is_glob:
+            return self.fill(arguments) == resource
+        pattern = self.fill(arguments, escape=True)
+        if pattern is None:
             return False
-        if not any(c in filled for c in "*?["):
-            return filled == resource
         try:
-            return _glob(filled).fullmatch(resource) is not None
+            return _glob(pattern).fullmatch(resource) is not None
         except re.error:
             return False
 

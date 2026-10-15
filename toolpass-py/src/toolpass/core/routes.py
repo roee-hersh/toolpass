@@ -45,6 +45,7 @@ __all__ = [
     "fill",
     "host_key",
     "matching_templates",
+    "rank",
     "stronger",
     "template_fields",
 ]
@@ -52,6 +53,11 @@ __all__ = [
 EFFECTS: tuple[str, ...] = ("read", "write", "destructive")
 _RANK = {e: i for i, e in enumerate(EFFECTS)}
 _FIELD_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def rank(effect: str | None) -> int:
+    """read < write < destructive; an unknown or missing effect ranks lowest."""
+    return _RANK.get(effect or "", 0)
 
 
 def stronger(a: str | None, b: str | None) -> str | None:
@@ -133,15 +139,16 @@ class Request:
             return None
 
     def form(self) -> dict[str, str]:
-        """The body as a URL-encoded form (first value per key), or {}."""
+        """The body as a URL-encoded or multipart form (first value per key,
+        file parts left out), or {}."""
         if not self.body or "json" in self.content_type:
             return {}
+        if "multipart" in self.content_type:
+            return _multipart_fields(self.body, self.content_type_params.get("boundary", ""))
         try:
             text = self.body.decode("utf-8")
         except UnicodeDecodeError:
             return {}
-        if "multipart" in self.content_type:
-            return _multipart_fields(self.body, self.content_type_params.get("boundary", ""))
         if "\n" in text and "=" not in text:
             return {}
         return {k: v[0] for k, v in urllib.parse.parse_qs(text, keep_blank_values=True).items()}
@@ -314,7 +321,7 @@ Locator = Callable[[Any], Sequence[tuple[str, str]]]
 
 def host_key(host: str, port: int | None, scheme: str = "https") -> str:
     """``host`` or ``host:port`` when the port is not the scheme's default."""
-    host = host.lower().strip("[]") if ":" not in host else host.lower()
+    host = host.lower().strip("[]")  # an IPv6 literal, with or without the URL's brackets
     if port is None or (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
         return host
     return f"{host}:{port}"
@@ -438,15 +445,20 @@ class RouteTable:
         return path
 
     def match(self, request: Request, prefix: str = "") -> Observed | None:
-        """The observed action for a request, or None when no route matches."""
-        path = self.strip(request.path, prefix)
+        """The observed action for a request, or None when no route matches.
+
+        Matching runs on the raw (still percent-encoded) path, so an encoded
+        ``/`` inside one segment stays inside it, as the server reads it;
+        the captured variables are decoded afterwards."""
+        path = self.strip(request.raw_path, prefix)
         method = request.method.upper()
         # The most specific template whose route takes this method: a GET on
         # /repos/{o}/{r}/contents/{path} falls through to /repos/{o}/{r}/{rest+}
         # when only PUT and DELETE are routed on the contents template.
-        for tpl, vars_ in matching_templates((t for t, _ in self._templates), path):
+        for tpl, raw_vars in matching_templates((t for t, _ in self._templates), path):
             for t, route in self._templates:
                 if t is tpl and route.method.upper() in (method, "*"):
+                    vars_ = {k: "/".join(_decode_segment(s) for s in v.split("/")) for k, v in raw_vars.items()}
                     return self._observe(route, method, request, vars_)
         return None
 
