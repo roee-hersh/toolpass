@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from tests import harness
-from tests.toolkit.test_wire import Engine, http, requests_seen
+from tests.harness.wire import Engine, http, requests_seen
 from toolpass import ActionRefused, ApprovalPending, ApprovalQueue, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent
 from toolpass._entitlements import EntitlementsError, _template
 

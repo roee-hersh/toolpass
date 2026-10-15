@@ -328,25 +328,16 @@ def test_apply_keeps_callbacks_in_order_and_reaches_sub_agents(tp: Toolpass, cap
 # -- the wire hook alone: a secured tool's requests, refused inside the client call --
 
 
-@pytest.fixture
-def gh() -> Iterator[itest.Server]:
-    srv = wire.wire_github()
-    try:
-        yield srv
-    finally:
-        srv.close()
-
-
-def test_wire_hook_through_the_agent_loop(gh: itest.Server) -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: itest.Server) -> None:
     # No ToolpassCallbacks and no rules: the tool declares nothing, and the
     # refusal comes from the hook on urllib inside the body. ADK ends the run
     # on a tool exception, so ``on_refuse=str`` makes the refusal the result.
-    tools = Toolkit(audit=None, permissions=wire.wire_engine(gh), on_refuse=str)
+    tools = Toolkit(audit=None, permissions=wire.wire_engine(wire_gh), on_refuse=str)
 
     @tools.tool()
     def propose_fix(repo: str) -> str:
         """Open a pull request fixing a file."""
-        return wire.propose_body(gh, repo)
+        return wire.propose_body(wire_gh, repo)
 
     def run_as(user: str) -> Run:
         model = ScriptedLlm(turns=[[("propose_fix", {"repo": wire.REPO})], "done"], requests=[])
@@ -358,12 +349,12 @@ def test_wire_hook_through_the_agent_loop(gh: itest.Server) -> None:
     r = run_as(wire.DANA)
     text = r.responses["call_0_0"]["result"]
     assert isinstance(text, str) and all(word in text for word in wire.REFUSAL_WORDS), text
-    assert wire.requests_seen(gh) == ["GET /api/v3/repos/acme/x"]  # the POST was never sent
+    assert wire.requests_seen(wire_gh) == ["GET /api/v3/repos/acme/x"]  # the POST was never sent
     assert r.final == "done"
 
     r = run_as(wire.ADMIN)
     assert r.responses["call_0_0"] == {"result": "opened #7 in acme/x"}
-    assert wire.requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
+    assert wire.requests_seen(wire_gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
 
 
 # -- a real upstream: the PagerDuty integration against the harness's TLS server --

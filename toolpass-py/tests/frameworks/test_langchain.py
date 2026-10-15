@@ -40,7 +40,7 @@ from langgraph.prebuilt import tools_condition
 from pydantic import BaseModel, Field
 
 from tests import harness
-from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.langchain import Rule, ToolpassMiddleware
 
@@ -433,21 +433,13 @@ def test_bad_rules(fw_langchain_hp: RecordingToolpass) -> None:
 # -- the wire hook ---------------------------------------------------------------------
 
 
-@pytest.fixture
-def fw_langchain_github() -> Iterator[harness.Server]:
-    """The fake GitHub of the shared wire scenario (tests/frameworks/wire_scenario.py)."""
-    gh = wire_github()
-    yield gh
-    gh.close()
-
-
 @pytest.mark.parametrize("use_async", [False, True])
-def test_wire_hook_through_the_agent_loop(fw_langchain_github: harness.Server, use_async: bool) -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server, use_async: bool) -> None:
     """No middleware and no rule: a secured tool that declares nothing, whose body's
     POST the wire hook refuses inside urllib, with the session taken from the contextvar
     the application set around the agent run. create_agent's tool node lets a tool's
     exception escape the run, so the refusal goes back to the model as the tool's result."""
-    gh = fw_langchain_github
+    gh = wire_gh
     tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
 
     @tool

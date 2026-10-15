@@ -29,7 +29,7 @@ from agents import Agent, FunctionTool, Runner, WebSearchTool, function_tool, se
 from agents.testing import ScriptedModel, assistant_message, function_call
 
 from tests import harness as itest
-from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.openai_agents import Rule, ToolpassGuardrails
 
@@ -259,33 +259,30 @@ def test_tools_toolpass_cannot_check(tp: Toolpass, caplog: pytest.LogCaptureFixt
 # -- the wire hook: a secured tool's own requests, checked inside the agent loop --
 
 
-def test_wire_hook_through_the_agent_loop() -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: itest.Server) -> None:
     """No guardrail and no rule: the tool declares nothing, and the POST its body
     makes is refused inside the HTTP client for a user who may not open a PR.
     ``function_tool`` hides a tool's exception from the model, so the refusal is
     the tool's return value (``on_refuse=str``)."""
-    gh = wire_github()
-    try:
-        tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
+    gh = wire_gh
+    tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
 
-        @tools.tool(as_tool=function_tool)
-        def propose_fix(repo: str) -> str:
-            """Open a pull request fixing a file."""
-            return propose_body(gh, repo)
+    @tools.tool(as_tool=function_tool)
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
 
-        call = [("propose_fix", {"repo": REPO})]
-        with Session(DANA).active():
-            r = drive(None, call, None, tools=[propose_fix])
-        out = r.outputs["call_0"]
-        assert all(word in out for word in REFUSAL_WORDS), out
-        assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"]  # the POST never left the process
-        assert r.final == "done"  # the run went on
-        with Session(ADMIN).active():
-            r = drive(None, call, None, tools=[propose_fix])
-        assert r.outputs["call_0"] == f"opened #7 in {REPO}"
-        assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
-    finally:
-        gh.close()
+    call = [("propose_fix", {"repo": REPO})]
+    with Session(DANA).active():
+        r = drive(None, call, None, tools=[propose_fix])
+    out = r.outputs["call_0"]
+    assert all(word in out for word in REFUSAL_WORDS), out
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"]  # the POST never left the process
+    assert r.final == "done"  # the run went on
+    with Session(ADMIN).active():
+        r = drive(None, call, None, tools=[propose_fix])
+    assert r.outputs["call_0"] == f"opened #7 in {REPO}"
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
 
 
 # -- a real upstream: the PagerDuty integration against the harness's TLS server --

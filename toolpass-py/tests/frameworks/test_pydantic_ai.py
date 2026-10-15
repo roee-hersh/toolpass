@@ -31,7 +31,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 
 from tests import harness
-from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.pydantic_ai import Rule, ToolpassAuthorization, ToolpassToolset
 
@@ -302,18 +302,13 @@ def test_async_run_concurrent_users(tp: Toolpass) -> None:
     assert t.ran == [("write_thing", "t1")], f"ran: {t.ran}"
 
 
-@pytest.fixture
-def gh() -> Iterator[harness.Server]:
-    with wire_github() as srv:
-        yield srv
-
-
-def test_wire_hook_through_the_agent_loop(gh: harness.Server) -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server) -> None:
     """A secured tool that declares no rules: its body's pull request is refused at the
     wire for a user who may not open one, and the model reads why. No ToolpassAuthorization
     is involved; the session is the contextvar around the run."""
     # Pydantic AI lets a tool's exception out of the run (see test_tool_error_is_logged_as_raised),
     # so the refusal has to be the tool's return value for the model to read it.
+    gh = wire_gh
     tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
 
     @tools.tool()

@@ -1,9 +1,10 @@
-"""One scenario every framework test drives through its real agent loop: a
+"""One scenario every framework test drives through the framework's own tool
+execution path (its agent loop, or the SDK's server where that is what runs tools): a
 secured tool that declares nothing, whose body talks to a fake GitHub, and
 whose pull request is refused at the wire for a user who may not open one.
 
-    gh = wire_github()            # the fake, as a context manager
-    engine = wire_engine(gh)      # dana may read, admin may read and open PRs
+    def test_...(wire_gh):        # the fake GitHub, from tests/frameworks/conftest.py
+        engine = wire_engine(wire_gh)   # dana may read, admin may read and open PRs
     tools = Toolkit(audit=None, permissions=engine, on_refuse=str)  # on_refuse where the framework hides exceptions
 
     @tools.tool()
@@ -18,12 +19,8 @@ the POST reaches the fake.
 
 from __future__ import annotations
 
-import json
-import urllib.request
-from typing import Any
-
 from tests import harness
-from tests.toolkit.test_wire import Engine, requests_seen
+from tests.harness.wire import Engine, http, requests_seen
 
 ADMIN = "admin@example.com"
 DANA = "dana@example.com"
@@ -51,12 +48,6 @@ def wire_engine(gh: harness.Server) -> Engine:
 
 def propose_body(gh: harness.Server, repo: str) -> str:
     """What the secured tool's body does: a read, then a pull request, with the standard library."""
-    _http("GET", f"{gh.url}/api/v3/repos/{repo}")
-    pr = _http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "fix", "head": "fix", "base": "main"})
+    http("GET", f"{gh.url}/api/v3/repos/{repo}")
+    pr = http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "fix", "head": "fix", "base": "main"})
     return f"opened #{pr['number']} in {repo}"
-
-
-def _http(method: str, url: str, body: dict[str, Any] | None = None) -> Any:
-    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, method=method, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read() or b"null")

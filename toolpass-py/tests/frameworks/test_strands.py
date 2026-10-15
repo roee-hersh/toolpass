@@ -34,7 +34,7 @@ from strands.interventions import Deny, InterventionHandler, Proceed, Transform
 from strands.models import Model
 
 from tests import harness
-from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, guarded, literal
 from toolpass.strands import Rule, ToolpassAuthorization
 
@@ -531,19 +531,11 @@ def test_guarded_under_strands_tool(fw_strands_hp: RecordingToolpass) -> None:
     assert [s["user"] for s in fw_strands_hp.seen] == [ADMIN, DANA]
 
 
-@pytest.fixture
-def fw_strands_github() -> Iterator[harness.Server]:
-    """The fake GitHub of the wire scenario: answers the tool's read and its pull request."""
-    srv = wire_github()
-    yield srv
-    srv.close()
-
-
-def test_wire_hook_through_the_agent_loop(fw_strands_github: harness.Server) -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server) -> None:
     """A secured tool that declares nothing, under Strands' @tool: the body runs in
     Strands' tool thread, and the pull request it tries to open is refused at the
     wire, inside the HTTP call, for the session user who may not open one."""
-    gh = fw_strands_github
+    gh = wire_gh
     tools = Toolkit(audit=None, permissions=wire_engine(gh))
 
     @tool

@@ -40,7 +40,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult
 
 from tests import harness
-from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.mcp import Rule, ToolpassMiddleware, guard
 
@@ -546,17 +546,7 @@ def test_real_upstream(fw_mcp_pagerduty: harness.Server) -> None:
 # -- the wire hook: a secured tool's own requests, refused inside the MCP server ----------------
 
 
-@pytest.fixture
-def fw_mcp_github() -> Iterator[harness.Server]:
-    """The fake GitHub of the shared wire scenario."""
-    gh = wire_github()
-    try:
-        yield gh
-    finally:
-        gh.close()
-
-
-def test_wire_hook_through_the_server(fw_mcp_github: harness.Server) -> None:
+def test_wire_hook_through_the_server(wire_gh: harness.Server) -> None:
     """No rule and no guard: a ``@tools.tool()`` body registered as an MCP tool
     has its own HTTP requests mapped to actions and checked against the
     session's user at the wire. The MCP SDK runs a sync tool on a worker thread
@@ -564,7 +554,7 @@ def test_wire_hook_through_the_server(fw_mcp_github: harness.Server) -> None:
     the client call reaches the hook. The SDK reports an unexpected exception
     as only ``Error executing tool <name>``, so ``on_refuse=str`` hands the
     refusal to the model as the tool's result."""
-    gh = fw_mcp_github
+    gh = wire_gh
     engine = wire_engine(gh)
     tools = Toolkit(audit=None, permissions=engine, on_refuse=str)
     server: MCPServer[Any] = MCPServer("fw-mcp-wire")

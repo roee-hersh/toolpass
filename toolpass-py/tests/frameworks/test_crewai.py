@@ -35,7 +35,7 @@ from crewai.tools import BaseTool, tool
 from pydantic import BaseModel, PrivateAttr
 
 from tests import harness
-from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.crewai import Rule, ToolpassHooks
 
@@ -330,51 +330,45 @@ def test_unregister_and_names(tp: Toolpass) -> None:
         ToolpassHooks(tp, {"read_thing": None, "Read Thing": None})
 
 
-@pytest.fixture
-def gh() -> Iterator[harness.Server]:
-    with wire_github() as srv:
-        yield srv
-
-
-def test_wire_hook_through_the_agent_loop(gh: harness.Server) -> None:
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server) -> None:
     """A secured tool that declares nothing, run by CrewAI: the pull request its
     body makes is refused at the wire for a user who may not open one, and the
     model reads the refusal. No ToolpassHooks: the toolkit's hook alone."""
-    tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
+    tools = Toolkit(audit=None, permissions=wire_engine(wire_gh), on_refuse=str)
 
     @tool("propose_fix")
     @tools.tool()
     def propose_fix(repo: str) -> str:
         """Open a pull request fixing a file."""
-        return propose_body(gh, repo)
+        return propose_body(wire_gh, repo)
 
     c, llm = crew(("propose_fix", {"repo": REPO}), tools=[propose_fix])
     with Session(DANA).active():
         c.kickoff()
     got = llm.result()
     assert all(word in got for word in REFUSAL_WORDS), f"model saw: {got!r}"
-    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], f"the fake received: {requests_seen(gh)}"
+    assert requests_seen(wire_gh) == ["GET /api/v3/repos/acme/x"], f"the fake received: {requests_seen(wire_gh)}"
 
     c, llm = crew(("propose_fix", {"repo": REPO}), tools=[propose_fix])
     with Session(ADMIN).active():
         c.kickoff()
     assert "opened #7 in acme/x" in llm.result(), f"model saw: {llm.result()!r}"
-    assert requests_seen(gh)[1:] == ["GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], f"the fake received: {requests_seen(gh)}"
+    assert requests_seen(wire_gh)[1:] == ["GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], f"the fake received: {requests_seen(wire_gh)}"
 
 
-def test_a_sync_tool_under_akickoff_keeps_the_session(gh: harness.Server) -> None:
+def test_a_sync_tool_under_akickoff_keeps_the_session(wire_gh: harness.Server) -> None:
     """``Crew.akickoff`` runs ``kickoff`` with ``asyncio.to_thread``, which copies
     the context, and the native tool loop then calls a sync tool in that thread
     (not through ``StructuredTool.ainvoke``'s ``run_in_executor``, which would
     drop it): the session reaches the body and the wire hook decides as under
     ``kickoff``. Were the context lost, the refusal would be ``no_session``."""
-    tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
+    tools = Toolkit(audit=None, permissions=wire_engine(wire_gh), on_refuse=str)
 
     @tool("propose_fix")
     @tools.tool()
     def propose_fix(repo: str) -> str:
         """Open a pull request fixing a file."""
-        return propose_body(gh, repo)
+        return propose_body(wire_gh, repo)
 
     async def go(user: str) -> ScriptedLLM:
         c, llm = crew(("propose_fix", {"repo": REPO}), tools=[propose_fix])
@@ -386,11 +380,11 @@ def test_a_sync_tool_under_akickoff_keeps_the_session(gh: harness.Server) -> Non
     got = llm.result()
     assert "no_session" not in got, f"the session was lost under akickoff: {got!r}"
     assert all(word in got for word in REFUSAL_WORDS), f"model saw: {got!r}"
-    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], f"the fake received: {requests_seen(gh)}"
+    assert requests_seen(wire_gh) == ["GET /api/v3/repos/acme/x"], f"the fake received: {requests_seen(wire_gh)}"
 
     llm = asyncio.run(go(ADMIN))
     assert "opened #7 in acme/x" in llm.result(), f"model saw: {llm.result()!r}"
-    assert requests_seen(gh)[1:] == ["GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], f"the fake received: {requests_seen(gh)}"
+    assert requests_seen(wire_gh)[1:] == ["GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], f"the fake received: {requests_seen(wire_gh)}"
 
 
 def test_real_upstream(real_hp: tuple[Toolpass, str, str, str]) -> None:

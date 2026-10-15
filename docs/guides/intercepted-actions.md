@@ -122,17 +122,19 @@ earlier request) is written as a glob (`repo:acme/*`) or a literal and checked a
 
 The hook sits under the tool body, so it works wherever the toolkit works: the tests drive the
 same scenario (a tool that declares nothing, a read as the agent, a refused pull request) through
-the real agent loop of each of the nine supported frameworks, and in every one the call's context
-reaches the body, the refused request never leaves the process, and the allowed one does. What
-differs is how each framework hands a tool's exception to the model. Where it masks or re-raises it,
-set `toolpass.configure(on_refuse=str)` so the refusal is the tool's result and the model reads why:
+each of the nine supported frameworks' own tool execution path, with a scripted model: the real
+agent loop for eight of them, and for the Claude Agent SDK its in-process MCP server, which is what
+runs a tool when the agent calls it. In every one the call's context reaches the body, the refused
+request never leaves the process, and the allowed one does. What differs is how each framework hands
+a tool's exception to the model. Where it masks or re-raises it, set
+`toolpass.configure(on_refuse=str)` so the refusal is the tool's result and the model reads why:
 
 | Framework | Without `on_refuse=str` | Needs `on_refuse=str` |
 |---|---|---|
 | Strands Agents | the model reads `Error: ActionRefused - <reason>` | no |
 | LlamaIndex | the model reads the reason as an error tool output | no |
-| Claude Agent SDK (in-process MCP server) | the model reads the reason as an error result | no |
-| LangChain and LangGraph (`create_agent`, default `ToolNode`) | the exception escapes the run | yes |
+| Claude Agent SDK (a tool on its in-process MCP server) | the server returns the reason as an error result | no |
+| LangChain `create_agent`, and LangGraph's prebuilt `ToolNode` with its default error handler | the exception escapes the run | yes |
 | OpenAI Agents SDK (`function_tool`) | "An error occurred while running the tool" | yes |
 | Pydantic AI | the exception escapes the run | yes |
 | Google ADK | the run ends on the exception | yes |
