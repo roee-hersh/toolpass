@@ -79,6 +79,8 @@ def test_on_wraps_stdio_servers_and_off_restores_every_byte_that_matters(files: 
         "github",
         "-client",
         "claude-desktop",
+        "-config",
+        str(files[0].path),
         "--",
         "npx",
         "-y",
@@ -111,6 +113,42 @@ def test_off_keeps_the_first_backup(files: list[ClientFile]) -> None:
     _gateway.off(files)
     _gateway.on(files)
     assert files[0].path.with_name(files[0].path.name + ".toolpass-backup").read_bytes() == first
+
+
+def test_a_client_rewriting_its_file_meanwhile_keeps_its_change(files: list[ClientFile], monkeypatch: pytest.MonkeyPatch) -> None:
+    real = _gateway._visit_file
+    raced = []
+
+    def racing(cf: ClientFile, change: str | None) -> list[_gateway.Found]:
+        if not raced and cf.client == "claude-code":
+            raced.append(1)
+            doc = _load(cf)
+            original_read = cf.path.read_bytes
+
+            def read_then_client_writes(self: Path = cf.path) -> bytes:
+                data = original_read()
+                doc["numStartups"] = 13  # the client saves its own state in between
+                cf.path.write_text(json.dumps(doc))
+                monkeypatch.undo()
+                return data
+
+            monkeypatch.setattr(type(cf.path), "read_bytes", lambda self: read_then_client_writes() if self == cf.path else original_read.__func__(self))  # type: ignore[attr-defined]
+        return real(cf, change)
+
+    monkeypatch.setattr(_gateway, "_visit_file", racing)
+    _gateway.on(files)
+    code = _load(files[1])
+    assert code["numStartups"] == 13, "the client's write survived"
+    assert "toolpass" in code["mcpServers"]["sentry"], "and the entry was wrapped on the second try"
+
+
+def test_a_wrapper_whose_python_is_gone_is_reported(files: list[ClientFile]) -> None:
+    _gateway.on(files)
+    doc = _load(files[0])
+    doc["mcpServers"]["github"]["command"] = "/no/such/python"
+    files[0].path.write_text(json.dumps(doc))
+    broken = {f.name: f.broken for f in _gateway.scan(files)}
+    assert broken["github"] and "gone" in broken["github"] and broken["fs"] is None
 
 
 def test_unreadable_files_are_left_alone(tmp_path: Path) -> None:

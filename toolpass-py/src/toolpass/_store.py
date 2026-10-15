@@ -38,16 +38,18 @@ CREATE TABLE IF NOT EXISTS servers (
 );
 CREATE TABLE IF NOT EXISTS tools (
   client TEXT NOT NULL,
+  config TEXT NOT NULL,
   server TEXT NOT NULL,
   name TEXT NOT NULL,
   annotations TEXT NOT NULL,
   rev INTEGER NOT NULL,
-  PRIMARY KEY (client, server, name)
+  PRIMARY KEY (client, config, server, name)
 );
 CREATE TABLE IF NOT EXISTS calls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   time TEXT NOT NULL,
   client TEXT NOT NULL,
+  config TEXT NOT NULL,
   server TEXT NOT NULL,
   session TEXT NOT NULL,
   tool TEXT NOT NULL,
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS calls (
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
+CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
 
 _MAX_TEXT = 4000
@@ -98,20 +101,32 @@ class Store:
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path) if path is not None else default_store_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if sys.platform != "win32":
-            with contextlib.suppress(OSError):
-                os.chmod(self.path.parent, 0o700)  # the calls carry arguments and results: this user's only
+        if not self.path.parent.exists():
+            # A folder toolpass makes is this user's only: the calls carry arguments and results.
+            self.path.parent.mkdir(parents=True, mode=0o700)
+        if not self.path.exists():
+            with contextlib.suppress(FileExistsError):
+                os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         self._lock = threading.Lock()
         self._db = sqlite3.connect(str(self.path), timeout=15, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._lock:
-            self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA busy_timeout=15000")
-            self._db.executescript(_SCHEMA)
-        if sys.platform != "win32":
+            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
+                self._db.execute("PRAGMA journal_mode=WAL")
+                self._db.executescript(_SCHEMA)
+        self._private_side_files()
+
+    def _private_side_files(self) -> None:
+        """SQLite's WAL and shared-memory files carry recent rows too: same
+        mode as the database."""
+        if sys.platform == "win32":
+            return
+        for suffix in ("-wal", "-shm"):
+            side = self.path.with_name(self.path.name + suffix)
             with contextlib.suppress(OSError):
-                os.chmod(self.path, 0o600)
+                if side.exists():
+                    os.chmod(side, 0o600)
 
     def close(self) -> None:
         with self._lock:
@@ -142,7 +157,17 @@ class Store:
                 (client, name, config, transport, _cut(target), int(wrapped), _now(), rev),
             )
 
-    def record_tools(self, client: str, server: str, tools: Sequence[Mapping[str, Any]]) -> None:
+    def forget_servers(self, configs: Sequence[str], keep: Sequence[tuple[str, str, str]]) -> None:
+        """Drop the servers listed under ``configs`` that a scan no longer
+        found; ``keep`` is the (client, config, name) of those it did."""
+        kept = set(keep)
+        with self._write() as (db, _):
+            for row in db.execute("SELECT client, config, name FROM servers").fetchall():
+                listed = any(row["config"] == c or row["config"].startswith(c + " (") for c in configs)
+                if listed and (row["client"], row["config"], row["name"]) not in kept:
+                    db.execute("DELETE FROM servers WHERE client = ? AND config = ? AND name = ?", (row["client"], row["config"], row["name"]))
+
+    def record_tools(self, client: str, config: str, server: str, tools: Sequence[Mapping[str, Any]]) -> None:
         with self._write() as (db, rev):
             for t in tools:
                 name = t.get("name")
@@ -150,19 +175,21 @@ class Store:
                     continue
                 annotations = t.get("annotations") if isinstance(t.get("annotations"), Mapping) else {}
                 db.execute(
-                    "INSERT INTO tools (client, server, name, annotations, rev) VALUES (?, ?, ?, ?, ?)"
-                    " ON CONFLICT (client, server, name) DO UPDATE SET annotations = excluded.annotations, rev = excluded.rev",
-                    (client, server, name, json.dumps(annotations, default=repr), rev),
+                    "INSERT INTO tools (client, config, server, name, annotations, rev) VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT (client, config, server, name) DO UPDATE SET annotations = excluded.annotations, rev = excluded.rev",
+                    (client, config, server, name, json.dumps(annotations, default=repr), rev),
                 )
 
-    def start_call(self, client: str, server: str, session: str, tool: str, arguments: Mapping[str, Any]) -> int:
+    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any]) -> int:
         """Record a call that was just sent to the server; returns its id."""
         with self._write() as (db, rev):
             cur = db.execute(
-                "INSERT INTO calls (time, client, server, session, tool, arguments, outcome, rev) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
-                (_now(), client, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), rev),
+                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, rev) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), rev),
             )
-            return int(cur.lastrowid or 0)
+            call_id = int(cur.lastrowid or 0)
+        self._private_side_files()
+        return call_id
 
     def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float) -> None:
         with self._write() as (db, rev):
@@ -173,12 +200,27 @@ class Store:
 
     # -- readers ----------------------------------------------------------------
 
+    def prune(self, days: float = 90) -> int:
+        """Delete calls older than ``days``; returns how many."""
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
+        with self._write() as (db, _):
+            return int(db.execute("DELETE FROM calls WHERE time < ?", (cutoff,)).rowcount)
+
     def calls(self, since: int = 0, limit: int = 500) -> tuple[list[dict[str, Any]], int]:
         """Calls added or changed after ``since`` (oldest first, at most
-        ``limit``), and the rev to pass next time."""
+        ``limit``), and the rev to pass next time. With ``since`` 0, the
+        latest ``limit`` calls, so a fresh page does not replay all history."""
         with self._lock:
-            rows = self._db.execute("SELECT * FROM calls WHERE rev > ? ORDER BY rev LIMIT ?", (since, limit)).fetchall()
-            current = int(self._db.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()[0])
+            # One snapshot: a write committed between the two reads cannot fall in the gap.
+            self._db.execute("BEGIN")
+            try:
+                current = int(self._db.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()[0])
+                if since <= 0:
+                    rows = self._db.execute("SELECT * FROM (SELECT * FROM calls ORDER BY rev DESC LIMIT ?) ORDER BY rev", (limit,)).fetchall()
+                else:
+                    rows = self._db.execute("SELECT * FROM calls WHERE rev > ? ORDER BY rev LIMIT ?", (since, limit)).fetchall()
+            finally:
+                self._db.execute("COMMIT")
         out = []
         for r in rows:
             row = dict(r)
@@ -187,7 +229,7 @@ class Store:
             except ValueError:
                 pass
             out.append(row)
-        nxt = int(out[-1]["rev"]) if len(out) == limit else current
+        nxt = int(out[-1]["rev"]) if since > 0 and len(out) == limit else current
         return out, nxt
 
     def servers(self) -> list[dict[str, Any]]:
@@ -195,13 +237,17 @@ class Store:
             servers = [dict(r) for r in self._db.execute("SELECT * FROM servers ORDER BY client, name").fetchall()]
             tools = [dict(r) for r in self._db.execute("SELECT * FROM tools ORDER BY name").fetchall()]
             counts = {
-                (r["client"], r["server"]): (r["n"], r["last"])
-                for r in self._db.execute("SELECT client, server, COUNT(*) AS n, MAX(time) AS last FROM calls GROUP BY client, server").fetchall()
+                (r["client"], r["config"], r["server"]): (r["n"], r["last"])
+                for r in self._db.execute(
+                    "SELECT client, config, server, COUNT(*) AS n, MAX(time) AS last FROM calls GROUP BY client, config, server"
+                ).fetchall()
             }
         for s in servers:
             s["wrapped"] = bool(s["wrapped"])
             s["tools"] = [
-                {"name": t["name"], "annotations": json.loads(t["annotations"])} for t in tools if t["client"] == s["client"] and t["server"] == s["name"]
+                {"name": t["name"], "annotations": json.loads(t["annotations"])}
+                for t in tools
+                if (t["client"], t["config"], t["server"]) == (s["client"], s["config"], s["name"])
             ]
-            s["calls"], s["last_call"] = counts.get((s["client"], s["name"]), (0, None))
+            s["calls"], s["last_call"] = counts.get((s["client"], s["config"], s["name"]), (0, None))
         return servers

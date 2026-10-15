@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
 import subprocess
 import sys
@@ -55,35 +56,40 @@ def _result_text(result: Any) -> str:
 
 
 class _Pending:
-    """A tool call the client sent: registered before it is forwarded, so a
-    fast answer always finds it; ``ready`` is set once its row exists."""
+    """A tool call the client sent, registered before it is forwarded so a
+    fast answer always finds it. ``call_id`` is set by the writer."""
 
     def __init__(self, tool: str, arguments: Mapping[str, Any], start: float) -> None:
         self.tool, self.arguments, self.start = tool, arguments, start
         self.call_id: int | None = None
-        self.ready = threading.Event()
+        self.finished = False
 
 
 class Recorder:
-    """Watches the JSON-RPC lines of one client-server session and writes the
-    tool calls to the store. Thread-safe: one thread feeds each direction.
+    """Watches the JSON-RPC lines of one client-server session and records
+    the tool calls. The pump threads only parse and queue; one writer thread
+    does every store write, in order, so a result is never written before
+    its call and a slow or locked store never delays a message.
 
-    ``note_client(line)`` runs before a client line is forwarded and only
-    parses it (no I/O); ``from_client(line)`` runs after and writes the rows.
-    ``from_server(line)`` runs after a server line is forwarded."""
+    ``note_client(line)`` runs before a client line is forwarded,
+    ``from_server(line)`` after a server line is forwarded; ``close()``
+    marks calls that never got an answer and drains the queue."""
 
-    _WAIT = 5.0  # seconds a result waits for its call's row to be written
+    _DRAIN = 10.0  # seconds close() waits for the writer to catch up
 
-    def __init__(self, store: Store | None, client: str, server: str, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, store: Store | None, client: str, server: str, config: str = "", clock: Callable[[], float] = time.monotonic) -> None:
         self.store = store
-        self.client, self.server = client, server
+        self.client, self.server, self.config = client, server, config
         self.session = uuid.uuid4().hex[:16]
         self._clock = clock
         self._lock = threading.Lock()
         self._calls: dict[str, _Pending] = {}  # request id -> the call
-        self._new: dict[bytes, list[_Pending]] = {}  # noted, not yet written, by line
         self._lists: set[str] = set()  # ids of tools/list requests
         self._warned = False
+        self._queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
+        self._writer = threading.Thread(target=self._write, name="toolpass-mcp-record", daemon=True)
+        if store is not None:
+            self._writer.start()
 
     @staticmethod
     def _key(msg_id: Any) -> str | None:
@@ -99,17 +105,34 @@ class Recorder:
         items = doc if isinstance(doc, list) else [doc]
         return [m for m in items if isinstance(m, Mapping)]
 
-    def _guard(self, what: str, fn: Callable[..., Any], *args: Any) -> Any:
-        try:
-            return fn(*args)
-        except Exception as e:  # noqa: BLE001 - recording must never break the session
-            if not self._warned:
-                self._warned = True
-                print(f"toolpass: could not record {what} ({type(e).__name__}: {e}); calls still go through", file=sys.stderr, flush=True)
-            return None
+    def _put(self, *item: Any) -> None:
+        if self.store is not None:
+            self._queue.put(item)
+
+    def _write(self) -> None:
+        store = self.store
+        assert store is not None
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            try:
+                kind = item[0]
+                if kind == "start":
+                    pending = item[1]
+                    pending.call_id = store.start_call(self.client, self.config, self.server, self.session, pending.tool, shorten(pending.arguments))
+                elif kind == "finish":
+                    pending, outcome, text, elapsed = item[1:]
+                    if pending.call_id is not None:
+                        store.finish_call(pending.call_id, outcome, text, elapsed)
+                elif kind == "tools":
+                    store.record_tools(self.client, self.config, self.server, item[1])
+            except Exception as e:  # noqa: BLE001 - recording must never break the session
+                if not self._warned:
+                    self._warned = True
+                    print(f"toolpass: could not record a call ({type(e).__name__}: {e}); calls still go through", file=sys.stderr, flush=True)
 
     def note_client(self, line: bytes) -> None:
-        noted: list[_Pending] = []
         for msg in self._messages(line):
             key = self._key(msg.get("id"))
             if key is None:
@@ -127,21 +150,7 @@ class Recorder:
                 pending = _Pending(tool, arguments, self._clock())
                 with self._lock:
                     self._calls[key] = pending
-                noted.append(pending)
-        if noted:
-            with self._lock:
-                self._new.setdefault(line, []).extend(noted)
-
-    def from_client(self, line: bytes) -> None:
-        with self._lock:
-            noted = self._new.pop(line, [])
-        for pending in noted:
-            try:
-                if self.store is not None:
-                    args = shorten(pending.arguments)
-                    pending.call_id = self._guard("a tool call", self.store.start_call, self.client, self.server, self.session, pending.tool, args)
-            finally:
-                pending.ready.set()
+                self._put("start", pending)
 
     def from_server(self, line: bytes) -> None:
         for msg in self._messages(line):
@@ -164,30 +173,46 @@ class Recorder:
                     result = msg.get("result")
                     text = _result_text(result)
                     outcome = "error" if isinstance(result, Mapping) and result.get("isError") is True else "ok"
-                call.ready.wait(self._WAIT)
-                if self.store is not None and call.call_id is not None:
-                    self._guard("a tool result", self.store.finish_call, call.call_id, outcome, str(text), elapsed)
+                call.finished = True
+                self._put("finish", call, outcome, str(text), elapsed)
             elif listed:
                 result = msg.get("result")
                 tools = result.get("tools") if isinstance(result, Mapping) else None
-                if isinstance(tools, list) and self.store is not None:
-                    self._guard("the tool list", self.store.record_tools, self.client, self.server, tools)
+                if isinstance(tools, list):
+                    self._put("tools", tools)
+
+    def close(self) -> None:
+        """The session ended: calls still waiting are recorded as never
+        answered, and the writer finishes what is queued."""
+        with self._lock:
+            left = [c for c in self._calls.values() if not c.finished]
+            self._calls.clear()
+        for call in left:
+            self._put("finish", call, "no response", "the session ended before the server answered", (self._clock() - call.start) * 1000)
+        if self.store is not None and self._writer.is_alive():
+            self._queue.put(None)
+            self._writer.join(self._DRAIN)
 
 
-def _pump(src: IO[bytes], dst: IO[bytes], watch: Callable[[bytes], None], on_eof: Callable[[], None], note: Callable[[bytes], None] | None = None) -> None:
+def _pump(
+    src: IO[bytes], dst: IO[bytes], on_eof: Callable[[], None], before: Callable[[bytes], None] | None = None, after: Callable[[bytes], None] | None = None
+) -> None:
+    """Copy ``src`` to ``dst`` line by line. ``before`` sees a line before it
+    is forwarded, ``after`` once it is; both only parse and queue."""
     try:
         while True:
             line = src.readline()
             if not line:
                 break
-            if note is not None:
-                note(line)  # parse only, before forwarding, so the answer always finds its call
+            if before is not None:
+                before(line)
             try:
                 dst.write(line)
                 dst.flush()
             except (BrokenPipeError, OSError, ValueError):
                 break
-            watch(line)  # after forwarding: the record never delays the message
+            if after is not None:
+                after(line)
     finally:
         on_eof()
 
@@ -205,6 +230,7 @@ def run(
     server: str,
     client: str,
     store: Store | None,
+    config: str = "",
     stdin: IO[bytes] | None = None,
     stdout: IO[bytes] | None = None,
 ) -> int:
@@ -212,9 +238,9 @@ def run(
     ends; returns the server's exit code."""
     stdin = stdin if stdin is not None else sys.stdin.buffer
     stdout = stdout if stdout is not None else sys.stdout.buffer
-    recorder = Recorder(store, client, server)
+    recorder = Recorder(store, client, server, config)
     try:
-        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, bufsize=0)
+        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None)
     except OSError as e:
         print(f"toolpass: could not start {command[0]!r}: {e}", file=sys.stderr, flush=True)
         return 127
@@ -237,10 +263,8 @@ def run(
         timer.daemon = True
         timer.start()
 
-    up = threading.Thread(
-        target=_pump, args=(stdin, child_in, recorder.from_client, close_child_stdin, recorder.note_client), name="toolpass-mcp-up", daemon=True
-    )
-    down = threading.Thread(target=_pump, args=(child_out, stdout, recorder.from_server, lambda: None), name="toolpass-mcp-down", daemon=True)
+    up = threading.Thread(target=_pump, args=(stdin, child_in, close_child_stdin, recorder.note_client, None), name="toolpass-mcp-up", daemon=True)
+    down = threading.Thread(target=_pump, args=(child_out, stdout, lambda: None, None, recorder.from_server), name="toolpass-mcp-down", daemon=True)
     up.start()
     down.start()
     try:
@@ -249,4 +273,6 @@ def run(
     except KeyboardInterrupt:
         child.terminate()
         code = child.wait()
+    finally:
+        recorder.close()
     return code

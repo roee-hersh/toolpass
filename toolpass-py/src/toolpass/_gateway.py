@@ -49,6 +49,7 @@ class Found:
     transport: str  # stdio, http
     target: str  # the command line, or the URL
     wrapped: bool
+    broken: str | None = None  # why a wrapped entry cannot start, when it cannot
 
 
 def client_files(home: Path | None = None) -> list[ClientFile]:
@@ -108,9 +109,17 @@ def _read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _write(path: Path, doc: Any) -> None:
+class _Changed(Exception):
+    """The file changed on disk while toolpass was rewriting it."""
+
+
+def _write(path: Path, doc: Any, read: bytes) -> None:
     """Write ``doc`` as JSON over ``path`` atomically, keeping the file's mode,
-    after a one-time backup of the original beside it."""
+    after a one-time backup of the original beside it. Raises ``_Changed``,
+    writing nothing, when the file no longer holds ``read``: a client that
+    rewrote it in the meantime keeps its change."""
+    if path.read_bytes() != read:
+        raise _Changed(str(path))
     backup = path.with_name(path.name + _BACKUP_SUFFIX)
     if not backup.exists():
         shutil.copy2(path, backup)
@@ -131,43 +140,61 @@ def _write(path: Path, doc: Any) -> None:
 
 def _visit(files: list[ClientFile], change: str | None, store: Store | None) -> list[Found]:
     found: list[Found] = []
-    launcher = _launcher()
     for cf in files:
-        try:
-            doc = _read(cf.path)
-        except (OSError, ValueError):
-            continue  # unreadable or not JSON: leave it alone
-        before = copy.deepcopy(doc)
-        for where, servers in _server_maps(cf, doc):
-            for name, entry in list(servers.items()):
-                transport = _transport(entry)
-                if transport is None or not isinstance(entry, MutableMapping):
-                    continue
-                if transport == "http":
-                    target = str(entry.get("url", ""))
-                    found.append(Found(cf.client, where, str(name), "http", target, False))
-                    continue
-                command, args = _original(entry)
-                wrapped = isinstance(entry.get(_KEY), MutableMapping)
-                if change == "on" and not wrapped and command:
-                    entry[_KEY] = {"command": command, "args": args} if "args" in entry else {"command": command}
-                    entry["command"] = launcher[0]
-                    entry["args"] = [*launcher[1:], "mcp", "-server", str(name), "-client", cf.client, "--", command, *args]
-                    wrapped = True
-                elif change == "off" and wrapped:
-                    saved = entry.pop(_KEY)
-                    entry["command"] = command
-                    if "args" in saved:
-                        entry["args"] = args
-                    else:
-                        entry.pop("args", None)
-                    wrapped = False
-                found.append(Found(cf.client, where, str(name), "stdio", " ".join([command, *args]), wrapped))
-        if change is not None and doc != before:
-            _write(cf.path, doc)
+        for _ in range(3):  # a client rewriting its file mid-change: read it again
+            try:
+                found_here = _visit_file(cf, change)
+            except _Changed:
+                continue
+            except (OSError, ValueError):
+                found_here = []  # unreadable or not JSON: leave it alone
+            found.extend(found_here)
+            break
+        else:
+            print(f"toolpass: {cf.path} kept changing while toolpass rewrote it; left as it is, try again", file=sys.stderr)
     if store is not None:
         for f in found:
             store.record_server(f.client, f.name, f.config, f.transport, f.target, f.wrapped)
+        store.forget_servers([str(cf.path) for cf in files], [(f.client, f.config, f.name) for f in found])
+    return found
+
+
+def _visit_file(cf: ClientFile, change: str | None) -> list[Found]:
+    found: list[Found] = []
+    launcher = _launcher()
+    read = cf.path.read_bytes()
+    doc = json.loads(read.decode("utf-8"))
+    before = copy.deepcopy(doc)
+    for where, servers in _server_maps(cf, doc):
+        for name, entry in list(servers.items()):
+            transport = _transport(entry)
+            if transport is None or not isinstance(entry, MutableMapping):
+                continue
+            if transport == "http":
+                target = str(entry.get("url", ""))
+                found.append(Found(cf.client, where, str(name), "http", target, False))
+                continue
+            command, args = _original(entry)
+            wrapped = isinstance(entry.get(_KEY), MutableMapping)
+            if change == "on" and not wrapped and command:
+                entry[_KEY] = {"command": command, "args": args} if "args" in entry else {"command": command}
+                entry["command"] = launcher[0]
+                entry["args"] = [*launcher[1:], "mcp", "-server", str(name), "-client", cf.client, "-config", where, "--", command, *args]
+                wrapped = True
+            elif change == "off" and wrapped:
+                saved = entry.pop(_KEY)
+                entry["command"] = command
+                if "args" in saved:
+                    entry["args"] = args
+                else:
+                    entry.pop("args", None)
+                wrapped = False
+            broken = None
+            if wrapped and not Path(str(entry.get("command", ""))).is_file():
+                broken = f"the Python that wrapped it is gone ({entry.get('command')}); run `toolpass gateway off`, then `on`, from a working install"
+            found.append(Found(cf.client, where, str(name), "stdio", " ".join([command, *args]), wrapped, broken))
+    if change is not None and doc != before:
+        _write(cf.path, doc, read)
     return found
 
 

@@ -65,7 +65,7 @@ Usage:
   toolpass routes   [INTEGRATION]
   toolpass gateway  on|off|status
   toolpass dashboard [-open] [-listen ADDR] [-no-wrap]
-  toolpass mcp      -server NAME -client CLIENT -- COMMAND [ARGS...]
+  toolpass mcp      -server NAME -client CLIENT [-config LABEL] -- COMMAND [ARGS...]
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -626,8 +626,10 @@ def _print_found(found: list[Any], stdout: IO[str]) -> None:
         stdout.write("no MCP servers found in Claude Desktop or Claude Code\n")
         return
     for f in found:
-        state = "found (HTTP, not recorded yet)" if f.transport == "http" else ("recording" if f.wrapped else "not wrapped")
+        state = "found (HTTP, not recorded yet)" if f.transport == "http" else ("BROKEN" if f.broken else "recording" if f.wrapped else "not wrapped")
         stdout.write(f"{f.client:<15} {f.name:<24} {state:<32} {f.config}\n")
+        if f.broken:
+            stdout.write(f"{'':<15} {f.broken}\n")
 
 
 def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
@@ -672,6 +674,7 @@ def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading
     store = Store()
     try:
         found = _gateway.scan(store=store) if fs.values["no-wrap"] else _gateway.on(store=store)
+        store.prune(days=90)
         try:
             page = Dashboard(store, listen=fs.values["listen"])
         except (ValueError, OSError) as e:
@@ -700,6 +703,7 @@ def mcp(args: list[str], stderr: IO[str]) -> int:
     fs = _FlagSet("mcp", stderr)
     fs.add("server", "str", "", "the server's name in the client's config")
     fs.add("client", "str", "", "the client that starts it (claude-desktop, claude-code)")
+    fs.add("config", "str", "", "the config file (and project) the entry is in")
     try:
         fs.parse(args)
     except _FlagError:
@@ -716,7 +720,9 @@ def mcp(args: list[str], stderr: IO[str]) -> int:
         stderr.write(f"toolpass: cannot open the record ({type(e).__name__}: {e}); the server runs unrecorded\n")
         store = None
     try:
-        return _mcp_proxy.run(fs.args, server=fs.values["server"] or fs.args[0], client=fs.values["client"] or "unknown", store=store)
+        return _mcp_proxy.run(
+            fs.args, server=fs.values["server"] or fs.args[0], client=fs.values["client"] or "unknown", config=fs.values["config"], store=store
+        )
     finally:
         if store is not None:
             store.close()

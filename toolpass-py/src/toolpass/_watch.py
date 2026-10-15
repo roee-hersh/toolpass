@@ -373,6 +373,7 @@ _SCRIPT = b"""
 const $ = (id) => document.getElementById(id);
 const calls = $('calls'), empty = $('empty'), status = $('status'), filter = $('filter');
 const rows = new Map();   // row key -> its list item
+const MAX_ROWS = 2000;
 let next = 0, kind = 'toolkit', serversShown = false;
 
 function el(tag, cls, text) {
@@ -491,6 +492,11 @@ async function poll() {
       const old = rows.get(key);
       if (old) old.replaceWith(li); else calls.prepend(li);
       rows.set(key, li);
+    }
+    while (rows.size > MAX_ROWS) {  // a Map keeps insertion order: the oldest first
+      const [oldest, li] = rows.entries().next().value;
+      li.remove();
+      rows.delete(oldest);
     }
     next = d.next;
     empty.hidden = rows.size > 0;

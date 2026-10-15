@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +58,7 @@ def test_bytes_pass_unchanged_and_calls_are_recorded(tmp_path: Path) -> None:
     assert by_tool["nope"]["outcome"] == "error" and "unknown tool" in by_tool["nope"]["result"]
     assert all(r["client"] == "test" and r["server"] == "fake" and r["duration_ms"] is not None for r in rows)
     assert len({r["session"] for r in rows}) == 1
-    store.record_server("test", "fake", "x", "stdio", "fake", True)
+    store.record_server("test", "fake", "", "stdio", "fake", True)
     tools = {t["name"]: t["annotations"] for t in store.servers()[0]["tools"]}
     assert tools["delete_repo"] == {"destructiveHint": True} and tools["echo"] == {"readOnlyHint": True}
 
@@ -87,7 +87,6 @@ class Broken:
 
 def _client(r: Recorder, line: bytes) -> None:
     r.note_client(line)
-    r.from_client(line)
 
 
 def test_recorder_survives_garbage_and_a_broken_store(capsys: pytest.CaptureFixture[str]) -> None:
@@ -95,6 +94,7 @@ def test_recorder_survives_garbage_and_a_broken_store(capsys: pytest.CaptureFixt
     for line in [b"not json\n", b"[1, 2]\n", b'{"id": true, "method": "tools/call"}\n', b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"x"}\n']:
         _client(r, line)
     r.from_server(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
+    r.close()
     err = capsys.readouterr().err
     assert err.count("could not record") == 1, "one warning, not one per call"
 
@@ -105,8 +105,8 @@ def test_recorder_batches_and_server_requests(tmp_path: Path) -> None:
     _client(r, b'[{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"a","arguments":{}}},{"jsonrpc":"2.0","id":8,"method":"ping"}]\n')
     # a request from the server that reuses id 7 is not mistaken for the response
     r.from_server(b'{"jsonrpc":"2.0","id":7,"method":"sampling/createMessage","params":{}}\n')
-    assert store.calls(0)[0][0]["outcome"] == "running"
     r.from_server(b'[{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"image","data":"..."}]}}]\n')
+    r.close()
     row = store.calls(0)[0][0]
     assert row["outcome"] == "ok" and row["result"] == "[image]"
 
@@ -116,22 +116,58 @@ def test_long_arguments_and_results_are_shortened(tmp_path: Path) -> None:
     r = Recorder(store, "c", "s")
     _client(r, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "a", "arguments": {"t": "x" * 5000}}}).encode())
     r.from_server(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "y" * 9000}]}}).encode())
+    r.close()
     row = store.calls(0)[0][0]
     assert len(row["arguments"]["t"]) < 300 and len(row["result"]) < 4100
 
 
 def test_an_answer_faster_than_the_record_still_finds_its_call(tmp_path: Path) -> None:
-    """The server may answer before the call's row is written: the result waits for it."""
+    """The server may answer before the call's row is written: the writer
+    keeps the order, so the result lands on its call."""
+    store = Store(tmp_path / "g.db")
+    r = Recorder(store, "c", "s", "cfg")
+    r.note_client(b'{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"a","arguments":{}}}\n')
+    r.from_server(b'{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"fast"}]}}\n')
+    r.close()
+    row = store.calls(0)[0][0]
+    assert row["outcome"] == "ok" and row["result"] == "fast" and row["config"] == "cfg"
+
+
+class Slow:
+    """A store whose every write takes a while: the pump must not wait for it."""
+
+    def __init__(self, inner: Store) -> None:
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        fn = getattr(self.inner, name)
+
+        def slow(*a: Any, **k: Any) -> Any:
+            time.sleep(0.3)
+            return fn(*a, **k)
+
+        return slow
+
+
+def test_a_slow_store_never_delays_a_message(tmp_path: Path) -> None:
+    store = Store(tmp_path / "g.db")
+    r = Recorder(Slow(store), "c", "s")  # type: ignore[arg-type]
+    started = time.monotonic()
+    for i in range(5):
+        r.note_client(json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": "a", "arguments": {}}}).encode())
+        r.from_server(json.dumps({"jsonrpc": "2.0", "id": i, "result": {"content": []}}).encode())
+    assert time.monotonic() - started < 0.2, "parsing and queueing only"
+    r.close()
+    assert [row["outcome"] for row in store.calls(0)[0]] == ["ok"] * 5
+
+
+def test_calls_without_an_answer_are_marked_when_the_session_ends(tmp_path: Path) -> None:
     store = Store(tmp_path / "g.db")
     r = Recorder(store, "c", "s")
-    line = b'{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"a","arguments":{}}}\n'
-    r.note_client(line)  # forwarded; the row is not written yet
-    done = threading.Thread(target=r.from_server, args=(b'{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"fast"}]}}\n',))
-    done.start()
-    r.from_client(line)
-    done.join(10)
+    r.note_client(b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow","arguments":{}}}\n')
+    r.close()
     row = store.calls(0)[0][0]
-    assert row["outcome"] == "ok" and row["result"] == "fast"
+    assert row["outcome"] == "no response" and "ended" in row["result"]
 
 
 def test_run_in_process_forwards_and_ends_with_the_client(tmp_path: Path) -> None:
