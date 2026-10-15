@@ -75,7 +75,7 @@ def open_in_browser(url: str) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(body)
-    webbrowser.open("file://" + pathlib.Path(path).as_posix())
+    webbrowser.open(pathlib.Path(path).as_uri())  # file:///..., on Windows too
 
     def tidy() -> None:
         time.sleep(30)

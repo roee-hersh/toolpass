@@ -154,6 +154,7 @@ def test_a_body_not_framed_by_one_plain_length_closes_the_connection(kit: tuple[
 
 def test_open_in_browser_keeps_the_token_off_the_command_line(monkeypatch: pytest.MonkeyPatch) -> None:
     import os
+    import pathlib
     import stat
 
     from toolpass import _watch
@@ -162,8 +163,9 @@ def test_open_in_browser_keeps_the_token_off_the_command_line(monkeypatch: pytes
     monkeypatch.setattr(_watch.webbrowser, "open", lambda url: opened.append(url) or True)
     url = "http://127.0.0.1:1/t/secret-token/"
     path = _watch.open_in_browser(url)
-    assert opened == ["file://" + path] and "secret-token" not in opened[0]
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert opened == [pathlib.Path(path).as_uri()] and "secret-token" not in opened[0]
+    if os.name != "nt":  # Windows has no mode bits; the file is in the user's own temp folder there
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     with open(path, encoding="utf-8") as f:
         assert f'content="0;url={url}"' in f.read()
     os.remove(path)
