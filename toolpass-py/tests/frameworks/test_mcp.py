@@ -40,7 +40,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult
 
 from tests import harness
-from toolpass import Toolpass, literal
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.mcp import Rule, ToolpassMiddleware, guard
 
 ADMIN = "admin@example.com"
@@ -540,6 +541,51 @@ def test_real_upstream(fw_mcp_pagerduty: harness.Server) -> None:
     assert text(no).startswith(REFUSED + "stake@example.com may not service.maintenance on service:PSVC1 in pd: deny (denied: ")
     assert RAN == ["set_maintenance:PSVC1"]
     assert [c.q("query") for c in srv.calls() if c.path == "/users"] == ["oncall@example.com", "stake@example.com"]
+
+
+# -- the wire hook: a secured tool's own requests, refused inside the MCP server ----------------
+
+
+@pytest.fixture
+def fw_mcp_github() -> Iterator[harness.Server]:
+    """The fake GitHub of the shared wire scenario."""
+    gh = wire_github()
+    try:
+        yield gh
+    finally:
+        gh.close()
+
+
+def test_wire_hook_through_the_server(fw_mcp_github: harness.Server) -> None:
+    """No rule and no guard: a ``@tools.tool()`` body registered as an MCP tool
+    has its own HTTP requests mapped to actions and checked against the
+    session's user at the wire. The MCP SDK runs a sync tool on a worker thread
+    under a copy of the handler's context, so the session made current around
+    the client call reaches the hook. The SDK reports an unexpected exception
+    as only ``Error executing tool <name>``, so ``on_refuse=str`` hands the
+    refusal to the model as the tool's result."""
+    gh = fw_mcp_github
+    engine = wire_engine(gh)
+    tools = Toolkit(audit=None, permissions=engine, on_refuse=str)
+    server: MCPServer[Any] = MCPServer("fw-mcp-wire")
+
+    @server.tool()
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    with Session(DANA).active():
+        [refused] = run(server, [("propose_fix", {"repo": REPO})])
+    for word in REFUSAL_WORDS:
+        assert word in text(refused), text(refused)
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never left the process"
+    assert [a[2] for a in engine.asked] == ["repo.read", "pr.create"]
+
+    with Session(ADMIN).active():
+        [opened] = run(server, [("propose_fix", {"repo": REPO})])
+    assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
 
 
 VAULT_IMAGE = "hashicorp/vault:1.17"

@@ -118,6 +118,29 @@ earlier request) is written as a glob (`repo:acme/*`) or a literal and checked a
 
 `strict=True` also refuses a tool that has no entry in the file.
 
+## Through the frameworks
+
+The hook sits under the tool body, so it works wherever the toolkit works: the tests drive the
+same scenario (a tool that declares nothing, a read as the agent, a refused pull request) through
+the real agent loop of each of the nine supported frameworks, and in every one the call's context
+reaches the body, the refused request never leaves the process, and the allowed one does. What
+differs is how each framework hands a tool's exception to the model. Where it masks or re-raises it,
+set `toolpass.configure(on_refuse=str)` so the refusal is the tool's result and the model reads why:
+
+| Framework | Without `on_refuse=str` | Needs `on_refuse=str` |
+|---|---|---|
+| Strands Agents | the model reads `Error: ActionRefused - <reason>` | no |
+| LlamaIndex | the model reads the reason as an error tool output | no |
+| Claude Agent SDK (in-process MCP server) | the model reads the reason as an error result | no |
+| LangChain and LangGraph (`create_agent`, default `ToolNode`) | the exception escapes the run | yes |
+| OpenAI Agents SDK (`function_tool`) | "An error occurred while running the tool" | yes |
+| Pydantic AI | the exception escapes the run | yes |
+| Google ADK | the run ends on the exception | yes |
+| CrewAI | the model reads CrewAI's own wording of the error | yes |
+| MCP server (the `mcp` SDK) | "Error executing tool <name>", the message masked | yes |
+
+With `on_refuse=str` the refusal arrives as an ordinary tool result in every framework.
+
 ## What it cannot see
 
 - A client library the hook does not patch (urllib3 and everything on it, the standard library,

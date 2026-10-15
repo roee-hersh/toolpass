@@ -30,7 +30,9 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Retr
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 
-from toolpass import Toolpass, literal
+from tests import harness
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.pydantic_ai import Rule, ToolpassAuthorization, ToolpassToolset
 
 USER = "user@example.com"
@@ -298,6 +300,41 @@ def test_async_run_concurrent_users(tp: Toolpass) -> None:
 
     asyncio.run(both())
     assert t.ran == [("write_thing", "t1")], f"ran: {t.ran}"
+
+
+@pytest.fixture
+def gh() -> Iterator[harness.Server]:
+    with wire_github() as srv:
+        yield srv
+
+
+def test_wire_hook_through_the_agent_loop(gh: harness.Server) -> None:
+    """A secured tool that declares no rules: its body's pull request is refused at the
+    wire for a user who may not open one, and the model reads why. No ToolpassAuthorization
+    is involved; the session is the contextvar around the run."""
+    # Pydantic AI lets a tool's exception out of the run (see test_tool_error_is_logged_as_raised),
+    # so the refusal has to be the tool's return value for the model to read it.
+    tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
+
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    def propose(user: str) -> str:
+        s = Script(("propose_fix", {"repo": REPO}))
+        agent = Agent(FunctionModel(s), tools=[Tool(propose_fix)])
+        with Session(user).active():
+            out = agent.run_sync("go")
+        assert out.output == "done", f"the run did not finish: {out.output!r}"
+        return s.result()
+
+    got = propose(DANA)
+    assert all(w in got for w in REFUSAL_WORDS), f"model saw: {got!r}"
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], requests_seen(gh)
+    got = propose(ADMIN)
+    assert got == "opened #7 in acme/x", f"model saw: {got!r}"
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], requests_seen(gh)
 
 
 def test_real_upstream(real_hp: tuple[Toolpass, str, str, str]) -> None:

@@ -51,7 +51,8 @@ from claude_agent_sdk import (
 )
 
 from tests import harness as itest
-from toolpass import PermissionDenied, Toolpass, guarded, literal
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine, wire_github
+from toolpass import PermissionDenied, Session, Toolkit, Toolpass, guarded, literal
 from toolpass.claude_agent_sdk import Rule, ToolpassHooks
 
 _BUNDLED = pathlib.Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
@@ -555,6 +556,47 @@ def test_guarded_through_the_agent_loop(tp: Toolpass, tmp_path: pathlib.Path) ->
     assert RAN == [] and r.results["toolu_0_0"][1] and "may not thing.write on thing:1" in r.results["toolu_0_0"][0]
     r = drive(hooks, calls, tmp_path, user=ADMIN, **kw)
     assert RAN == [("write_thing", "1")] and r.results["toolu_0_0"] == (f"wrote 2 bytes to thing:1 as {ADMIN}", False)
+
+
+# -- the wire hook alone: a secured tool's body, run by an SDK MCP tool handler
+
+
+def test_wire_hook_through_the_sdk_server() -> None:
+    """No rules and no ToolpassHooks: the secured tool declares nothing, its
+    body talks to GitHub, and the pull request is refused inside the client
+    call for a user who may not open one. The SDK's server runs the handler in
+    the caller's task, so the session reaches the body."""
+    from mcp import Client
+
+    gh = wire_github()
+    try:
+        tools = Toolkit(audit=None, permissions=wire_engine(gh))
+
+        @tools.tool()
+        def propose_fix(repo: str) -> str:
+            """Open a pull request fixing a file."""
+            return propose_body(gh, repo)
+
+        @tool("propose_fix", "Open a pull request fixing a file.", {"repo": str})
+        async def handler(args: dict[str, Any]) -> dict[str, Any]:
+            return _text(propose_fix(repo=args["repo"]))
+
+        server = create_sdk_mcp_server("wire", tools=[handler])
+
+        async def call(user: str) -> Any:
+            with Session(user).active():
+                async with Client(server["instance"]) as client:
+                    return await client.call_tool("propose_fix", {"repo": REPO})
+
+        res = contextvars.Context().run(asyncio.run, call(DANA))
+        assert res.is_error, res
+        assert all(w in res.content[0].text for w in REFUSAL_WORDS), res.content[0].text
+        assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"]  # the POST was never sent
+        res = contextvars.Context().run(asyncio.run, call(ADMIN))
+        assert not res.is_error and res.content[0].text == "opened #7 in acme/x", res
+        assert requests_seen(gh)[-1] == "POST /api/v3/repos/acme/x/pulls"
+    finally:
+        gh.close()
 
 
 # -- live: Claude drives the session ------------------------------------------------
