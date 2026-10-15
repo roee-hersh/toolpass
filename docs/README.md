@@ -44,7 +44,7 @@ agents in any language call.
 - [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`.
 - [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
   and the same connections given in code.
-- [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes` and `demo`.
+- [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog` and `routes`.
 - [Integrations](integrations/README.md): the twenty-one systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.
