@@ -5,9 +5,15 @@
 Do not stop at a pushed branch. A merge into `main` ships in the next daily
 release (03:00 UTC), so merge only complete, working changes.
 
-1. Run `/code-review main high` on the diff and fix every finding.
-2. Run `/security-review` and fix every finding.
-3. Run the local checks, after the review fixes, and get them clean
+1. Update the documentation for what changed, every time: the lead example and the tables in
+   `README.md` and `toolpass-py/README.md` when the way a tool is written changes, the guide and
+   reference pages under `docs/` that describe the changed behaviour, `docs/README.md` when a page is
+   added, and `docs/development/testing.md` when a test directory is added. A page that shows the
+   old way of doing something is a bug in the pull request, not a follow-up. Run
+   `python3 test/docs/linkcheck.py` afterwards.
+2. Run `/code-review main high` on the diff and fix every finding.
+3. Run `/security-review` and fix every finding.
+4. Run the local checks, after the review fixes, and get them clean
    (in `toolpass-py/`, with `pip install -e ".[crypto]" pytest pytest-timeout hypothesis ruff mypy types-PyYAML build`):
    - `ruff format --check src tests examples`, `ruff check src tests examples`,
      `mypy --strict src/toolpass`, `python -m pytest -q`
@@ -24,9 +30,9 @@ release (03:00 UTC), so merge only complete, working changes.
    - when any Markdown changed: `python3 test/docs/linkcheck.py`
    - when `deploy/helm` changed: `helm lint deploy/helm/toolpass --strict --set apiKey.value=x`
    - when the `Dockerfile` changed: `docker build .` and the smoke test in the `docker` CI job
-4. Open a pull request using `.github/pull_request_template.md`. Mention the
+5. Open a pull request using `.github/pull_request_template.md`. Mention the
    issue it closes when there is one.
-5. Wait for CI on the pull request to pass, then squash-merge with the PR
+6. Wait for CI on the pull request to pass, then squash-merge with the PR
    title and `(#N)` suffix, as the history on `main` does. If CI is red, fix
    and push; never merge over a failure, and never skip or disable a test to
    get green. A failure in code the change does not touch (a vendor spec, Prism or

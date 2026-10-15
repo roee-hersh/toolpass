@@ -9,34 +9,37 @@ Your agent's tools run with one service credential for everyone who talks to it.
 and web pages that can carry injected instructions. They can delete things, open pull requests and
 post to Slack. Most teams rebuild the same safety checks around each tool by hand, or skip them.
 
-toolpass is one decorator on a plain Python function:
+toolpass is one decorator on a plain Python function, and the function declares nothing: toolpass
+watches what it does.
 
 ```python
 import toolpass
-from toolpass import ApprovalQueue, Session, secured_tool
-from langchain_core.tools import tool       # or any framework's tool decorator
+from toolpass import Session, Toolpass, as_agent, secured_tool
+from github import Github                     # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
-toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": token}, limits={"destructive": 3})
+toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # your GitHub, Slack, ... connections
 
 
-@secured_tool(
-    effect="write",
-    scope={"repo": "acme/gitops-*"},       # the tool can touch nothing else, whoever asks
-    approve=True,                           # a person confirms this exact call, out of band
-    credential="github-bot",                # injected after every check; the model never sees it
-    as_tool=tool,                           # hand the framework a real tool, checks inside
-)
-def open_gitops_pr(repo: str, title: str, change: str, *, credential: str) -> str:
-    ...
+@secured_tool()
+def propose_fix(repo: str, path: str, fix: str) -> str:
+    gh = Github(auth=token)
+    with as_agent():                          # the agent may read on its own authority
+        current = gh.get_repo(repo).get_contents(path)
+    pr = gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main")
+    return pr.html_url                        # pr.create: checked against the user, before it is sent
 
 
 with Session("dana@example.com").active():   # the user your app authenticated, never the model
     agent.run(prompt)
 ```
 
-`as_tool` takes any framework's decorator: LangChain's `tool`, the OpenAI Agents SDK's
-`function_tool`, Pydantic AI's `Tool`, CrewAI's, or your own. Leave it out and you get a plain
-function with the same signature (minus `credential`), for any framework's `@tool` or your own loop.
+Every HTTP request the body makes is mapped to the action it is (`POST /repos/acme/x/pulls` is
+`pr.create` on `repo:acme/x`), checked against the session's user, and refused before it leaves the
+process when they may not do it. Run the tool once with `configure(record="toolpass-tools.yaml")`
+and toolpass writes down exactly which permissions it needs, from whom; hand that file back with
+`configure(entitlements=...)` and the tool is held to it. A tool can still declare what it does
+(`effect`, `scope`, `approve`, `credential`) and the two compose; `as_tool=` hands any framework a
+real tool with the checks inside. [The guide](docs/guides/intercepted-actions.md) has the details.
 
 ## What it stops
 
