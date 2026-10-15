@@ -28,9 +28,10 @@ without changing anything; `toolpass gateway off` puts every entry back.
 | Claude Desktop | `claude_desktop_config.json` in `~/Library/Application Support/Claude/` (macOS), `%APPDATA%\Claude\` (Windows), `~/.config/Claude/` (Linux) |
 | Claude Code | `~/.claude.json`: the user's servers and each project's |
 
-A wrapped entry starts `python -m toolpass.cli mcp` with the original command after `--`, using the
-Python toolpass was installed in, and keeps the original under a `"toolpass"` key in the same entry;
-the server's `env` is untouched. Because the entry names that Python, removing the environment
+A wrapped entry starts `toolpass mcp` with the original command after `--`, from the installation
+that wrapped it (`python -P -m toolpass.cli`, or the `toolpass` script on Python 3.10, so nothing is
+imported from the folder the client runs it in), and keeps the original under a `"toolpass"` key in the same entry;
+the server's `env` is untouched. Because the entry names that installation, removing the environment
 toolpass was installed in stops the wrapped servers from starting; `toolpass gateway status` then
 reports them as `BROKEN`, and `toolpass gateway off` run from any install puts them back. The first change to a file leaves a copy of the original beside it,
 named `<file>.toolpass-backup`. A file that is not valid JSON is left alone.

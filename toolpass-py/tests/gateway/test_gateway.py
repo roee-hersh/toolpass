@@ -7,6 +7,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -70,10 +71,9 @@ def test_on_wraps_stdio_servers_and_off_restores_every_byte_that_matters(files: 
     assert all(f.wrapped for f in found if f.transport == "stdio")
     desk = _load(files[0])
     gh = desk["mcpServers"]["github"]
-    assert gh["command"] == sys.executable
-    assert gh["args"] == [
-        "-m",
-        "toolpass.cli",
+    launcher = _gateway._launcher()
+    assert [gh["command"], *gh["args"]] == [
+        *launcher,
         "mcp",
         "-server",
         "github",
@@ -149,6 +149,18 @@ def test_a_wrapper_whose_python_is_gone_is_reported(files: list[ClientFile]) -> 
     files[0].path.write_text(json.dumps(doc))
     broken = {f.name: f.broken for f in _gateway.scan(files)}
     assert broken["github"] and "gone" in broken["github"] and broken["fs"] is None
+
+
+def test_the_wrapper_never_imports_from_the_clients_working_directory(tmp_path: Path) -> None:
+    """A client starts a server in the folder the user opened; a planted toolpass/ there must not run."""
+    planted = tmp_path / "repo"
+    (planted / "toolpass").mkdir(parents=True)
+    (planted / "toolpass" / "__init__.py").write_text("")
+    (planted / "toolpass" / "cli.py").write_text("print('PLANTED')\n")
+    (planted / "json.py").write_text("print('PLANTED json')\n")
+    done = subprocess.run([*_gateway._launcher(), "version"], cwd=planted, capture_output=True, text=True, timeout=60)
+    assert "PLANTED" not in done.stdout + done.stderr
+    assert done.returncode == 0 and done.stdout.strip()
 
 
 def test_unreadable_files_are_left_alone(tmp_path: Path) -> None:

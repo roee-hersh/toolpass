@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import sys
+import sysconfig
 import tempfile
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
@@ -100,9 +101,18 @@ def _original(entry: MutableMapping[str, Any]) -> tuple[str, list[str]]:
 
 
 def _launcher() -> list[str]:
-    """How a client starts toolpass: this Python, so the wrapper runs from the
-    same installation that wrapped it, wherever the client's PATH points."""
-    return [sys.executable, "-m", "toolpass.cli"]
+    """How a client starts toolpass: from the installation that wrapped it,
+    wherever the client's PATH points, and never importing code from the
+    client's working directory (``python -m`` puts it first on the module
+    path, so a repository the user opened could stand in for toolpass or the
+    standard library)."""
+    if sys.version_info >= (3, 11):
+        return [sys.executable, "-P", "-m", "toolpass.cli"]  # -P: no working directory on sys.path
+    script = Path(sysconfig.get_path("scripts")) / ("toolpass.exe" if sys.platform == "win32" else "toolpass")
+    if script.is_file():
+        return [str(script)]  # a console script's sys.path starts at its own folder
+    # A source checkout on 3.10: drop the working directory before importing toolpass.
+    return [sys.executable, "-c", "import sys; sys.path[:] = [p for p in sys.path if p not in ('', '.')]; from toolpass.cli import main; main()"]
 
 
 def _read(path: Path) -> Any:

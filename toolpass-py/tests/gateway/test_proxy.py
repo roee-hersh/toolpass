@@ -99,6 +99,13 @@ def test_recorder_survives_garbage_and_a_broken_store(capsys: pytest.CaptureFixt
     assert err.count("could not record") == 1, "one warning, not one per call"
 
 
+def test_a_line_nested_too_deep_is_forwarded_unrecorded(tmp_path: Path) -> None:
+    r = Recorder(Store(tmp_path / "g.db"), "c", "s")
+    r.note_client(b"[" * 100000 + b"]" * 100000)
+    r.from_server(b"[" * 100000 + b"]" * 100000)
+    r.close()
+
+
 def test_recorder_batches_and_server_requests(tmp_path: Path) -> None:
     store = Store(tmp_path / "g.db")
     r = Recorder(store, "c", "s")

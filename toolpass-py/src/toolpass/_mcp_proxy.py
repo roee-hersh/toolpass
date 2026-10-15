@@ -100,7 +100,7 @@ class Recorder:
     def _messages(self, line: bytes) -> list[Mapping[str, Any]]:
         try:
             doc = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # a line nested past the parser's limit is forwarded, not recorded
             return []
         items = doc if isinstance(doc, list) else [doc]
         return [m for m in items if isinstance(m, Mapping)]
