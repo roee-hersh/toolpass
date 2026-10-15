@@ -1,7 +1,8 @@
 # Design: the MCP gateway
 
-**Status: proposal. Nothing on this page is built yet.** It is here to be argued with before any
-code is written.
+**Status: step 1 is built** (stdio servers, the record, the dashboard, Claude Desktop and Claude
+Code); see [the guide](../guides/gateway.md). Steps 2 and 3 are still a proposal. Step 1 has no
+daemon: each wrapped server writes to the shared SQLite file, and the dashboard reads it.
 
 ## The goal
 

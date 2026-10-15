@@ -68,7 +68,7 @@ def test_calls_show_up_and_the_page_decides_nothing(kit: tuple[Toolkit, Watch], 
     d = _events(page)
     assert [e["outcome"] for e in d["events"]] == ["refused", "ran"]
     assert d["events"][0]["code"] == "out_of_scope" and d["events"][0]["user"] == "dana@example.com"
-    assert set(d) == {"events", "next"}
+    assert set(d) == {"kind", "title", "events", "next"} and d["kind"] == "toolkit"
     assert len(events) == 2, "the previous audit sink still receives every event"
     d = _events(page, since=d["next"])
     assert d["events"] == []

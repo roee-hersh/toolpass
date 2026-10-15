@@ -5,6 +5,11 @@
 > The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
+The package also ships the MCP gateway: `toolpass gateway on` puts toolpass in front of every MCP
+server Claude Desktop and Claude Code already use, and `toolpass dashboard` shows every tool call
+they make. See [the gateway guide](../docs/guides/gateway.md). The rest of this page is about
+securing the tools you write yourself.
+
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
 scale a deployment, read customer records, post to Slack. Those tools usually run with one service
 credential for everyone who talks to the agent, and every team rebuilds the same safety checks

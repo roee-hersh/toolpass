@@ -3,7 +3,33 @@
 [![ci](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml/badge.svg)](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**A pass for every tool call. Secure-by-default tools for AI agents, under any agent framework.**
+**A pass for every tool call. See every tool call your agents make, and check the ones your own
+tools make.**
+
+## See what your agents do
+
+Claude Desktop and Claude Code call MCP servers (GitHub, Slack, a database) for you, and forget what
+they did when the chat closes. toolpass puts itself in front of those servers and keeps the record:
+
+```sh
+pip install toolpass
+toolpass gateway on        # wrap every MCP server Claude Desktop and Claude Code already use
+toolpass dashboard -open   # every call, from every chat, kept
+```
+
+There is nothing to register. `gateway on` reads the clients' own config files, puts toolpass in
+front of each server, and keeps the original beside it; `toolpass gateway off` puts them back.
+Restart the client and use it as before. The dashboard lists each call with the server, the tool,
+the arguments, the result, and how long it took, and the servers it found with their tools, the
+destructive ones marked. Nothing is blocked or changed: the client's own "Allow this tool?" still
+decides. Everything stays in one file on your machine.
+
+![The dashboard: two calls made through toolpass to an MCP server named repos, a delete_repo with its result opened and an echo, each with its arguments, duration and time](docs/assets/dashboard.png)
+
+Servers started over stdio are recorded today; HTTP servers are listed and come next. The
+[gateway guide](docs/guides/gateway.md) has the details.
+
+## Check what your own tools do
 
 Your agent's tools run with one service credential for everyone who talks to it. They read email
 and web pages that can carry injected instructions. They can delete things, open pull requests and
