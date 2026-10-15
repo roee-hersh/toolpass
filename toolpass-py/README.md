@@ -159,6 +159,33 @@ In async tools, sync hooks (an authorizer, an approval rule, a preview, the appr
 listeners, a credentials callable) run in a worker thread, so blocking I/O in them cannot stall the
 event loop; pass `async def` hooks to run them on the loop.
 
+## Watch it live
+
+`toolpass.watch()` serves a page that shows every call the toolkit decides, as it happens: who
+asked, the arguments, ran or refused and why, the requests the body made. A call that waits for
+approval gets Approve and Reject buttons, which decide it in the toolkit's `ApprovalQueue`; the
+agent's retry then runs, or is refused.
+
+```python
+import toolpass
+
+page = toolpass.watch()                    # the default toolkit; toolpass.watch(kit) for another
+print(page.url)                            # http://127.0.0.1:PORT/t/<token>/
+...
+page.close()                               # or use it as a context manager
+```
+
+A toolkit that had no approver is given an `ApprovalQueue`, so calls that need approval wait on
+the page instead of being refused. A toolkit with another approver (a Slack flow, a prompt) is
+shown but not decided here. `page.pending()` lists the waiting ids and `page.decide(id, True)`
+approves one from code; `page.events()` returns what the page shows.
+
+The page binds to the loopback interface only, and every path carries a random token, so another
+program or web page on the machine cannot read or decide anything without the printed URL. It has
+no accounts: to show it to people elsewhere, put something that authenticates them in front of it.
+`toolpass demo` runs a scripted session with the page open; see
+[the command-line reference](../docs/reference/cli.md).
+
 ## Refusals
 
 A refused call raises `ToolRefused` with a `code` (`out_of_scope`, `not_authorized`,
@@ -237,7 +264,11 @@ has the details; `toolpass routes github` prints what toolpass understands of an
 - **Session state reaches worker threads only through context.** Frameworks that run tools in
   threads must copy the context (LangChain and `asyncio.to_thread` do).
 
-## Run the example and the tests
+## Run the demo, the example and the tests
+
+```sh
+toolpass demo -open      # a scripted agent, two users, one guard, on the live page
+```
 
 ```sh
 pip install -e . pytest pytest-timeout hypothesis

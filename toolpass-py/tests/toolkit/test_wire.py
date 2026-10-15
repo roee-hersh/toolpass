@@ -260,6 +260,7 @@ def test_exfiltration_through_a_sends_out_route_waits_for_approval(gh, engine, e
     assert requests_seen(gh) == []
     assert events.last.outcome == "pending"
     assert events.last.actions[0]["outcome"] == "pending"
+    assert events.last.approval == e.value.request.id, "a wire-level approval names its request, as a pre-body one does"
     approvals.approve(e.value.request.id, by="lead@example.com")
     assert comment("acme/x", "two customers affected") == "commented"
     assert requests_seen(gh) == ["POST /api/v3/repos/acme/x/issues/7/comments"]

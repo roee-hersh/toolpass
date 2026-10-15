@@ -56,6 +56,7 @@ from toolpass._toolkit import (
     spec_of,
 )
 from toolpass._version import __version__
+from toolpass._watch import Watch, watch
 from toolpass._wire import ActionRefused
 from toolpass._wire import install as intercept
 from toolpass.core.secret import env, file, literal
@@ -94,6 +95,7 @@ __all__ = [
     "Toolpass",
     "UserSource",
     "Validator",
+    "Watch",
     "__version__",
     "approve_all",
     "as_agent",
@@ -112,4 +114,5 @@ __all__ = [
     "permission_check",
     "secured_tool",
     "spec_of",
+    "watch",
 ]
