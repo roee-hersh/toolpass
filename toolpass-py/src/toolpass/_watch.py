@@ -366,6 +366,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .tag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 4px; }
 .tag.destructive { color: var(--bad); border-color: currentColor; }
 .tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.inside { margin: 8px 0 2px 4px; padding: 6px 0 2px 12px; border-left: 2px solid var(--line); }
+.tool.small { font-size: 13px; }
 """
 
 _SCRIPT = b"""
@@ -390,6 +392,32 @@ function argsText(args) {
   return Object.entries(args).map(([k, v]) => k + '=' + JSON.stringify(v)).join(', ');
 }
 
+function actionLine(a) {
+  const refused = a.outcome === 'refused';
+  const name = a.action || (a.integration ? a.integration + ' request' : 'request');
+  const text = [name, a.resource ? 'on ' + a.resource : '', '\\u00b7', a.method, a.host + (a.path || ''),
+    refused ? '\\u2014 refused' + (a.code ? ' (' + a.code + ')' : '') : (a.as_agent ? '\\u2014 as the agent' : '')].filter(Boolean).join(' ');
+  const p = el('p', 'action' + (refused ? ' refused' : ''), text);
+  if (refused && a.reason) p.title = a.reason;
+  return p;
+}
+
+function renderInside(e) {
+  // What a toolpass-secured tool did inside an MCP call: who it acted as, the decision, each request.
+  const box = el('div', 'inside');
+  const head = el('div', 'head');
+  const outcome = e.outcome || 'refused';
+  head.appendChild(el('span', 'badge ' + outcome, outcome));
+  head.appendChild(el('span', 'tool small', e.tool));
+  if (e.user) head.appendChild(el('span', 'who', 'as ' + e.user));
+  box.appendChild(head);
+  if (e.reason) box.appendChild(el('p', 'line', (e.code ? e.code + ': ' : '') + e.reason));
+  else if (e.authorization) box.appendChild(el('p', 'line muted', e.authorization));
+  for (const a of e.actions || []) box.appendChild(actionLine(a));
+  if (e.actions_cut) box.appendChild(el('p', 'line muted', '\\u2026 and ' + e.actions_cut + ' more requests'));
+  return box;
+}
+
 function renderToolkit(e) {
   const li = el('li');
   const head = el('div', 'head');
@@ -401,11 +429,7 @@ function renderToolkit(e) {
   li.appendChild(head);
   if (e.reason) li.appendChild(el('p', 'line', (e.code ? e.code + ': ' : '') + e.reason));
   else if (e.authorization) li.appendChild(el('p', 'line', e.authorization));
-  for (const a of e.actions || []) {
-    const refused = a.outcome === 'refused';
-    const text = [a.method, a.host + (a.path || ''), a.action ? '-> ' + a.action : '', a.resource || '', refused ? '(refused)' : ''].filter(Boolean).join(' ');
-    li.appendChild(el('p', 'action' + (refused ? ' refused' : ''), text));
-  }
+  for (const a of e.actions || []) li.appendChild(actionLine(a));
   return li;
 }
 
@@ -420,6 +444,7 @@ function renderCall(c) {
   li.appendChild(head);
   const args = argsText(c.arguments);
   if (args) li.appendChild(el('p', 'line args', args));
+  for (const e of c.inside || []) li.appendChild(renderInside(e));
   if (c.result) {
     const d = el('details');
     d.appendChild(el('summary', null, c.outcome === 'error' ? 'error' : 'result'));

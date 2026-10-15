@@ -57,13 +57,38 @@ CREATE TABLE IF NOT EXISTS calls (
   outcome TEXT NOT NULL,
   result TEXT,
   duration_ms REAL,
+  started REAL NOT NULL DEFAULT 0,
+  ended REAL,
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
+CREATE INDEX IF NOT EXISTS calls_session ON calls (session, started);
+CREATE TABLE IF NOT EXISTS tool_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session TEXT NOT NULL,
+  started REAL NOT NULL,
+  ended REAL NOT NULL,
+  event TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, started);
 CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
 
 _MAX_TEXT = 4000
+_MAX_EVENT = 64000
+_SLACK = 1.0  # seconds: clocks of two processes on one machine, and the time a message takes
+
+
+def _cut_event(event: Mapping[str, Any]) -> str:
+    text = json.dumps(event, default=repr, ensure_ascii=False)
+    if len(text) <= _MAX_EVENT:
+        return text
+    trimmed = dict(event)
+    actions = trimmed.get("actions")
+    if isinstance(actions, list):
+        trimmed["actions"] = actions[:50]
+        trimmed["actions_cut"] = len(actions) - 50
+    return json.dumps(trimmed, default=repr, ensure_ascii=False)[:_MAX_EVENT]
 
 
 def data_dir() -> Path:
@@ -112,10 +137,20 @@ class Store:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.execute("PRAGMA busy_timeout=15000")
-            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
+            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_events'").fetchone() is None:
                 self._db.execute("PRAGMA journal_mode=WAL")
+                self._upgrade()
                 self._db.executescript(_SCHEMA)
         self._private_side_files()
+
+    def _upgrade(self) -> None:
+        """Columns a record from an earlier toolpass lacks."""
+        if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
+            return
+        have = {r[1] for r in self._db.execute("PRAGMA table_info(calls)").fetchall()}
+        for column, kind in (("started", "REAL NOT NULL DEFAULT 0"), ("ended", "REAL")):
+            if column not in have:
+                self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} {kind}")  # fixed names, no input
 
     def _private_side_files(self) -> None:
         """SQLite's WAL and shared-memory files carry recent rows too: same
@@ -184,8 +219,9 @@ class Store:
         """Record a call that was just sent to the server; returns its id."""
         with self._write() as (db, rev):
             cur = db.execute(
-                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, rev) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
-                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), rev),
+                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, rev)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), time.time(), rev),
             )
             call_id = int(cur.lastrowid or 0)
         self._private_side_files()
@@ -194,16 +230,32 @@ class Store:
     def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float) -> None:
         with self._write() as (db, rev):
             db.execute(
-                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, rev = ? WHERE id = ?",
-                (outcome, _cut(result), round(duration_ms, 1), rev, call_id),
+                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, rev = ? WHERE id = ?",
+                (outcome, _cut(result), round(duration_ms, 1), time.time(), rev, call_id),
             )
 
     # -- readers ----------------------------------------------------------------
+
+    def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
+        """What a toolpass-secured tool inside a wrapped server did during a
+        call: its audit event, with the requests it made to GitHub, Jira, ...
+        It belongs to the gateway call of the same session running at that
+        time; that call's rev moves so the dashboard shows it."""
+        with self._write() as (db, rev):
+            db.execute(
+                "INSERT INTO tool_events (session, started, ended, event) VALUES (?, ?, ?, ?)",
+                (session, started, ended, _cut_event(event)),
+            )
+            db.execute(
+                "UPDATE calls SET rev = ? WHERE session = ? AND started <= ? AND (ended IS NULL OR ended >= ?)",
+                (rev, session, ended + _SLACK, started - _SLACK),
+            )
 
     def prune(self, days: float = 90) -> int:
         """Delete calls older than ``days``; returns how many."""
         cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
         with self._write() as (db, _):
+            db.execute("DELETE FROM tool_events WHERE started < ?", (time.time() - days * 86400,))
             return int(db.execute("DELETE FROM calls WHERE time < ?", (cutoff,)).rowcount)
 
     def calls(self, since: int = 0, limit: int = 500) -> tuple[list[dict[str, Any]], int]:
@@ -221,6 +273,7 @@ class Store:
                     rows = self._db.execute("SELECT * FROM calls WHERE rev > ? ORDER BY rev LIMIT ?", (since, limit)).fetchall()
             finally:
                 self._db.execute("COMMIT")
+            events = self._events_for(rows)
         out = []
         for r in rows:
             row = dict(r)
@@ -228,9 +281,32 @@ class Store:
                 row["arguments"] = json.loads(row["arguments"])
             except ValueError:
                 pass
+            row["inside"] = events.get(row["id"], [])
             out.append(row)
         nxt = int(out[-1]["rev"]) if since > 0 and len(out) == limit else current
         return out, nxt
+
+    def _events_for(self, rows: Sequence[sqlite3.Row]) -> dict[int, list[dict[str, Any]]]:
+        """The tool events inside each call: same session, within the call's
+        time. Called with the lock held."""
+        out: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            if not r["started"]:
+                continue
+            ended = r["ended"] if r["ended"] is not None else time.time()
+            found = self._db.execute(
+                "SELECT event FROM tool_events WHERE session = ? AND started >= ? AND ended <= ? ORDER BY started",
+                (r["session"], r["started"] - _SLACK, ended + _SLACK),
+            ).fetchall()
+            events = []
+            for e in found:
+                try:
+                    events.append(json.loads(e["event"]))
+                except ValueError:
+                    continue
+            if events:
+                out[r["id"]] = events
+        return out
 
     def servers(self) -> list[dict[str, Any]]:
         with self._lock:

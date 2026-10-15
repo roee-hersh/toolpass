@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import shutil
 import subprocess
@@ -240,7 +241,12 @@ def run(
     stdout = stdout if stdout is not None else sys.stdout.buffer
     recorder = Recorder(store, client, server, config)
     try:
-        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None)
+        env = dict(os.environ)
+        if store is not None:
+            # A server built with toolpass reports what its tools did inside each call (toolpass._gateway_sink).
+            env["TOOLPASS_GATEWAY_SESSION"] = recorder.session
+            env["TOOLPASS_GATEWAY_DB"] = str(store.path)
+        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=env)
     except OSError as e:
         print(f"toolpass: could not start {command[0]!r}: {e}", file=sys.stderr, flush=True)
         return 127
