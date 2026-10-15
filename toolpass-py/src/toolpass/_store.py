@@ -62,21 +62,32 @@ CREATE TABLE IF NOT EXISTS calls (
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
-CREATE INDEX IF NOT EXISTS calls_session ON calls (session, started);
+CREATE INDEX IF NOT EXISTS calls_session ON calls (session, tool, started);
 CREATE TABLE IF NOT EXISTS tool_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session TEXT NOT NULL,
+  tool TEXT NOT NULL,
   started REAL NOT NULL,
   ended REAL NOT NULL,
   event TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, started);
+CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, tool, started);
 CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
 
 _MAX_TEXT = 4000
 _MAX_EVENT = 64000
-_SLACK = 1.0  # seconds: clocks of two processes on one machine, and the time a message takes
+# Seconds a tool event's start may precede its call's: the event's time is
+# kept to the millisecond, and the wall clock is coarse on some systems.
+_SLACK = max(0.002, 2 * time.get_clock_info("time").resolution)
+
+
+# The call a tool event belongs to: in its session, of its tool, the latest
+# one sent before the event started. Calls of one tool in one session run one
+# after another in practice; two at once are told apart by when they were sent.
+def _owner(session: str, tool: str, at: str) -> str:
+    """SQL for that call's id, given SQL expressions for the event's session, tool and start."""
+    return f"SELECT c.id FROM calls c WHERE c.session = {session} AND c.tool = {tool} AND c.started <= {at} ORDER BY c.started DESC, c.id DESC LIMIT 1"
 
 
 def _cut_event(event: Mapping[str, Any]) -> str:
@@ -215,23 +226,24 @@ class Store:
                     (client, config, server, name, json.dumps(annotations, default=repr), rev),
                 )
 
-    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any]) -> int:
-        """Record a call that was just sent to the server; returns its id."""
+    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any], started: float | None = None) -> int:
+        """Record a call that was just sent to the server; returns its id.
+        ``started`` is when it was sent (wall clock), now by default."""
         with self._write() as (db, rev):
             cur = db.execute(
                 "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, rev)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
-                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), time.time(), rev),
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), started or time.time(), rev),
             )
             call_id = int(cur.lastrowid or 0)
         self._private_side_files()
         return call_id
 
-    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float) -> None:
+    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float, ended: float | None = None) -> None:
         with self._write() as (db, rev):
             db.execute(
                 "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, rev = ? WHERE id = ?",
-                (outcome, _cut(result), round(duration_ms, 1), time.time(), rev, call_id),
+                (outcome, _cut(result), round(duration_ms, 1), ended or time.time(), rev, call_id),
             )
 
     # -- readers ----------------------------------------------------------------
@@ -239,17 +251,16 @@ class Store:
     def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
         """What a toolpass-secured tool inside a wrapped server did during a
         call: its audit event, with the requests it made to GitHub, Jira, ...
-        It belongs to the gateway call of the same session running at that
-        time; that call's rev moves so the dashboard shows it."""
+        It belongs to the latest call of the same tool in the same session
+        sent before it started (see ``_owner``); that call's rev moves so the
+        dashboard shows it."""
+        tool = str(event.get("tool", ""))
         with self._write() as (db, rev):
             db.execute(
-                "INSERT INTO tool_events (session, started, ended, event) VALUES (?, ?, ?, ?)",
-                (session, started, ended, _cut_event(event)),
+                "INSERT INTO tool_events (session, tool, started, ended, event) VALUES (?, ?, ?, ?, ?)",
+                (session, tool, started, ended, _cut_event(event)),
             )
-            db.execute(
-                "UPDATE calls SET rev = ? WHERE session = ? AND started <= ? AND (ended IS NULL OR ended >= ?)",
-                (rev, session, ended + _SLACK, started - _SLACK),
-            )
+            db.execute(f"UPDATE calls SET rev = ? WHERE id = ({_owner('?', '?', '?')})", (rev, session, tool, started + _SLACK))
 
     def prune(self, days: float = 90) -> int:
         """Delete calls older than ``days``; returns how many."""
@@ -287,16 +298,18 @@ class Store:
         return out, nxt
 
     def _events_for(self, rows: Sequence[sqlite3.Row]) -> dict[int, list[dict[str, Any]]]:
-        """The tool events inside each call: same session, within the call's
-        time. Called with the lock held."""
+        """The tool events inside each call: those it owns (``_owner``) that
+        started before it ended. Called with the lock held."""
         out: dict[int, list[dict[str, Any]]] = {}
         for r in rows:
             if not r["started"]:
                 continue
             ended = r["ended"] if r["ended"] is not None else time.time()
             found = self._db.execute(
-                "SELECT event FROM tool_events WHERE session = ? AND started >= ? AND ended <= ? ORDER BY started",
-                (r["session"], r["started"] - _SLACK, ended + _SLACK),
+                "SELECT e.event FROM tool_events e WHERE e.session = ? AND e.tool = ? AND e.started >= ? AND e.started <= ?"
+                f" AND ({_owner('e.session', 'e.tool', 'e.started + ?')}) = ?"
+                " ORDER BY e.started",
+                (r["session"], r["tool"], r["started"] - _SLACK, ended + _SLACK, _SLACK, r["id"]),
             ).fetchall()
             events = []
             for e in found:

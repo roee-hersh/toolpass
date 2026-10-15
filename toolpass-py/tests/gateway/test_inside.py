@@ -85,9 +85,38 @@ def test_tool_events_outside_any_call_are_not_attached(tmp_path: Path) -> None:
 
 def test_an_event_landing_after_the_call_finished_moves_its_rev(tmp_path: Path) -> None:
     store = Store(tmp_path / "g.db")
-    call = store.start_call("c", "cfg", "srv", "sess", "open_pr", {})
-    store.finish_call(call, "ok", "done", 1.0)
+    t = time.time() - 10
+    call = store.start_call("c", "cfg", "srv", "sess", "open_pr", {}, started=t)
+    store.finish_call(call, "ok", "done", 1000.0, ended=t + 1)
     _, nxt = store.calls(0)
-    store.record_tool_event("sess", {"tool": "open_pr", "outcome": "ran"}, time.time() - 0.5, time.time() - 0.4)
+    store.record_tool_event("sess", {"tool": "open_pr", "outcome": "ran"}, t + 0.1, t + 0.9)
     rows, _ = store.calls(nxt)
     assert [r["id"] for r in rows] == [call] and rows[0]["inside"][0]["tool"] == "open_pr"
+
+
+def test_back_to_back_calls_each_get_only_their_own_events(tmp_path: Path) -> None:
+    # Calls a few milliseconds apart: each event goes to the call it ran in, never to its neighbours.
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    ids = []
+    for i in range(3):
+        start = t + i * 0.004
+        ids.append(store.start_call("c", "cfg", "srv", "sess", "ship", {"n": i}, started=start))
+        store.record_tool_event("sess", {"tool": "ship", "n": i}, start + 0.0005, start + 0.003)
+        store.finish_call(ids[-1], "ok", "done", 3.5, ended=start + 0.0035)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [[e["n"] for e in rows[i]["inside"]] for i in ids] == [[0], [1], [2]]
+
+
+def test_two_tools_running_at_once_are_told_apart_by_name(tmp_path: Path) -> None:
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    a = store.start_call("c", "cfg", "srv", "sess", "status", {}, started=t)
+    b = store.start_call("c", "cfg", "srv", "sess", "ship", {}, started=t + 0.01)
+    store.record_tool_event("sess", {"tool": "status"}, t + 0.02, t + 0.5)
+    store.record_tool_event("sess", {"tool": "ship"}, t + 0.03, t + 0.4)
+    store.finish_call(a, "ok", "", 600.0, ended=t + 0.6)
+    store.finish_call(b, "ok", "", 500.0, ended=t + 0.5)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [e["tool"] for e in rows[a]["inside"]] == ["status"]
+    assert [e["tool"] for e in rows[b]["inside"]] == ["ship"]
