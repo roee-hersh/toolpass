@@ -50,6 +50,11 @@ agents in any language call.
   the chart, and how they are released.
 - [Helm chart values](../deploy/helm/toolpass/README.md).
 
+## Design
+
+- [The MCP gateway](design/mcp-gateway.md): a proposal. Every MCP server your clients use, over stdio
+  or HTTP, found and wrapped with nothing to add, and one page with every call and approval.
+
 ## Development
 
 - [Writing an integration](development/integration-authoring.md).
