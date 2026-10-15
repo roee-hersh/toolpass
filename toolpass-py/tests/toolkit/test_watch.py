@@ -72,8 +72,8 @@ def test_calls_show_up_and_the_page_decides_nothing(kit: tuple[Toolkit, Watch], 
     assert len(events) == 2, "the previous audit sink still receives every event"
     d = _events(page, since=d["next"])
     assert d["events"] == []
-    for path in ("approve/x", "reject/x"):
-        assert _request(page, "POST", path, body=b"")[0] == 404, "the page has no way to change a call"
+    for path in ("approve/x", "reject/x", "events"):
+        assert _request(page, "POST", path, body=b"")[0] == 501, "the page has no way to change a call"
 
 
 def test_the_page_and_its_assets_are_served_with_headers_that_keep_data_out_of_other_origins(kit: tuple[Toolkit, Watch]) -> None:
@@ -98,7 +98,7 @@ def test_nothing_without_the_token_or_from_another_host(kit: tuple[Toolkit, Watc
     raw.close()
     assert _request(page, "GET", "/")[0] == 404
     assert _request(page, "GET", "/events")[0] == 404
-    assert _request(page, "POST", "/t/wrong-token/events", body=b"")[0] == 404
+    assert _request(page, "GET", "/t/wrong-token/watch.js")[0] == 404
     # DNS rebinding: a page elsewhere resolves a name to 127.0.0.1 and sends its own Host.
     assert _request(page, "GET", "events", host="evil.example")[0] == 403
     assert _request(page, "GET", "events", host=f"127.0.0.1:{port}")[0] == 200
@@ -115,7 +115,7 @@ def test_a_body_not_framed_by_one_plain_length_closes_the_connection(kit: tuple[
     smuggled = f"GET {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode()
     for headers in (b"Transfer-Encoding: chunked", b"Content-Length: 5\r\nContent-Length: 5", b"Content-Length: +5", b"Content-Length: 5_0"):
         raw = socket.create_connection(("127.0.0.1", port), timeout=5)
-        raw.sendall(f"POST {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode() + headers + b"\r\n\r\n" + smuggled)
+        raw.sendall(f"GET {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode() + headers + b"\r\n\r\n" + smuggled)
         raw.settimeout(2)
         got = b""
         try:

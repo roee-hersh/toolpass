@@ -74,7 +74,7 @@ def test_refuse_and_off_modes(dana):
 
 def test_approval_was_removed():
     """No mode asks a person: approve settings are rejected, not ignored."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="was removed"):
         Toolkit(audit=None, exfiltration="approve")
     with pytest.raises(TypeError):
         Toolkit(audit=None, approver=lambda request: True)  # type: ignore[call-arg]

@@ -221,8 +221,9 @@ has the details; `toolpass routes github` prints what toolpass understands of an
   and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub and Slack have route
   tables today; a request to another integration is placed by host but not mapped to an action.
 - **The untrusted-input check matches words, not meaning.** A model that paraphrases injected text,
-  or an argument shorter than six words, is not caught. The exfiltration guard and scope limits
-  cover that gap; don't rely on this check alone.
+  or an argument shorter than six words, is not caught. The exfiltration guard catches a
+  paraphrase only when the session also read private data and the tool sends data out; otherwise
+  the call runs, within its scope and limits. Don't rely on this check alone.
 - **Fencing helps, it does not guarantee.** Models can still be talked past markers.
 - **Only string output is fenced.** Structured output is recorded as untrusted but returned as is.
 - **Sessions live in memory.** Counts and flags do not survive a restart or span processes yet.

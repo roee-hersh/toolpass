@@ -135,7 +135,8 @@ pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=
 ## Honest limits
 
 - The untrusted-input check matches words, not meaning: a paraphrase gets past it. The
-  exfiltration guard and scope limits cover that gap.
+  exfiltration guard catches a paraphrase only when the session also read private data and the
+  tool sends data out; otherwise a paraphrased instruction runs, within the tool's scope and limits.
 - Fencing helps the model tell data from instructions; it does not guarantee it.
 - Sessions and limits live in memory, in one process.
 - A permission check and the action after it are not atomic.

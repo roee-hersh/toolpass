@@ -78,7 +78,10 @@ tools:
         effect: read | write | destructive
 ```
 
-An `approve:` key, from before approval was removed, makes the file fail to load. A template (`repo:{repo}`) names the tool's arguments; it is filled from them and compared
+An action with `approve: true`, from before approval was removed, makes the file fail to load, so
+a tool is never run without the confirmation its file asked for. `approve: false` is ignored.
+
+A template (`repo:{repo}`) names the tool's arguments; it is filled from them and compared
 exactly, or as a glob when the template's own text contains `*` (an argument value is never a
 glob). A template whose argument the call does not have covers nothing. `ActionRecorder(path).record(tool, arguments, observed)` merges one call's allowed actions
 into the file, atomically.

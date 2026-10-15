@@ -127,9 +127,10 @@ class Entitlement:
     def from_dict(cls, d: Mapping[str, Any], where: str) -> Entitlement:
         if not isinstance(d, Mapping):
             raise EntitlementsError(f"{where}: each action must be a mapping")
-        if "approve" in d:
+        if d.get("approve", False) is not False:
+            # Fail closed: the file asked for a confirmation toolpass no longer gives.
             raise EntitlementsError(f"{where}: 'approve' was removed: toolpass no longer asks a person; delete the key")
-        unknown = set(d) - {"action", "resource", "as", "effect"}
+        unknown = set(d) - {"action", "resource", "as", "effect", "approve"}
         if unknown:
             raise EntitlementsError(f"{where}: unknown keys {', '.join(sorted(unknown))}")
         action, resource = d.get("action"), d.get("resource", "")

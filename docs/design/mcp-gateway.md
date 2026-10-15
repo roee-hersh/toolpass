@@ -80,8 +80,8 @@ them next to each tool, so a destructive call stands out in the history.
 The live page from `toolpass.watch()` becomes one tab of it.
 
 - **Servers:** what the gateway found, in which client, stdio or HTTP, wrapped or not.
-- **Calls:** every tool call ever made, with server, tool, arguments, result, ran or refused and why,
-  filtered by server, tool, client, session and time.
+- **Calls:** every tool call ever made, with server, tool, arguments, result, success or error and
+  how long it took, filtered by server, tool, client, session and time.
 
 It binds to the loopback interface with a token in every path, as the live page does today.
 

@@ -173,6 +173,8 @@ def test_an_approve_key_left_in_a_file_is_rejected():
     ents = {"tools": {"propose": {"actions": [{"action": "github:pr.create", "resource": "repo:{repo}", "as": "user", "effect": "write", "approve": True}]}}}
     with pytest.raises(EntitlementsError, match="'approve' was removed"):
         Entitlements.from_mapping(ents)
+    ents["tools"]["propose"]["actions"][0]["approve"] = False  # meant nothing before, still nothing
+    assert Entitlements.from_mapping(ents).for_tool("propose") is not None
 
 
 def test_a_resource_known_only_at_run_time_is_checked_at_the_wire(gh, engine, events):

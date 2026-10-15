@@ -165,9 +165,6 @@ class Watch:
             def do_GET(self) -> None:
                 self._serve("GET")
 
-            def do_POST(self) -> None:
-                self._serve("POST")
-
             def _serve(self, method: str) -> None:
                 status, kind, body = page._respond(method, self.path, self.headers.get("Host", ""), self._discard_body())
                 self.send_response(status)
