@@ -3,49 +3,45 @@
 [![ci](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml/badge.svg)](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Your agent only does what the person asking could do themselves.**
+**toolpass puts a guard in front of your AI agent's tools, so the agent can only do what the
+person asking is allowed to do.**
 
-An agent acts in Jira, GitHub, Kubernetes and Slack with its own credential, which can do more
-than the person talking to it. Ask it to delete an issue you may not delete, and it deletes it:
-nothing in the conversation tells the model what you are allowed to do. toolpass asks the system
-that owns the resource, live, whether *you* may, refuses the call when the answer is no, and shows
-every call on a page where a person approves the ones that need it. Any model, any agent framework,
-and the check is code in front of the tool, not a prompt.
+It is a Python package. You wrap the tools your agent calls, and before every call toolpass:
 
-See it in a minute:
+- **asks the real system** (Jira, GitHub, Kubernetes, Slack, AWS and 17 more) whether *this
+  person* may do *this action*, and refuses the call when they may not;
+- **holds the dangerous calls** until a person presses Approve, on a page toolpass serves;
+- **writes down every call**: who asked, what ran, what was refused and why.
+
+The agent's own credential can usually do more than the person talking to it, and nothing in a
+conversation tells the model what that person is allowed to do. The checks are code in front of
+the tool, not a prompt, so they hold for any model and any agent framework.
+
+## See it in one minute
 
 ```sh
-pip install toolpass && toolpass demo -open
+pip install toolpass
+toolpass demo -open
 ```
 
-```text
-== dana@example.com asks: "PAY-123 is a duplicate I filed by mistake, delete it" ==
+![toolpass demo: on the left the terminal, on the right the live page. Dana asks the agent to delete an issue and is refused; the admin's request waits on the page until Approve is pressed, then runs.](docs/assets/demo.gif)
 
-[ran]     get_issue(PAY-123)
-          -> PAY-123: duplicate of PAY-120: checkout timeout on retry; reporter dana; open
-[refused] delete_issue(PAY-123)
-          -> not_authorized: dana@example.com may not run delete_issue: toolpass deny thing.write
-             on thing:PAY-123 in jira-demo: denied: dana@example.com is not an admin
+What you are watching, left to right:
 
-== admin@example.com asks the same ==
-
-[waiting] delete_issue(PAY-123)
-          -> waiting for approval 63b7a869cbe2ade2 (this tool always needs approval). Ask the
-             user to approve it, then call delete_issue again with the same arguments.
-          open the page and press Approve (waiting up to 120s; -auto approves by itself)
-[ran]     delete_issue(PAY-123) retried, after a person decided
-          -> deleted PAY-123
-[refused] delete_issue(OPS-9), another project
-          -> out_of_scope: key='OPS-9' is outside this tool's scope
-```
-
-![The live page: the call waiting for approval, with Approve and Reject buttons, above Dana's refused call](docs/assets/watch.png)
+1. **Dana asks the agent to delete issue PAY-123.** The agent reads the issue, then calls
+   `delete_issue`. toolpass asks the Jira connection whether Dana may delete issues. She may not,
+   so the call is refused before anything happens, and the agent tells her why.
+2. **An admin asks the same.** The admin may delete issues, but the tool is marked as needing a
+   person's approval. The call stops, and it appears on the page on the right with an Approve
+   button. Press it, and the agent's retry runs: the issue is deleted, once.
+3. **The agent tries another project.** `OPS-9` is outside what this tool is allowed to touch, so
+   it is refused whoever asks.
 
 The page is `toolpass.watch()`, one line in your own agent. The demo plays the agent with a script,
 so it runs the same every time with no network and no model; the guard is the same code that runs
 under a real one.
 
-## One decorator
+## Use it in your agent
 
 Your agent's tools run with one service credential for everyone who talks to it. They read email
 and web pages that can carry injected instructions. They can delete things, open pull requests and
