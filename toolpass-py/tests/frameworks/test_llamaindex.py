@@ -30,7 +30,9 @@ from llama_index.core.tools import BaseTool, FunctionTool, ToolMetadata, ToolOut
 from llama_index.core.workflow import Context
 from pydantic import BaseModel
 
-from toolpass import Toolpass, literal
+from tests import harness
+from tests.frameworks.wire_scenario import DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
+from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.llamaindex import Rule, ToolpassAuthorization, ToolpassTool
 
 USER = "user@example.com"
@@ -345,6 +347,40 @@ def test_agent_workflow_multi_agent(tp: Toolpass) -> None:
     asyncio.run(go())
     assert t.ran == [("read_thing", "t2")], f"ran: {t.ran}"
     assert "may not thing.write" in s.result(0) and s.result(1) == "contents of t2", s.seen
+
+
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server) -> None:
+    """A secured tool that declares no rules: FunctionAgent calls it, its body's
+    requests are mapped to actions and checked against the active session inside
+    the client call, and the refusal LlamaIndex catches is what the model reads."""
+    gh = wire_gh
+    engine = wire_engine(gh)
+    tools = Toolkit(audit=None, permissions=engine)  # LlamaIndex sends a raised exception's message to the model, so no on_refuse
+
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    def run_as(user: str) -> str:
+        s = Script(("propose_fix", {"repo": REPO}))
+        agent = FunctionAgent(tools=[FunctionTool.from_defaults(propose_fix)], llm=MockFunctionCallingLLM(response_generator=s))
+
+        async def go() -> str:
+            with Session(user).active():
+                return str(await agent.run("go"))
+
+        out = asyncio.run(go())
+        assert out == "done", f"the run did not finish: {out!r}"
+        return s.result()
+
+    got = run_as(DANA)
+    assert all(w in got for w in REFUSAL_WORDS), f"model saw: {got!r}"
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], f"the fake saw: {requests_seen(gh)}"
+    assert engine.asked[-1] == (DANA, "github-acme", "pr.create", "repo:acme/x"), engine.asked
+
+    assert run_as(ADMIN) == f"opened #7 in {REPO}"
+    assert requests_seen(gh)[1:] == ["GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"], f"the fake saw: {requests_seen(gh)}"
 
 
 def test_rule_for_missing_tool_warns(tp: Toolpass, caplog: pytest.LogCaptureFixture) -> None:

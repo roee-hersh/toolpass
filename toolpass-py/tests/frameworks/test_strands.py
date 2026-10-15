@@ -3,8 +3,10 @@
 The model is scripted (it implements Strands' Model interface and asks for
 the tool calls each test gives it); the tools are real functions, and
 toolpass is a real in-process engine on the fake integration, plus one
-test against a fake PagerDuty upstream over TLS. The live test drives the
-same scenario with a real Claude model.
+test against a fake PagerDuty upstream over TLS, and one that drives the
+wire hook (``tests.frameworks.wire_scenario``) through the loop: a secured
+tool's body talks to a fake GitHub and its pull request is refused inside
+the HTTP call. The live test drives the same scenario with a real Claude model.
 """
 
 from __future__ import annotations
@@ -32,7 +34,8 @@ from strands.interventions import Deny, InterventionHandler, Proceed, Transform
 from strands.models import Model
 
 from tests import harness
-from toolpass import Toolpass, guarded, literal
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
+from toolpass import Session, Toolkit, Toolpass, guarded, literal
 from toolpass.strands import Rule, ToolpassAuthorization
 
 ADMIN = "admin@example.com"
@@ -526,6 +529,37 @@ def test_guarded_under_strands_tool(fw_strands_hp: RecordingToolpass) -> None:
     assert text(res).startswith("refused: dana@example.com may not thing.write on thing:2")
     assert RAN == ["guarded_write:1"]
     assert [s["user"] for s in fw_strands_hp.seen] == [ADMIN, DANA]
+
+
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server) -> None:
+    """A secured tool that declares nothing, under Strands' @tool: the body runs in
+    Strands' tool thread, and the pull request it tries to open is refused at the
+    wire, inside the HTTP call, for the session user who may not open one."""
+    gh = wire_gh
+    tools = Toolkit(audit=None, permissions=wire_engine(gh))
+
+    @tool
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file.
+
+        Args:
+            repo: the repository, as owner/name
+        """
+        return propose_body(gh, repo)
+
+    assert set(propose_fix.tool_spec["inputSchema"]["json"]["properties"]) == {"repo"}
+    call = [("propose_fix", {"repo": REPO})]
+    with Session(DANA).active():
+        [no] = run_agent(call, {}, [], [propose_fix])
+    assert no["status"] == "error", text(no)
+    for word in REFUSAL_WORDS:
+        assert word in text(no), text(no)
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST is refused before it is sent"
+    with Session(ADMIN).active():
+        [ok] = run_agent(call, {}, [], [propose_fix])
+    assert (ok["status"], text(ok)) == ("success", "opened #7 in acme/x")
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
 
 
 # -- a real upstream -------------------------------------------------------------

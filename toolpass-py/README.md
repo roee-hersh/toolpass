@@ -66,9 +66,12 @@ from langchain_core.tools import tool
 def read_email(id: str) -> str: ...
 ```
 
-Some frameworks hide a tool's exception from the model (the OpenAI Agents SDK's `function_tool`
-answers "An error occurred while running the tool"). There, `toolpass.configure(on_refuse=str)` makes
-a refusal the tool's result, so the model can tell the user why.
+Some frameworks hide a tool's exception from the model or let it escape the run (the OpenAI Agents
+SDK's `function_tool` answers "An error occurred while running the tool"; LangChain's default
+`ToolNode`, Pydantic AI, Google ADK, CrewAI and the MCP SDK's server behave their own way). There,
+`toolpass.configure(on_refuse=str)` makes a refusal the tool's result, so the model can tell the user
+why; [the guide](../docs/guides/intercepted-actions.md#through-the-frameworks) lists which
+frameworks need it.
 
 `toolpass.configure(...)` sets up the default behind `secured_tool`; tools declared earlier pick the
 settings up at call time. A program that needs two sets of settings makes `Toolkit(...)` objects

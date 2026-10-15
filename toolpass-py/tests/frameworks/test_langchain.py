@@ -40,7 +40,8 @@ from langgraph.prebuilt import tools_condition
 from pydantic import BaseModel, Field
 
 from tests import harness
-from toolpass import Toolpass, literal
+from tests.frameworks.wire_scenario import REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
+from toolpass import Session, Toolkit, Toolpass, literal
 from toolpass.langchain import Rule, ToolpassMiddleware
 
 ADMIN = "admin@example.com"
@@ -427,6 +428,36 @@ def test_bad_rules(fw_langchain_hp: RecordingToolpass) -> None:
             ToolpassMiddleware(fw_langchain_hp, rules)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         ToolpassMiddleware(fw_langchain_hp, {"t": ("demo", "thing.write", "thing:{x.y}")})
+
+
+# -- the wire hook ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+def test_wire_hook_through_the_agent_loop(wire_gh: harness.Server, use_async: bool) -> None:
+    """No middleware and no rule: a secured tool that declares nothing, whose body's
+    POST the wire hook refuses inside urllib, with the session taken from the contextvar
+    the application set around the agent run. create_agent's tool node lets a tool's
+    exception escape the run, so the refusal goes back to the model as the tool's result."""
+    gh = wire_gh
+    tools = Toolkit(audit=None, permissions=wire_engine(gh), on_refuse=str)
+
+    @tool
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    call = [("propose_fix", {"repo": REPO})]
+    with Session(DANA).active():
+        [res] = run_agent(call, None, [], [propose_fix], use_async=use_async)
+    for word in REFUSAL_WORDS:
+        assert word in str(res.content), res.content
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never leaves the client"
+    with Session(ADMIN).active():
+        [res] = run_agent(call, None, [], [propose_fix], use_async=use_async)
+    assert (res.status, res.content) == ("success", "opened #7 in acme/x")
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
 
 
 # -- LangGraph ------------------------------------------------------------------------

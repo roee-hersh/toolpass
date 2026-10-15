@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from tests import harness
-from tests.toolkit.test_wire import Engine, http, requests_seen
+from tests.harness.wire import Engine, http, requests_seen
 from toolpass import ActionRefused, ApprovalPending, ApprovalQueue, Entitlement, Session, Toolkit
 from toolpass._wire import Connections
 from toolpass.core.integration import Settings

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from tests import harness
-from tests.toolkit.test_wire import Engine, requests_seen
+from tests.harness.wire import Engine, requests_seen
 from toolpass import ActionRefused, Session, Toolkit
 
 slack_sdk = pytest.importorskip("slack_sdk")
