@@ -222,7 +222,8 @@ class Watch:
             return 413, "text/plain; charset=utf-8", b"too large\n"
         parts = urlsplit(path)
         segments = parts.path.split("/")
-        if len(segments) < 4 or segments[1] != "t" or not hmac.compare_digest(segments[2], self._token):
+        # Bytes, not str: compare_digest raises on a non-ASCII str, and the request line can carry one.
+        if len(segments) < 4 or segments[1] != "t" or not hmac.compare_digest(segments[2].encode("utf-8", "surrogateescape"), self._token.encode()):
             return 404, "text/plain; charset=utf-8", b"not found\n"
         rest = segments[3:]
         if method == "GET" and rest == [""]:

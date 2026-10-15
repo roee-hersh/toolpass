@@ -807,6 +807,10 @@ class Toolkit:
         state.release()
         ev.outcome = "pending" if isinstance(refused, ApprovalPending) else "refused"
         ev.code, ev.reason = refused.code, refused.reason
+        if isinstance(refused, ApprovalPending):
+            # Raised from inside the body (a request checked at the wire) as well as before it.
+            ev.approval = refused.request.id
+            ev.approval_reasons = ev.approval_reasons or list(refused.request.reasons)
         if self.on_refuse is not None:
             return self.on_refuse(refused)
         raise refused

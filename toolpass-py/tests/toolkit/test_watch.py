@@ -7,6 +7,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import socket
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -114,6 +115,11 @@ def test_nothing_without_the_token_or_from_another_host(kit: tuple[Toolkit, Watc
     _, page = kit
     _, port, _ = _parts(page.url)
     assert _request(page, "GET", "/t/wrong-token/events")[0] == 404
+    assert _request(page, "GET", "/t/caf%C3%A9/events")[0] == 404, "a non-ASCII token segment is a 404, not a dropped connection"
+    raw = socket.create_connection(("127.0.0.1", port), timeout=5)  # http.client refuses to send it; the wire does not
+    raw.sendall(b"GET /t/caf\xe9/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    assert raw.recv(64).startswith(b"HTTP/1.1 404")
+    raw.close()
     assert _request(page, "GET", "/")[0] == 404
     assert _request(page, "GET", "/events")[0] == 404
     assert _request(page, "POST", "/t/wrong-token/approve/x", body=b"")[0] == 404
