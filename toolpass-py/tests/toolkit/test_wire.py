@@ -14,7 +14,7 @@ import pytest
 
 from tests import harness
 from tests.harness.wire import Answer, Engine, http, requests_seen
-from toolpass import ActionRefused, ApprovalPending, ApprovalQueue, Session, Toolkit, ToolRefused, as_agent
+from toolpass import ActionRefused, Session, Toolkit, ToolRefused, as_agent
 
 
 @pytest.fixture
@@ -236,9 +236,8 @@ def test_injected_words_in_the_request_body_are_refused_at_the_wire(gh, engine, 
     assert requests_seen(gh) == []
 
 
-def test_exfiltration_through_a_sends_out_route_waits_for_approval(gh, engine, events, dana):
-    approvals = ApprovalQueue()
-    tools = Toolkit(audit=events, permissions=engine, approver=approvals)
+def test_exfiltration_through_a_sends_out_route_is_refused(gh, engine, events, dana):
+    tools = Toolkit(audit=events, permissions=engine)
 
     @tools.tool(effect="read", reads_private=True)
     def customers() -> str:
@@ -255,15 +254,12 @@ def test_exfiltration_through_a_sends_out_route_waits_for_approval(gh, engine, e
 
     customers()
     email()
-    with pytest.raises(ApprovalPending) as e:
+    with pytest.raises(ActionRefused) as e:
         comment("acme/x", "two customers affected")
+    assert e.value.code == "exfiltration_risk"
     assert requests_seen(gh) == []
-    assert events.last.outcome == "pending"
-    assert events.last.actions[0]["outcome"] == "pending"
-    assert events.last.approval == e.value.request.id, "a wire-level approval names its request, as a pre-body one does"
-    approvals.approve(e.value.request.id, by="lead@example.com")
-    assert comment("acme/x", "two customers affected") == "commented"
-    assert requests_seen(gh) == ["POST /api/v3/repos/acme/x/issues/7/comments"]
+    assert events.last.outcome == "refused"
+    assert events.last.actions[0]["outcome"] == "refused"
 
 
 def test_limits_count_observed_effects_for_an_undeclared_tool(gh, engine, events, dana):

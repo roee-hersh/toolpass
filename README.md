@@ -38,7 +38,7 @@ Every HTTP request the body makes is mapped to the action it is (`POST /repos/ac
 process when they may not do it. Run the tool once with `configure(record="toolpass-tools.yaml")`
 and toolpass writes down exactly which permissions it needs, from whom; hand that file back with
 `configure(entitlements=...)` and the tool is held to it. A tool can still declare what it does
-(`effect`, `scope`, `approve`, `credential`) and the two compose; `as_tool=` hands any framework a
+(`effect`, `scope`, `credential`) and the two compose; `as_tool=` hands any framework a
 real tool with the checks inside. [The guide](docs/guides/intercepted-actions.md) has the details.
 
 ## What it stops
@@ -54,14 +54,12 @@ you can run with no network and no model:
 [refused] delete_branch(feature/x) with the email's words
           -> untrusted_input: an argument repeats content from an untrusted source seen in this session
 [ran]     customer_tickets(checkout)  (private data)
-[waiting] post_slack(#ops), reworded
-          -> waiting for approval: this session has read private data and seen untrusted content,
+[refused] post_slack(#ops), reworded
+          -> exfiltration_risk: this session has read private data and seen untrusted content,
              and this tool sends data out
 [refused] open_gitops_pr(acme/gitops-prod) as dana
           -> not_authorized: toolpass deny ... dana@example.com is not an admin
-[waiting] open_gitops_pr(acme/gitops-prod) as admin
-          -> waiting for approval (this tool always needs approval)
-[ran]     open_gitops_pr(acme/gitops-prod) retried, after a person approved it
+[ran]     open_gitops_pr(acme/gitops-prod) as admin
 ```
 
 ## What a tool can declare
@@ -75,8 +73,7 @@ you can run with no network and no model:
 | **Permission checks** | The call runs only if the person asking may do it, answered live by Jira, GitHub, Kubernetes, AWS and 17 more |
 | **Untrusted-input check** | An action whose arguments repeat injected text from an email or web page is refused |
 | **Fencing** | Untrusted text reaches the model in a nonce-tagged block marked as data |
-| **Exfiltration guard** | Once a session has read private data and seen untrusted content, nothing leaves without approval |
-| **Human approval** | A person confirms the exact call, out of band; the approval works once |
+| **Exfiltration guard** | Once a session has read private data and seen untrusted content, nothing leaves |
 | **Credential injection** | Secrets are fetched after every check and redacted from anything the tool echoes |
 | **Audit** | One event per call, refused or run, with who asked and why it was decided |
 | **Observed actions** | Leave `effect` out and every request the body makes (PyGithub, slack_sdk, boto3, ...) is mapped to an action, checked against the user and refused before it is sent; a run can record them as the tool's entitlements |
@@ -97,7 +94,7 @@ out. Your tools already say which they are:
 @secured_tool(effect="write", sends_out=True)          # post to Slack
 ```
 
-After the first two have run in a session, the third waits for a person. It works from which tools
+After the first two have run in a session, the third is refused. It works from which tools
 ran, not from spotting the injected words, so a model that paraphrases the injection does not get
 past it.
 
@@ -138,9 +135,10 @@ pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=
 ## Honest limits
 
 - The untrusted-input check matches words, not meaning: a paraphrase gets past it. The
-  exfiltration guard and approval cover that gap.
+  exfiltration guard catches a paraphrase only when the session also read private data and the
+  tool sends data out; otherwise a paraphrased instruction runs, within the tool's scope and limits.
 - Fencing helps the model tell data from instructions; it does not guarantee it.
-- Sessions, limits and the approval queue live in memory, in one process.
+- Sessions and limits live in memory, in one process.
 - A permission check and the action after it are not atomic.
 - Observed actions cover HTTP from urllib3, the standard library, httpx and aiohttp, with route
   tables for GitHub and Slack so far; gRPC and threads an SDK starts are not seen.

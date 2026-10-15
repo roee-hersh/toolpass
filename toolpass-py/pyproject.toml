@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "toolpass"
 dynamic = ["version"]
-description = "A pass for every tool call: secure-by-default tools for AI agents (scope, approval, prompt-injection and exfiltration guards, credential injection, audit) with permission checks answered live by the systems they act in."
+description = "A pass for every tool call: secure-by-default tools for AI agents (scope, prompt-injection and exfiltration guards, credential injection, audit) with permission checks answered live by the systems they act in."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

@@ -2,7 +2,7 @@
 
 **A pass for every tool call: secure-by-default tools for AI agents, under any agent framework.**
 
-> The secure-tools API (`Toolkit`, `Session`, approvals) is alpha and may still change; the permission
+> The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
@@ -38,16 +38,15 @@ user, and refused before it is sent when they may not do it; see
 does, and the two compose:
 
 ```python
-from toolpass import ApprovalQueue, permission_check
+from toolpass import permission_check
 
-toolpass.configure(approver=ApprovalQueue(), credentials={"github-bot": github_token}, limits={"destructive": 3})
+toolpass.configure(credentials={"github-bot": github_token}, limits={"destructive": 3})
 
 
 @secured_tool(
     effect="write",
     scope={"repo": "acme/gitops-*"},                 # the tool itself can touch nothing else
     authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"),
-    approve=True,                                     # a person confirms, out of band
     credential="github-bot",                          # injected below; the model never sees it
 )
 def open_gitops_pr(repo: str, title: str, change: str, *, credential: str) -> str:
@@ -88,8 +87,7 @@ and uses their `secured_tool`.
 | User authorization | `authorize=permission_check(...)` or any callable | The call runs only if the person asking may do it |
 | Untrusted-input check | `untrusted_output=True` on readers | An action whose arguments repeat untrusted content (an email, a web page) is refused |
 | Fencing | automatic for untrusted string output | Untrusted text reaches the model inside a nonce-tagged block marked as data |
-| Exfiltration guard | `reads_private=True`, `sends_out=True` | Once a session has read private data and seen untrusted content, nothing is sent out without approval |
-| Human approval | `approve=True` or a predicate, `preview=` | A person confirms, out of band, the exact call; the approval is used once |
+| Exfiltration guard | `reads_private=True`, `sends_out=True` | Once a session has read private data and seen untrusted content, nothing is sent out |
 | Credential injection | `credential="name"` | The secret is fetched after every check and never enters the model's context; echoes of it in the output are redacted |
 | Audit | `Toolkit(audit=...)` | One event per call, refused or run, with who asked and why it was decided |
 | Observed actions | `Toolkit(permissions=tp)`, no `effect` | Every request the body makes is mapped to an action, checked against the user and refused before it is sent; `as_agent()` marks reads the agent makes on its own authority |
@@ -98,21 +96,20 @@ and uses their `secured_tool`.
 ## The order of checks
 
 Every call goes through the same steps. A failed step refuses the call before the tool's body runs,
-and anything that cannot be evaluated (an authorizer that raises, an approver that is down) refuses
-too.
+and anything that cannot be evaluated (an authorizer that raises, a credential source that is down)
+refuses too.
 
 1. **Session.** No current session means no call.
 2. **Arguments.** Types, then validators, then scope rules.
 3. **Limits.** One slot is taken from each cap, and given back if the call never reaches its body.
 4. **Authorization.** Only an explicit allow lets the call through.
 5. **Untrusted input.** Arguments repeating six or more consecutive words of untrusted output
-   are refused (or sent for approval, with `on_untrusted_input="approve"`).
+   are refused.
 6. **Exfiltration.** A `sends_out` tool in a session that has read private data and seen
-   untrusted content needs approval (or is refused, with `exfiltration="refuse"`).
-7. **Approval.** When the tool, step 5 or step 6 asks for it.
-8. **Credential.** Fetched only now.
-9. **The body.** Its output is redacted, recorded if untrusted, and fenced.
-10. **Audit.** One event, whatever happened.
+   untrusted content is refused (`exfiltration="off"` turns the guard off).
+7. **Credential.** Fetched only now.
+8. **The body.** Its output is redacted, recorded if untrusted, and fenced.
+9. **Audit.** One event, whatever happened.
 
 ## The exfiltration guard
 
@@ -132,39 +129,20 @@ def read_email(id: str) -> str: ...
 def post_slack(channel: str, text: str) -> str: ...
 ```
 
-After `read_customers` and `read_email` have both run in a session, `post_slack` waits for a person.
+After `read_customers` and `read_email` have both run in a session, `post_slack` is refused.
 This does not depend on spotting injected words, so a model that paraphrases the injection does not
 get past it.
 
-## Approval, out of band
+## Hooks in async tools
 
-`ApprovalQueue` keeps a call that needs approval until a person decides. The tool raises
-`ApprovalPending`, whose message tells the model to ask the user and retry. Your app shows the
-request to a person and approves it; the same call from the same session then runs once.
-
-```python
-approvals.on_request(lambda req: slack.post("#approvals", req.describe()))   # who, what, why, preview
-
-# later, from the Slack button handler:
-approvals.approve(request_id, by="dana@example.com")
-```
-
-An approval is bound to the session, the tool, the exact arguments, the reasons it was asked for
-and the preview the person saw. It is spent only when the call reaches its body, so a credential
-that was briefly unavailable does not cost another approval, and it expires after `ttl` seconds (15
-minutes by default). Any callable that returns True, False or None can be the approver instead,
-for example a prompt in a CLI.
-
-In async tools, sync hooks (an authorizer, an approval rule, a preview, the approver and its
-listeners, a credentials callable) run in a worker thread, so blocking I/O in them cannot stall the
-event loop; pass `async def` hooks to run them on the loop.
+In async tools, sync hooks (an authorizer, a credentials callable) run in a worker thread, so
+blocking I/O in them cannot stall the event loop; pass `async def` hooks to run them on the loop.
 
 ## Watch it live
 
 `toolpass.watch()` serves a page that shows every call the toolkit decides, as it happens: who
-asked, the arguments, ran or refused and why, the requests the body made. A call that waits for
-approval gets Approve and Reject buttons, which decide it in the toolkit's `ApprovalQueue`; the
-agent's retry then runs, or is refused.
+asked, the arguments, ran or refused and why, the requests the body made. It is read-only: it
+changes nothing in the toolkit.
 
 ```python
 import toolpass
@@ -175,21 +153,16 @@ print(page.url)                            # http://127.0.0.1:PORT/t/<token>/
 page.close()                               # or use it as a context manager
 ```
 
-A toolkit that had no approver is given an `ApprovalQueue`, so calls that need approval wait on
-the page instead of being refused. A toolkit with another approver (a Slack flow, a prompt) is
-shown but not decided here. `page.pending()` lists the waiting ids and `page.decide(id, True)`
-approves one from code; `page.events()` returns what the page shows.
+`page.events()` returns what the page shows.
 
 The page binds to the loopback interface only, and every path carries a random token, so another
-program or web page on the machine cannot read or decide anything without the printed URL. It has
-no accounts: to show it to people elsewhere, put something that authenticates them in front of it.
-`toolpass demo` runs a scripted session with the page open; see
-[the command-line reference](../docs/reference/cli.md).
+program or web page on the machine cannot read anything without the printed URL. It has no
+accounts: to show it to people elsewhere, put something that authenticates them in front of it.
 
 ## Refusals
 
 A refused call raises `ToolRefused` with a `code` (`out_of_scope`, `not_authorized`,
-`untrusted_input`, `approval_pending`, ...) and a message written for the model. Most frameworks pass
+`untrusted_input`, `exfiltration_risk`, ...) and a message written for the model. Most frameworks pass
 the exception's text back to the model. Where a framework hides it, `Toolkit(on_refuse=str)`
 returns the message as the tool's result instead. A check that itself fails unexpectedly (a
 scope predicate that crashes, a session source that is down) refuses with `check_error` or the
@@ -248,12 +221,12 @@ has the details; `toolpass routes github` prints what toolpass understands of an
   and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub and Slack have route
   tables today; a request to another integration is placed by host but not mapped to an action.
 - **The untrusted-input check matches words, not meaning.** A model that paraphrases injected text,
-  or an argument shorter than six words, is not caught. The exfiltration guard and approval on
-  writes cover that gap; don't rely on this check alone.
+  or an argument shorter than six words, is not caught. The exfiltration guard catches a
+  paraphrase only when the session also read private data and the tool sends data out; otherwise
+  the call runs, within its scope and limits. Don't rely on this check alone.
 - **Fencing helps, it does not guarantee.** Models can still be talked past markers.
 - **Only string output is fenced.** Structured output is recorded as untrusted but returned as is.
-- **Sessions live in memory.** Counts, flags and the approval queue do not survive a restart or
-  span processes yet.
+- **Sessions live in memory.** Counts and flags do not survive a restart or span processes yet.
 - **Redaction matches the credential's literal text.** An encoded or split echo of it (base64, a
   hex dump) is not caught, and strings shorter than 8 characters are never redacted.
 - **`permission_check` puts argument values into the resource string as they are.** Give such
@@ -264,11 +237,7 @@ has the details; `toolpass routes github` prints what toolpass understands of an
 - **Session state reaches worker threads only through context.** Frameworks that run tools in
   threads must copy the context (LangChain and `asyncio.to_thread` do).
 
-## Run the demo, the example and the tests
-
-```sh
-toolpass demo -open      # a scripted agent, two users, one guard, on the live page
-```
+## Run the example and the tests
 
 ```sh
 pip install -e . pytest pytest-timeout hypothesis
@@ -277,7 +246,7 @@ python -m pytest -q
 ```
 
 `examples/ops_agent.py` runs a scripted ops-agent session with no network: an injected email, a
-blocked exfiltration attempt, a pull request that waits for approval, and a permission denial.
+blocked exfiltration attempt, a permission denial, and the same pull request run for an admin.
 
 ## Permission checks on their own
 

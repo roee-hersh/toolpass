@@ -14,7 +14,7 @@ import yaml
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
-from toolpass import ActionRefused, ApprovalPending, ApprovalQueue, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent
+from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent
 from toolpass._entitlements import EntitlementsError, _template
 
 
@@ -168,23 +168,13 @@ def test_strict_refuses_a_tool_without_entitlements(gh, engine, events):
     assert e.value.code == "no_entitlements"
 
 
-def test_approve_in_the_entitlements_asks_before_the_body(gh, engine, events):
-    approvals = ApprovalQueue()
+def test_an_approve_key_left_in_a_file_is_rejected():
+    """Approval was removed: a file that still asks for it fails to load instead of silently running."""
     ents = {"tools": {"propose": {"actions": [{"action": "github:pr.create", "resource": "repo:{repo}", "as": "user", "effect": "write", "approve": True}]}}}
-    tools = Toolkit(audit=events, permissions=engine, entitlements=ents, approver=approvals)
-
-    @tools.tool()
-    def propose(repo: str) -> str:
-        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
-        return "opened"
-
-    with Session("admin@example.com").active():
-        with pytest.raises(ApprovalPending) as e:
-            propose("acme/x")
-        assert requests_seen(gh) == []
-        approvals.approve(e.value.request.id, by="lead@example.com")
-        assert propose("acme/x") == "opened"
-    assert len(engine.asked) == 2  # one check per attempt, none repeated at the wire
+    with pytest.raises(EntitlementsError, match="'approve' was removed"):
+        Entitlements.from_mapping(ents)
+    ents["tools"]["propose"]["actions"][0]["approve"] = False  # meant nothing before, still nothing
+    assert Entitlements.from_mapping(ents).for_tool("propose") is not None
 
 
 def test_a_resource_known_only_at_run_time_is_checked_at_the_wire(gh, engine, events):

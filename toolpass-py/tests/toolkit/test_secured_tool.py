@@ -7,24 +7,20 @@ import inspect
 import pytest
 
 import toolpass
-from toolpass import ApprovalPending, ApprovalQueue, Session, Toolkit, ToolRefused, secured_tool, spec_of
+from toolpass import Session, Toolkit, ToolRefused, secured_tool, spec_of
 
 
 def test_secured_tool_uses_the_configured_defaults(dana):
-    @secured_tool(effect="destructive", approve=True)
+    @secured_tool(effect="destructive")
     def drop(table: str) -> str:
         return "dropped"
 
+    assert drop("users") == "dropped"
+    toolpass.configure(limits={"destructive": 1}, audit=None)  # after the tool was declared
+    assert drop("users") == "dropped"
     with pytest.raises(ToolRefused) as e:
         drop("users")
-    assert e.value.code == "approval_unavailable"
-
-    queue = ApprovalQueue()
-    toolpass.configure(approver=queue, audit=None)  # after the tool was declared
-    with pytest.raises(ApprovalPending) as p:
-        drop("users")
-    queue.approve(p.value.request.id)
-    assert drop("users") == "dropped"
+    assert e.value.code == "limit_reached"
 
 
 def test_a_credential_declared_before_configure(dana):

@@ -15,7 +15,6 @@ tools (or a mapping given in code):
             resource: "repo:{repo}"
             as: user                   # checked against the session's user
             effect: write
-            approve: false
 
 ``resource`` is a template over the tool's arguments (``{repo}``) or a glob
 (``repo:acme/*``). Record a tool's entitlements by running it with
@@ -66,7 +65,6 @@ class Entitlement:
     resource: str
     as_: str = "user"
     effect: str = "write"
-    approve: bool = False
 
     def __post_init__(self) -> None:
         if not _NAME_RE.fullmatch(self.action):
@@ -123,15 +121,15 @@ class Entitlement:
             return False
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"action": self.action, "resource": self.resource, "as": self.as_, "effect": self.effect}
-        if self.approve:
-            out["approve"] = True
-        return out
+        return {"action": self.action, "resource": self.resource, "as": self.as_, "effect": self.effect}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], where: str) -> Entitlement:
         if not isinstance(d, Mapping):
             raise EntitlementsError(f"{where}: each action must be a mapping")
+        if d.get("approve", False) is not False:
+            # Fail closed: the file asked for a confirmation toolpass no longer gives.
+            raise EntitlementsError(f"{where}: 'approve' was removed: toolpass no longer asks a person; delete the key")
         unknown = set(d) - {"action", "resource", "as", "effect", "approve"}
         if unknown:
             raise EntitlementsError(f"{where}: unknown keys {', '.join(sorted(unknown))}")
@@ -140,11 +138,10 @@ class Entitlement:
             raise EntitlementsError(f"{where}: action and resource must be strings")
         as_ = d.get("as", "user")
         effect = d.get("effect", "write")
-        approve = d.get("approve", False)
-        if not isinstance(as_, str) or not isinstance(effect, str) or not isinstance(approve, bool):
-            raise EntitlementsError(f"{where}: 'as' and effect must be strings, approve a boolean")
+        if not isinstance(as_, str) or not isinstance(effect, str):
+            raise EntitlementsError(f"{where}: 'as' and effect must be strings")
         try:
-            return cls(action, resource, as_, effect, approve)
+            return cls(action, resource, as_, effect)
         except EntitlementsError as e:
             raise EntitlementsError(f"{where}: {e}") from None
 

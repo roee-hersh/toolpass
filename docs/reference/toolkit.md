@@ -1,6 +1,6 @@
 # The secure-tools toolkit: observed actions
 
-The toolkit's declarations (`effect`, `scope`, `approve`, `credential`, the trifecta flags) are
+The toolkit's declarations (`effect`, `scope`, `credential`, the trifecta flags) are
 documented in [the package README](../../toolpass-py/README.md). This page covers what was added
 for actions observed at the wire: see [the guide](../guides/intercepted-actions.md) for how it
 fits together.
@@ -58,13 +58,13 @@ What one request turned out to be; `AuditEvent.actions` carries one dict per req
 | `resource` | The engine's resource, e.g. `repo:acme/x`. |
 | `effect` | `read`, `write` or `destructive`. |
 | `as_agent`, `sends_out`, `untrusted_output` | Present when true. |
-| `outcome` | `allowed`, `refused` or `pending`; `code` and `reason` when not allowed. |
+| `outcome` | `allowed` or `refused`; `code` and `reason` when refused. |
 | `note` | `unknown_host` or `unmapped` for a request toolpass could not place or route. |
 
 ## Entitlements
 
 `Entitlements.load(path)`, `Entitlements.from_mapping(doc)`, `.for_tool(name)`;
-`ToolEntitlements(tool, actions, hosts)`; `Entitlement(action, resource, as_, effect, approve)`.
+`ToolEntitlements(tool, actions, hosts)`; `Entitlement(action, resource, as_, effect)`.
 The file:
 
 ```yaml
@@ -76,8 +76,10 @@ tools:
         resource: <type>:<id, template over the arguments, or glob>
         as: user | agent
         effect: read | write | destructive
-        approve: false
 ```
+
+An action with `approve: true`, from before approval was removed, makes the file fail to load, so
+a tool is never run without the confirmation its file asked for. `approve: false` is ignored.
 
 A template (`repo:{repo}`) names the tool's arguments; it is filled from them and compared
 exactly, or as a glob when the template's own text contains `*` (an argument value is never a

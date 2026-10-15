@@ -49,7 +49,7 @@ read allowed and the pull request refused.
    `toolpass routes github` prints the table.
 3. **The checks**, in the toolkit's usual order: the tool's `resources=` scope, limits, the
    permission check of the session's user, the untrusted-input check on the outgoing URL and
-   body, the exfiltration guard for routes that send data out, approval.
+   body, the exfiltration guard for routes that send data out.
 4. **The verdict.** Allowed requests go out. A refused request raises from inside the client
    library; the call's outcome is the refusal even when the body catches the exception and returns
    something, so a half-result never reaches the model.
@@ -109,8 +109,7 @@ toolpass.configure(permissions=tp, entitlements="toolpass-tools.yaml")
 ```
 
 Before the body runs, every `as: user` action whose resource fills from the arguments is checked
-against the engine, limits are taken for the strongest recorded effect, and `approve: true` on an
-action asks a person once, before anything happens. The hook stays on as the backstop: a request
+against the engine, and limits are taken for the strongest recorded effect. The hook stays on as the backstop: a request
 that matches no recorded action is refused `unentitled_action`, a host the file does not list is
 refused `unknown_host`, and a tool that declares `effect="read"` while its recorded actions include
 a write is refused `effect_mismatch`. A resource known only at run time (an id fetched by an

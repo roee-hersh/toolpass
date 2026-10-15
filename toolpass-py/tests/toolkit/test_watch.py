@@ -1,6 +1,6 @@
-"""The live page: every call shows up, a waiting call is decided from the
-page, and nothing is readable or decidable without the token, from another
-origin, or off the loopback interface."""
+"""The live page: every call shows up, the page changes nothing, and
+nothing is readable without the token, from another origin, or off the
+loopback interface."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from typing import Any
 
 import pytest
 
-import toolpass
-from toolpass import ApprovalPending, ApprovalQueue, AuditEvent, Session, Toolkit, ToolRefused, Watch, watch
+from toolpass import AuditEvent, Session, Toolkit, ToolRefused, Watch, watch
 
 from .conftest import Events
 
@@ -48,56 +47,33 @@ def _events(page: Watch, since: int = 0) -> dict[str, Any]:
 
 @pytest.fixture
 def kit(events: Events) -> Iterator[tuple[Toolkit, Watch]]:
-    toolkit = Toolkit(approver=ApprovalQueue(), audit=events)
+    toolkit = Toolkit(audit=events)
     page = watch(toolkit)
     yield toolkit, page
     page.close()
 
 
-def test_calls_show_up_and_a_waiting_call_is_decided_from_the_page(kit: tuple[Toolkit, Watch], events: Events, dana: Session) -> None:
+def test_calls_show_up_and_the_page_decides_nothing(kit: tuple[Toolkit, Watch], events: Events, dana: Session) -> None:
     toolkit, page = kit
 
-    @toolkit.secured_tool(effect="destructive", scope={"key": "PAY-*"}, approve=True, preview=lambda c: f"delete {c.arguments['key']}")
+    @toolkit.secured_tool(effect="destructive", scope={"key": "PAY-*"})
     def delete_issue(key: str) -> str:
         return f"deleted {key}"
 
     with pytest.raises(ToolRefused) as refused:
         delete_issue(key="OPS-1")
     assert refused.value.code == "out_of_scope"
-    with pytest.raises(ApprovalPending) as pending:
-        delete_issue(key="PAY-1")
-    approval = pending.value.request.id
+    assert delete_issue(key="PAY-1") == "deleted PAY-1"
 
     d = _events(page)
-    assert [e["outcome"] for e in d["events"]] == ["refused", "pending"]
+    assert [e["outcome"] for e in d["events"]] == ["refused", "ran"]
     assert d["events"][0]["code"] == "out_of_scope" and d["events"][0]["user"] == "dana@example.com"
-    assert d["events"][1]["approval"] == approval and "delete PAY-1" in d["events"][1]["describe"]
-    assert d["pending"] == [approval] and d["decidable"] is True
+    assert set(d) == {"events", "next"}
     assert len(events) == 2, "the previous audit sink still receives every event"
-
-    status, _, data = _request(page, "POST", f"approve/{approval}", body=b"")
-    assert status == 200 and json.loads(data) == {"decided": True}
-    assert delete_issue(key="PAY-1") == "deleted PAY-1"
     d = _events(page, since=d["next"])
-    assert [e["outcome"] for e in d["events"]] == ["ran"] and d["pending"] == []
-    status, _, _ = _request(page, "POST", f"approve/{approval}", body=b"")
-    assert status == 409, "an approval that is no longer pending cannot be decided again"
-
-
-def test_reject_from_the_page(kit: tuple[Toolkit, Watch], dana: Session) -> None:
-    toolkit, page = kit
-
-    @toolkit.secured_tool(effect="write", approve=True)
-    def post(text: str) -> str:
-        return "posted"
-
-    with pytest.raises(ApprovalPending) as pending:
-        post(text="hi")
-    status, _, _ = _request(page, "POST", f"reject/{pending.value.request.id}", body=b"")
-    assert status == 200
-    with pytest.raises(ToolRefused) as refused:
-        post(text="hi")
-    assert refused.value.code == "approval_rejected"
+    assert d["events"] == []
+    for path in ("approve/x", "reject/x", "events"):
+        assert _request(page, "POST", path, body=b"")[0] == 501, "the page has no way to change a call"
 
 
 def test_the_page_and_its_assets_are_served_with_headers_that_keep_data_out_of_other_origins(kit: tuple[Toolkit, Watch]) -> None:
@@ -122,7 +98,7 @@ def test_nothing_without_the_token_or_from_another_host(kit: tuple[Toolkit, Watc
     raw.close()
     assert _request(page, "GET", "/")[0] == 404
     assert _request(page, "GET", "/events")[0] == 404
-    assert _request(page, "POST", "/t/wrong-token/approve/x", body=b"")[0] == 404
+    assert _request(page, "GET", "/t/wrong-token/watch.js")[0] == 404
     # DNS rebinding: a page elsewhere resolves a name to 127.0.0.1 and sends its own Host.
     assert _request(page, "GET", "events", host="evil.example")[0] == 403
     assert _request(page, "GET", "events", host=f"127.0.0.1:{port}")[0] == 200
@@ -139,7 +115,7 @@ def test_a_body_not_framed_by_one_plain_length_closes_the_connection(kit: tuple[
     smuggled = f"GET {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode()
     for headers in (b"Transfer-Encoding: chunked", b"Content-Length: 5\r\nContent-Length: 5", b"Content-Length: +5", b"Content-Length: 5_0"):
         raw = socket.create_connection(("127.0.0.1", port), timeout=5)
-        raw.sendall(f"POST {prefix}reject/x HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode() + headers + b"\r\n\r\n" + smuggled)
+        raw.sendall(f"GET {prefix}events HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode() + headers + b"\r\n\r\n" + smuggled)
         raw.settimeout(2)
         got = b""
         try:
@@ -179,41 +155,20 @@ def test_loopback_only() -> None:
         Watch(Toolkit(audit=None), listen="192.168.1.5:8080")
 
 
-def test_default_toolkit_and_a_toolkit_without_an_approver_get_a_queue(dana: Session) -> None:
-    toolpass.configure(audit=None)
-
-    @toolpass.secured_tool(effect="write", approve=True)
-    def post(text: str) -> str:
-        return "posted"
-
-    with pytest.raises(ToolRefused) as before:
-        post(text="x")
-    assert before.value.code == "approval_unavailable"
-    with watch() as page:
-        assert toolpass.default_toolkit().approver is page.queue and isinstance(page.queue, ApprovalQueue)
-        with pytest.raises(ApprovalPending):
-            post(text="x")
-        assert len(page.pending()) == 1
-
-
-def test_close_detaches_and_a_custom_approver_is_shown_not_decided(events: Events, dana: Session) -> None:
-    toolkit = Toolkit(approver=lambda request: None, audit=events)
+def test_close_detaches(events: Events, dana: Session) -> None:
+    toolkit = Toolkit(audit=events)
     page = watch(toolkit)
 
-    @toolkit.secured_tool(effect="write", approve=True)
+    @toolkit.secured_tool(effect="write")
     def post(text: str) -> str:
         return "posted"
 
-    with pytest.raises(ApprovalPending):
-        post(text="x")
-    d = _events(page)
-    assert d["events"][0]["outcome"] == "pending" and d["pending"] == [] and d["decidable"] is False
-    assert page.decide("anything", True) is False
+    post(text="x")
+    assert _events(page)["events"][0]["outcome"] == "ran"
     page.close()
     assert toolkit.audit is events, "the previous sink is given back"
     page.close()  # idempotent
-    with pytest.raises(ApprovalPending):
-        post(text="y")
+    post(text="y")
     assert len(events) == 2 and page.events()[1] == 1, "nothing recorded after close"
 
 

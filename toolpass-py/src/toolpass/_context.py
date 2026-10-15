@@ -34,8 +34,8 @@ class ObservedAction:
 
     ``action`` is ``<integration>:<action>`` (``github:pr.create``) or None
     when the request needed no permission check; ``resource`` is the
-    engine's resource (``repo:acme/x``). ``outcome`` is ``allowed``,
-    ``refused`` or ``pending``; ``code`` and ``reason`` say why when it is
+    engine's resource (``repo:acme/x``). ``outcome`` is ``allowed``
+    or ``refused``; ``code`` and ``reason`` say why when it is
     not allowed. ``note`` marks a request toolpass could not map
     (``unknown_host``, ``unmapped``)."""
 
@@ -86,8 +86,6 @@ class CallContext:
     refusal: BaseException | None = None
     # Actions the pre-body checks already allowed for this call: (name, resource).
     preallowed: set[tuple[str, str]] = dataclasses.field(default_factory=set)
-    # Actions whose approval was granted before the body: (name, resource).
-    preapproved: set[tuple[str, str]] = dataclasses.field(default_factory=set)
     # Requests refused once; a retry of the same request gets the same answer.
     refused: dict[str, BaseException] = dataclasses.field(default_factory=dict)
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)

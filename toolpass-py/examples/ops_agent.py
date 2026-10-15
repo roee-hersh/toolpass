@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from toolpass import ApprovalPending, ApprovalQueue, AuditEvent, AuthDecision, Call, Session, Toolkit, ToolRefused, permission_check
+from toolpass import AuditEvent, AuthDecision, Call, Session, Toolkit, ToolRefused, permission_check
 
 TOOLPASS_CONFIG = Path(__file__).resolve().parents[2] / "examples" / "toolpass.yaml"
 
@@ -44,9 +44,8 @@ def make_authorizer() -> tuple[Callable[[Call], Any], str]:
     return permission_check(tp, "demo", "thing.write", "thing:{repo}"), "toolpass demo connection"
 
 
-def build(approvals: ApprovalQueue, audit: Callable[[AuditEvent], None], authorize: Callable[[Call], Any]) -> dict[str, Callable[..., Any]]:
+def build(audit: Callable[[AuditEvent], None], authorize: Callable[[Call], Any]) -> dict[str, Callable[..., Any]]:
     tools = Toolkit(
-        approver=approvals,
         credentials={"github-bot": "ghp_example_not_a_real_token_123456"},
         limits={"destructive": 2},
         audit=audit,
@@ -76,8 +75,6 @@ def build(approvals: ApprovalQueue, audit: Callable[[AuditEvent], None], authori
         effect="write",
         scope={"repo": "acme/gitops-*"},
         authorize=authorize,
-        approve=True,
-        preview=lambda call: f"PR to {call.arguments['repo']}: {call.arguments['title']}\n{call.arguments['change']}",
         credential="github-bot",
     )
     def open_gitops_pr(repo: str, title: str, change: str, *, credential: str) -> str:
@@ -94,10 +91,9 @@ def build(approvals: ApprovalQueue, audit: Callable[[AuditEvent], None], authori
 
 def main(say: Callable[[str], None] = print) -> list[tuple[str, str]]:
     """Run the session; returns (step, outcome) pairs for the tests."""
-    approvals = ApprovalQueue()
     events: list[AuditEvent] = []
     authorize, auth_name = make_authorizer()
-    t = build(approvals, events.append, authorize)
+    t = build(events.append, authorize)
     outcomes: list[tuple[str, str]] = []
     say(f"authorization: {auth_name}\n")
 
@@ -106,9 +102,6 @@ def main(say: Callable[[str], None] = print) -> list[tuple[str, str]]:
             result = fn(**kwargs)
             outcome = "ran"
             say(f"[ran]     {label}\n          -> {str(result).splitlines()[0][:110]}")
-        except ApprovalPending as e:
-            result, outcome = e, "approval_pending"
-            say(f"[waiting] {label}\n          -> {e.reason}")
         except ToolRefused as e:
             result, outcome = e, e.code
             say(f"[refused] {label}\n          -> {e.code}: {e.reason}")
@@ -147,14 +140,7 @@ def main(say: Callable[[str], None] = print) -> list[tuple[str, str]]:
     say("\n== admin@example.com asks for the same pull request ==\n")
     pr = {"repo": "acme/gitops-prod", "title": "checkout: replicas 4 -> 6", "change": "apps/checkout/values.yaml: replicas: 6"}
     with Session("admin@example.com").active():
-        pending = step("open_gitops_pr(acme/gitops-prod) as admin", t["open_gitops_pr"], **pr)
-        if isinstance(pending, ApprovalPending):
-            say("\n          a person sees, in Slack or a web page:\n")
-            say("          " + pending.request.describe().replace("\n", "\n          "))
-            approvals.approve(pending.request.id, by="admin@example.com")
-            say("\n          ...and approves it.\n")
-        step("open_gitops_pr(acme/gitops-prod) retried", t["open_gitops_pr"], **pr)
-        step("open_gitops_pr(acme/gitops-prod) a third time (approval used up)", t["open_gitops_pr"], **pr)
+        step("open_gitops_pr(acme/gitops-prod) as admin", t["open_gitops_pr"], **pr)
 
     say(f"\n{len(events)} audit events; the last one:\n  {events[-1].to_dict()}")
     return outcomes

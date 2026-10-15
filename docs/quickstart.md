@@ -5,10 +5,6 @@ run the same thing as a server. You need Python 3.10 or later; step 3 also uses 
 nothing more than the same `pip install`) and, for the Node client, Node 18.17 or later. Nothing
 here touches a real system; step 4 connects one.
 
-To see it before reading any of this: `pip install toolpass && toolpass demo -open` runs a scripted
-agent against the guard and opens the [live page](../toolpass-py/README.md#watch-it-live), where a
-call waits for you to press Approve. No network, no model.
-
 ## 1. Install and ask
 
 ```sh
