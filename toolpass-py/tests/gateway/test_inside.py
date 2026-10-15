@@ -166,3 +166,33 @@ def test_two_servers_upgrading_one_old_record_at_once(tmp_path: Path) -> None:
     _add_column(db, "calls", "ended", "REAL")
     _add_column(db, "calls", "ended", "REAL")
     assert [r[1] for r in db.execute("PRAGMA table_info(calls)").fetchall()] == ["id", "ended"]
+
+
+def test_runs_recorded_before_their_calls_when_the_proxy_writer_lags(tmp_path: Path) -> None:
+    # The server's runs reach the record before any of the three calls does (a slow disk).
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    for i, tool in enumerate(("status", "open_pr", "status")):
+        store.record_tool_event("sess", {"tool": tool, "n": i}, t + i + 0.01, t + i + 0.5)
+    ids = []
+    for i, tool in enumerate(("status", "open_pr", "status")):
+        ids.append(store.start_call("c", "cfg", "srv", "sess", tool, {}, started=t + i))
+    for i, call in enumerate(ids):
+        store.finish_call(call, "ok", "", 600.0, ended=t + i + 0.6)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [[e["n"] for e in rows[c]["inside"]] for c in ids] == [[0], [1], [2]]
+
+
+def test_a_call_not_finished_yet_does_not_take_the_next_calls_run(tmp_path: Path) -> None:
+    # Call 1's answer is written late; call 2's run arrives in between.
+    store = Store(tmp_path / "g.db")
+    t = time.time() - 10
+    one = store.start_call("c", "cfg", "srv", "sess", "ship", {}, started=t)
+    store.record_tool_event("sess", {"tool": "ship", "n": 1}, t + 0.01, t + 0.2)
+    two = store.start_call("c", "cfg", "srv", "sess", "ship", {}, started=t + 0.3)
+    store.record_tool_event("sess", {"tool": "ship", "n": 2}, t + 0.31, t + 0.5)
+    store.finish_call(one, "ok", "", 250.0, ended=t + 0.25)
+    store.finish_call(two, "ok", "", 250.0, ended=t + 0.55)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [e["n"] for e in rows[one]["inside"]] == [1]
+    assert [e["n"] for e in rows[two]["inside"]] == [2]

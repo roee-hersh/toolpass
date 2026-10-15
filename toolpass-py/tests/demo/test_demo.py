@@ -58,7 +58,7 @@ def test_the_tour(tmp_path: Path) -> None:
     finally:
         systems.close()
 
-    calls = sorted(_calls(tmp_path, len(run.TOUR)), key=lambda c: c["id"])  # in the order the tour ran
+    calls = sorted(_calls(tmp_path, len(run.TOUR)), key=lambda c: c["started"])  # in the order the tour sent them
     assert [c["tool"] for c in calls] == [t for _, t, _ in run.TOUR]
     dana_pr, dana_prod, sam_pr, sam_bug = calls[1], calls[3], calls[6], calls[8]
     assert _actions(dana_pr) == [

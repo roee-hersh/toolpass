@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS tool_events (
   call_id INTEGER,
   event TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, started);
+CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, call_id, started);
 CREATE INDEX IF NOT EXISTS tool_events_call ON tool_events (call_id);
 CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
@@ -84,20 +84,38 @@ _MAX_EVENT = 64000
 _SLACK = max(0.002, 2 * time.get_clock_info("time").resolution)
 
 
-# The call a tool event belongs to, chosen once, when the event is recorded:
-# among the calls of its session that were sent before the tool started and
-# had not been answered before it ended, one of the same tool first, then one
-# that holds no event yet, then the first sent. Calls one after another leave
+# The call a tool event belongs to, chosen once its candidates are final:
+# among the finished calls of its session that were sent before the tool
+# started and answered after it ended, one of the same tool first, then one
+# that holds no event yet, then the first sent. Only finished calls count, so
+# a call whose answer is not recorded yet cannot claim the next call's runs;
+# the times are the proxy's own, right however late they are written. Calls one after another leave
 # a single candidate; two of one tool at once (parallel tool use) pair up in
 # the order they were sent, as a server starts them; a tool the MCP server
 # names differently, or a secured tool another one calls, lands on the call
 # running at that time.
 _OWNER = (
     "SELECT c.id FROM calls c WHERE c.session = :session AND c.started <= :started + :slack"
-    " AND (c.ended IS NULL OR c.ended >= :ended - :slack)"
+    " AND c.ended IS NOT NULL AND c.ended >= :ended - :slack"
     " ORDER BY c.tool = :tool DESC, NOT EXISTS (SELECT 1 FROM tool_events e WHERE e.call_id = c.id) DESC, c.started, c.id"
     " LIMIT 1"
 )
+
+
+def _place(db: sqlite3.Connection, rev: int, session: str) -> None:
+    """Place the session's unplaced tool events whose call has finished,
+    oldest first, so two runs of one tool pair with their calls in order."""
+    waiting = db.execute("SELECT id, tool, started, ended FROM tool_events WHERE session = ? AND call_id IS NULL ORDER BY started, id", (session,)).fetchall()
+    for e in waiting:
+        pending = db.execute(
+            "SELECT 1 FROM calls WHERE session = ? AND tool = ? AND ended IS NULL AND started <= ? LIMIT 1", (session, e[1], e[2] + _SLACK)
+        ).fetchone()
+        if pending is not None:
+            continue  # a call of its own tool that could own it has not finished yet
+        found = db.execute(_OWNER, {"session": session, "tool": e[1], "started": e[2], "ended": e[3], "slack": _SLACK}).fetchone()
+        if found is not None:
+            db.execute("UPDATE tool_events SET call_id = ? WHERE id = ?", (found[0], e[0]))
+            db.execute("UPDATE calls SET rev = ? WHERE id = ?", (rev, found[0]))
 
 
 def _cut_event(event: Mapping[str, Any]) -> str:
@@ -256,39 +274,35 @@ class Store:
                 (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), at, rev),
             )
             call_id = int(cur.lastrowid or 0)
-            # Tool events of this call that were recorded before it.
-            db.execute(
-                "UPDATE tool_events SET call_id = ? WHERE call_id IS NULL AND session = ? AND started >= ? - ?",
-                (call_id, session, at, _SLACK),
-            )
         self._private_side_files()
         return call_id
 
     def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float, ended: float | None = None) -> None:
+        """Record the answer to a call; ``ended`` is when it arrived (wall clock), now by default."""
         with self._write() as (db, rev):
             db.execute(
                 "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, rev = ? WHERE id = ?",
                 (outcome, _cut(result), round(duration_ms, 1), ended or time.time(), rev, call_id),
             )
+            row = db.execute("SELECT session FROM calls WHERE id = ?", (call_id,)).fetchone()
+            if row is not None:
+                _place(db, rev, row[0])
 
     # -- readers ----------------------------------------------------------------
 
     def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
         """What a toolpass-secured tool inside a wrapped server did during a
         call: its audit event, with the requests it made to GitHub, Jira, ...
-        It is placed under its call (``_OWNER``), whose rev moves so the
-        dashboard shows it; an event recorded before its call is placed when
-        the call is."""
+        It is placed under its call (``_OWNER``) as soon as that call has
+        finished, now or when its answer is recorded; the call's rev moves so
+        the dashboard shows it."""
         tool = str(event.get("tool", ""))
         with self._write() as (db, rev):
-            found = db.execute(_OWNER, {"session": session, "tool": tool, "started": started, "ended": ended, "slack": _SLACK}).fetchone()
-            call_id = int(found[0]) if found else None
             db.execute(
-                "INSERT INTO tool_events (session, tool, started, ended, call_id, event) VALUES (?, ?, ?, ?, ?, ?)",
-                (session, tool, started, ended, call_id, _cut_event(event)),
+                "INSERT INTO tool_events (session, tool, started, ended, event) VALUES (?, ?, ?, ?, ?)",
+                (session, tool, started, ended, _cut_event(event)),
             )
-            if call_id is not None:
-                db.execute("UPDATE calls SET rev = ? WHERE id = ?", (rev, call_id))
+            _place(db, rev, session)
 
     def prune(self, days: float = 90) -> int:
         """Delete calls older than ``days``; returns how many."""
