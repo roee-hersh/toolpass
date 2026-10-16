@@ -194,6 +194,46 @@ Salesforce error bodies (`[{"message": ..., "errorCode": ...}]`) contribute only
 to a decision, and only when it matches `^[A-Z_]{1,64}$`; anything else is rendered as "unknown
 error" and the message is never copied.
 
+## Observed actions
+
+A secured tool's Salesforce REST requests ([observed actions](../guides/intercepted-actions.md))
+are mapped by the route table in `toolpass/integrations/salesforce/routes.py`; `toolpass routes
+salesforce` prints it. The connection's `url` (the My Domain URL) is the host the table claims, all
+of it.
+
+| Request | Action and resource |
+|---|---|
+| `GET /services/data/vNN.N/sobjects/{Type}/{Id}`, a binary field (`Body`, `VersionData`) | `record.read` on `record:<Id>` |
+| `PATCH .../sobjects/{Type}/{Id}` | `record.edit` on `record:<Id>`; `record.transfer` when the body sets `OwnerId` |
+| `DELETE .../sobjects/{Type}/{Id}` | `record.delete` on `record:<Id>` |
+| `POST .../sobjects/{Type}`, `composite/tree/{Type}`, `POST composite/sobjects` (one type) | `object.create` on `object:<Type>` |
+| `GET .../query?q=` or `queryAll?q=` with `WHERE Id = '<Id>'` alone | `record.read` on `record:<Id>` |
+| any other query | `object.view_all` on `object:<Type>`: it may return any record of the object |
+| `GET .../sobjects/{Type}/describe` | `object.read` on `object:<Type>` |
+| `GET .../sobjects/{Type}/updated`, `/deleted` | `object.view_all` on `object:<Type>` |
+| `GET /services/data`, the version's resources, `/limits`, `/sobjects`; the agent's own token and `userinfo` | no check |
+
+Queries are read by a small SOQL parser, and anything it cannot read exactly is refused: a
+subquery or semi-join, a relationship field (`Owner.Email`, also in `WHERE`), `TYPEOF`, `FOR`,
+`WITH`, `USING`, `UPDATE VIEWSTAT`, an alias, a character outside SOQL's, adjacent strings, any
+parameter beside one `q`. Most users hold no View All on an object, so a general query is usually
+refused; ask for one record by Id instead. Also refused:
+
+- a body that names another record (a value that is an Id, a nested record or reference by external
+  id, child records), `Id` in the body, `OwnerId` on create, records of several types, a body that
+  is not JSON or names a field twice;
+- a record by external id, a related list (`/sobjects/{Type}/{Id}/Contacts`), the object summary
+  (`/sobjects/{Type}`, which lists recent records), `/query/{locator}` pages;
+- composite and batch requests that bundle several (`/composite`, `/composite/batch`,
+  `/composite/graph`, collection updates and deletes);
+- method overrides (`_HttpMethod`, `X-HTTP-Method-Override`), `;` parameters, encoded slashes and
+  dot segments in the path;
+- every other part of the instance: SOSL search, UI API, Tooling, Chatter, Connect, Bulk, invocable
+  actions, Apex REST, file downloads.
+
+Field-level security is not checked separately: a routed read or edit is the record's, whichever
+fields it names.
+
 ## Limits
 
 Every query counts against the org's daily API request allocation (a Developer Edition org has
@@ -295,7 +335,10 @@ credentials form, hands out tokens with an `instance_url`, revokes them on deman
 must arrive as `o\'neil@example.com`), `/limits`, the `PermissionSet` describe and per-object describes (404 for unknown objects). The fake
 insists that every assignment sub-select carries the activation/expiry filter with a current
 timestamp, hides session-based and expired grants behind it, honours `LIMIT`, and matches permission
-sets on name and namespace. Against a real org: complete the setup above in a Developer Edition org, configure a connection, run `toolpass
+sets on name and namespace. `tests/integrations/salesforce/test_routes.py` routes the main reads,
+writes and queries, checks every refusal above (Salesforce publishes no OpenAPI description of the
+REST API to hold the table to), parses each resource with the integration's own parser and runs
+routed requests through the check against the fake. Against a real org: complete the setup above in a Developer Edition org, configure a connection, run `toolpass
 probe`, then one allow and one deny for each of `record.read`, `object.read`, `field.read`,
 `system.permission`, `permset.assigned` and `user.active`, and compare with what the user actually
 sees in the UI. Work through the Unverified list while doing so.
