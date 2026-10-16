@@ -95,8 +95,24 @@ def test_endpoints_cover_the_partition_and_its_global_hosts():
     assert not any(h.startswith(("ec2.", "rds.", "eks.", "ssm.")) or h.endswith(".cn") for h in hosts)
     cn = {h for h, _ in ROUTES.endpoints(Settings("aws-cn", "aws", {"partition": "aws-cn", "region": "cn-north-1"}))}
     assert "iam.cn-north-1.amazonaws.com.cn" in cn and "s3.cn-northwest-1.amazonaws.com.cn" in cn and "iam.amazonaws.com" not in cn
+    # S3's dash-style regional, dualstack and Transfer Acceleration hosts are claimed too.
+    assert {
+        "s3-us-west-2.amazonaws.com",
+        "s3.dualstack.eu-west-1.amazonaws.com",
+        "s3-accelerate.amazonaws.com",
+        "s3-accelerate.dualstack.amazonaws.com",
+    } <= hosts
+    assert not any(h.startswith("s3-cn-") for h in cn) and "s3-accelerate.amazonaws.com" not in cn
+    gov = {h for h, _ in ROUTES.endpoints(Settings("aws-gov", "aws", {"partition": "aws-us-gov", "region": "us-gov-west-1"}))}
+    assert "s3-us-gov-west-1.amazonaws.com" in gov and "s3-accelerate.amazonaws.com" not in gov
     # Every claimed host is one the table can place.
-    assert all(place(h) is not None for h in hosts | cn)
+    assert all(place(h) is not None for h in hosts | cn | gov)
+
+
+def test_dash_style_and_accelerate_hosts_route_path_style_requests():
+    for host in ("s3-us-west-2.amazonaws.com", "s3-accelerate.amazonaws.com"):
+        o = match(req(host, "GET", "/reports/2026/q3.csv"))
+        assert (o.action, o.resource, o.unresolved) == ("raw:s3:GetObject", "arn:aws:s3:::reports/2026/q3.csv", None)
 
 
 @pytest.mark.parametrize(
@@ -112,6 +128,14 @@ def test_endpoints_cover_the_partition_and_its_global_hosts():
         ("s3.cn-north-1.amazonaws.com", None),
         ("ec2.eu-west-1.amazonaws.com", None),
         ("bucket.s3.eu-west-1.amazonaws.com", None),
+        ("s3-us-west-2.amazonaws.com", ("s3", "us-west-2", "aws")),
+        ("s3-us-gov-west-1.amazonaws.com", ("s3", "us-gov-west-1", "aws-us-gov")),
+        ("s3-accelerate.amazonaws.com", ("s3", "us-east-1", "aws")),
+        ("s3-accelerate.dualstack.amazonaws.com", ("s3", "us-east-1", "aws")),
+        ("s3-cn-north-1.amazonaws.com", None),
+        # A virtual-hosted bucket is never placed: its path is not the bucket's.
+        ("bucket.s3.amazonaws.com", None),
+        ("bucket.s3-accelerate.amazonaws.com", None),
     ],
 )
 def test_place(host, where):
@@ -337,16 +361,23 @@ def test_routing(r, action, resource, effect):
         assert parse_resource(parse_ref(resource), "aws") == resource
 
 
-@pytest.mark.parametrize(
-    "r",
-    [
-        sts({"Action": "GetCallerIdentity"}),
-        sts({"Action": "GetSessionToken"}),
-    ],
-)
-def test_the_agents_own_identity_is_not_checked(r):
-    o = match(r)
+def test_the_agents_own_identity_is_not_checked():
+    o = match(sts({"Action": "GetCallerIdentity"}))
     assert (o.action, o.unresolved) == (None, None)
+
+
+def test_s3_presigned_url_parameters_select_nothing():
+    q = (
+        "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261016%2Feu-west-1%2Fs3%2Faws4_request&X-Amz-Date=20261016T000000Z"
+        "&X-Amz-Expires=300&X-Amz-SignedHeaders=host&X-Amz-Signature=abc&X-Amz-Security-Token=tok&x-id=GetObject"
+    )
+    o = match(s3("GET", "/reports/2026/q3.csv", q))
+    assert (o.action, o.resource, o.unresolved) == ("raw:s3:GetObject", OBJECT, None)
+    # Lowercase spellings are the same parameters.
+    assert match(s3("GET", "/reports/2026/q3.csv", q.lower())).unresolved is None
+    # An ACL set through the query is what PutObjectAcl sets, as it is through the header.
+    o = match(s3("PUT", "/reports/2026/q3.csv", "acl&x-amz-acl=private"))
+    assert (o.action, o.unresolved) == ("raw:s3:PutObjectAcl", None)
 
 
 def test_s3_writes_and_lambda_invocations_send_data_out():
@@ -385,6 +416,15 @@ def test_s3_writes_and_lambda_invocations_send_data_out():
         (s3("POST", "/reports"), "not an S3 operation"),
         (s3("POST", "/reports/k", "restore", {}, b"<RestoreRequest><OutputLocation/></RestoreRequest>"), "second bucket"),
         (s3("PUT", "/reports/k", "", {"x-http-method-override": "DELETE"}), "override"),
+        # S3 reads an x-amz-* query parameter as the header of that name.
+        (s3("PUT", "/reports/k", "x-amz-copy-source=secret%2Fdata.csv"), "copy"),
+        (s3("PUT", "/reports/k", "partNumber=1&uploadId=u&X-Amz-Copy-Source=secret%2Fdata.csv"), "copy"),
+        (s3("PUT", "/reports/k", "x-amz-acl=public-read"), "ACL"),
+        (s3("PUT", "/reports/k", "X-Amz-Tagging=a%3Db"), "tags"),
+        (s3("PUT", "/reports/k", "x-amz-grant-read=uri%3Dhttp%3A%2F%2Facs.amazonaws.com%2Fgroups%2Fglobal%2FAllUsers"), "grant"),
+        (s3("PUT", "/reports/k", "X-Amz-Object-Lock-Mode=GOVERNANCE"), "object lock"),
+        (s3("PUT", "/reports/k", "x-amz-server-side-encryption-aws-kms-key-id=arn%3Aaws%3Akms%3Aeu-west-1%3A1%3Akey%2Fx"), "KMS"),
+        (s3("PUT", "/reports", "x-amz-bucket-object-lock-enabled=true"), "object lock"),
         # Lambda: the function by name, a second target, ambiguity.
         (lam("POST", "/2015-03-31/functions/report/invocations"), "by ARN"),
         (lam("POST", f"/2015-03-31/functions/{FN}:live/invocations", "Qualifier=prod"), "both"),
@@ -401,6 +441,9 @@ def test_s3_writes_and_lambda_invocations_send_data_out():
         (sm("GetSecretValue", {"SecretId": "prod/db"}), "full ARN"),
         (sm("GetSecretValue", {"SecretId": SECRET[:-7]}), "full ARN"),
         (sm("GetSecretValue", {"SecretId": SECRET.replace("eu-west-1", "us-east-1")}), "full ARN"),
+        # A name that itself ends in a hyphen and six characters: the ARN could be a partial ARN of another secret.
+        (sm("GetSecretValue", {"SecretId": f"arn:aws:secretsmanager:eu-west-1:{ACCOUNT}:secret:prod-abcdef-AbCdEf"}), "partial ARN"),
+        (sm("DeleteSecret", {"SecretId": f"arn:aws:secretsmanager:eu-west-1:{ACCOUNT}:secret:team/db-123456-x1Y2z3"}), "partial ARN"),
         (sm("UpdateSecret", {"SecretId": SECRET, "KmsKeyId": "alias/other"}), "KMS"),
         (sm("RotateSecret", {"SecretId": SECRET, "RotationLambdaARN": FN}), "rotation function"),
         (sm("ReplicateSecretToRegions", {"SecretId": SECRET, "AddReplicaRegions": [{"Region": "us-east-1", "KmsKeyId": "k"}]}), "KMS"),
@@ -446,6 +489,9 @@ def test_s3_writes_and_lambda_invocations_send_data_out():
         (sts({"Action": "AssumeRole", "RoleArn": f"arn:aws:iam::{ACCOUNT}:user/deploy", "RoleSessionName": "s"}), "ARN of the role"),
         (sts({"Action": "AssumeRole", "RoleArn": "arn:aws-cn:iam::123456789012:role/deploy", "RoleSessionName": "s"}), "ARN of the role"),
         (sts({"Action": "AssumeRoleWithWebIdentity", "RoleArn": f"arn:aws:iam::{ACCOUNT}:role/x"}), "trust policy"),
+        (sts({"Action": "GetSessionToken"}), "temporary credentials"),
+        (sts({"Action": "GetSessionToken", "DurationSeconds": "3600", "SerialNumber": f"arn:aws:iam::{ACCOUNT}:mfa/me", "TokenCode": "123456"}), "not routed"),
+        (sts({"Action": "GetFederationToken", "Name": "x"}), "not routed"),
         (iam({"Action": "AttachRolePolicy", "RoleName": "deploy", "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"}), "by name"),
         (iam({"Action": "CreateUser", "UserName": "mallory"}), "account id"),
         (iam({"Action": "GetPolicy", "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}), "ARN of the policy"),

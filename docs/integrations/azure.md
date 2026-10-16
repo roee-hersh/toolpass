@@ -116,13 +116,15 @@ own provider's. The scope is the narrowest the integration takes: `resource:<id>
 group, `resourcegroup:`, `subscription:` or `managementgroup:` for those themselves. An object
 directly under a subscription or management group (a role assignment there, a subscription
 deployment) is checked on that subscription or management group, so an assignment on the object
-alone is not seen.
+alone is not seen. A DNS record set named `@` (the zone apex) or `*`, `*.<name>` (a wildcard), the
+only names in a path that may hold those characters, is checked on its zone in the same way.
 
 Refused (`unresolved_resource`): a path that does not parse exactly (percent-encoded characters, dot
 or empty segments, a subscription that is not a GUID), `/batch`, tenant-level writes
 (`elevateAccess`, Resource Graph queries), resource moves, moving a subscription between management
-groups, creating or changing a template deployment or deployment stack (its template can create
-anything, as the agent), and a write whose JSON body names another Azure resource by id: ARM checks
+groups, creating or changing a template deployment or deployment stack however the path spells it
+(`.../providers/Microsoft.Resources/deployments/{name}`, `.../resourcegroups/{rg}/deployments/{name}`,
+`/subscriptions/{id}/deployments/{name}`; its template can create anything, as the agent), and a write whose JSON body names another Azure resource by id: ARM checks
 the linked permission (joining a subnet, attaching a disk, assigning an identity) as the agent. A
 role assignment's own `roleDefinitionId`, the target itself and the scopes above it are allowed in
 the body. Tenant-level listings (subscriptions, tenants, management groups) list only what the

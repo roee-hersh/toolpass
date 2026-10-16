@@ -198,17 +198,19 @@ One check costs one `SimulatePrincipalPolicy` per candidate principal until one 
 
 The route table (`toolpass routes aws`) maps a secured tool's requests to `raw:<service>:<Action>` on
 the ARN the request acts on, so a boto3 call needs no declaration. The service comes from the host
-(every region of the connection's `partition`, and the global IAM, STS and S3 hosts), the operation
-from the protocol: method and path for S3 and Lambda, `Action=` for IAM and STS, `X-Amz-Target` for
-Secrets Manager. An action IAM authorizes with no resource (`iam:ListRoles`, `s3:ListAllMyBuckets`)
-is checked on `all`; `sts:GetCallerIdentity` and `sts:GetSessionToken` concern the agent itself and
-are not checked.
+(every region of the connection's `partition`, S3's dualstack and dash-style regional hosts such as
+`s3-us-west-2.amazonaws.com`, and the global IAM, STS, S3 and S3 Transfer Acceleration hosts), the
+operation from the protocol: method and path for S3 and Lambda, `Action=` for IAM and STS,
+`X-Amz-Target` for Secrets Manager. An action IAM authorizes with no resource (`iam:ListRoles`,
+`s3:ListAllMyBuckets`) is checked on `all`; `sts:GetCallerIdentity` concerns the agent itself and is
+not checked. `sts:GetSessionToken` is refused: it returns temporary credentials with the agent's own
+permissions, and IAM policies do not authorize it.
 
 | Service | Checked on |
 |---|---|
 | S3 | `arn:aws:s3:::<bucket>[/<key>]`, with the IAM action S3 authorizes: `ListObjectsV2` is `s3:ListBucket`, a read with `versionId` is `s3:GetObjectVersion`, `DeleteBucketCors` is `s3:PutBucketCORS` |
 | Lambda | the function's ARN, with its version or alias; layers, code signing configs and tags by ARN |
-| Secrets Manager | the secret's full ARN, suffix included |
+| Secrets Manager | the secret's full ARN, suffix included (Secrets Manager reads a `SecretId` ending in a hyphen and six characters as a full ARN); a secret whose name itself ends in a hyphen and six characters is refused, since its full ARN could also be read as a partial ARN of another secret |
 | STS | `AssumeRole` on the role's ARN |
 | IAM | managed policies, OIDC and SAML providers and virtual MFA devices by ARN; the account-wide actions on `all` |
 
@@ -219,11 +221,16 @@ their resources that way throughout; their hosts are not claimed. Also refused: 
 second resource or needs a second action (an S3 copy or bulk delete, an upload that sets an ACL, tags,
 an object lock or a KMS key, a Lambda configuration that passes a role or adds layers, `AssumeRole` with
 session tags), a parameter given twice, an S3 request naming two subresources or one the table does not
-know, and any operation not in the table. S3 writes and Lambda invocations are treated as sending data
+know, and any operation not in the table. S3 reads an `x-amz-*` query parameter as the header of that
+name, so one is refused exactly when the header would be (`?x-amz-copy-source=` is a copy,
+`?x-amz-acl=` sets an ACL); the SigV4 parameters of a presigned URL (`X-Amz-Algorithm`,
+`X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders`, `X-Amz-Signature`,
+`X-Amz-Security-Token`) select nothing. S3 writes and Lambda invocations are treated as sending data
 out: a bucket or function in another account takes what its policy allows.
 
 Only path-style S3 requests reach a host the table claims; a virtual-hosted bucket
-(`<bucket>.s3.<region>.amazonaws.com`) is a host of its own. Configure boto3 with
+(`<bucket>.s3.amazonaws.com`, `<bucket>.s3.<region>.amazonaws.com`, `<bucket>.s3-accelerate.amazonaws.com`)
+is a host of its own, and endpoints are exact hosts, so the table cannot claim it. Configure boto3 with
 `Config(s3={"addressing_style": "path"})`, or run the toolkit with `strict=True` so a request to an
 unknown host is refused. AWS hosts are shared by every account: with two aws connections in one
 process, requests are attributed to the first, and an ARN in the other account answers `unsupported`.

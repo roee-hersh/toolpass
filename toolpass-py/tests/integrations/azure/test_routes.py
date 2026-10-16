@@ -21,6 +21,7 @@ RG = f"{S}/resourceGroups/shop"
 VM = f"{RG}/providers/Microsoft.Compute/virtualMachines/web-1"
 RA = "providers/Microsoft.Authorization/roleAssignments/11111111-2222-3333-4444-555555555555"
 READER = f"{S}/providers/Microsoft.Authorization/roleDefinitions/acdd72a7-3385-48ef-bd42-f606fba81ae7"
+ZONE = f"{RG}/providers/Microsoft.Network/dnsZones/example.com"
 
 
 def req(method: str, path: str, body: object = None, headers: dict[str, str] | None = None) -> Request:
@@ -180,6 +181,20 @@ def test_routes_match_the_api_description(name):
             f"resource:{RG}/providers/Microsoft.Resources/deployments/old",
             "destructive",
         ),
+        # DNS record sets: by name on the record set; the apex (@) and wildcards (*) on their zone.
+        ("PUT", f"{ZONE}/A/www", {"properties": {"TTL": 300}}, "Microsoft.Network/dnsZones/A/write", f"resource:{ZONE}/A/www", "write"),
+        ("PUT", f"{ZONE}/A/@", {"properties": {"TTL": 300}}, "Microsoft.Network/dnsZones/A/write", f"resource:{ZONE}", "write"),
+        ("GET", f"{ZONE}/TXT/@", None, "Microsoft.Network/dnsZones/TXT/read", f"resource:{ZONE}", "read"),
+        ("DELETE", f"{ZONE}/CNAME/*", None, "Microsoft.Network/dnsZones/CNAME/delete", f"resource:{ZONE}", "destructive"),
+        ("PUT", f"{ZONE}/A/*.apps", {}, "Microsoft.Network/dnsZones/A/write", f"resource:{ZONE}", "write"),
+        (
+            "PUT",
+            f"{RG}/providers/Microsoft.Network/privateDnsZones/corp.internal/A/@",
+            {},
+            "Microsoft.Network/privateDnsZones/A/write",
+            f"resource:{RG}/providers/Microsoft.Network/privateDnsZones/corp.internal",
+            "write",
+        ),
         # The body may name the target itself and scopes above it.
         ("PUT", VM, {"id": VM, "properties": {"note": RG}}, "Microsoft.Compute/virtualMachines/write", f"resource:{VM}", "write"),
     ],
@@ -223,7 +238,7 @@ def test_actions_send_out_and_their_output_is_untrusted():
         # Paths that do not parse exactly.
         ("GET", f"{VM}%2Fextensions", None, "percent-encoded"),
         ("DELETE", f"{RG}/providers/Microsoft.Compute/virtualMachines/web 1", None, "not an ARM name"),
-        ("DELETE", f"{RG}/providers/Microsoft.Compute/virtualMachines/..", None, "not an ARM name"),
+        ("DELETE", f"{RG}/providers/Microsoft.Compute/virtualMachines/..", None, "segment"),
         ("DELETE", f"{RG}//providers/Microsoft.Compute/virtualMachines/web-1", None, "not an ARM name"),
         ("DELETE", f"{RG}/providers/Microsoft.Compute/virtualMachines/web-1/", None, "not an ARM name"),
         ("DELETE", "/subscriptions/not-a-guid/resourceGroups/shop", None, "GUID"),
@@ -245,6 +260,21 @@ def test_actions_send_out_and_their_output_is_untrusted():
         ("PUT", f"{RG}/providers/Microsoft.Resources/deployments/rollout", {"properties": {"mode": "Incremental", "template": {}}}, "template"),
         ("PUT", f"{S}/providers/Microsoft.Resources/deployments/rollout", {"properties": {"template": {}}}, "template"),
         ("PUT", f"{RG}/providers/Microsoft.Resources/deploymentStacks/s", {"properties": {}}, "template"),
+        # ... however the path spells the deployment.
+        ("PUT", f"{S}/resourcegroups/shop/deployments/rollout", {"properties": {"template": {}}}, "template"),
+        ("PUT", f"{S}/deployments/rollout", {"properties": {"template": {}}}, "template"),
+        ("PATCH", f"{RG}/DEPLOYMENTS/rollout", {}, "template"),
+        ("PUT", f"{RG}/deploymentStacks/s", {}, "template"),
+        ("PUT", f"{RG}/providers/microsoft.resources/DeploymentStacks/s", {}, "template"),
+        ("PUT", "/providers/Microsoft.Management/managementGroups/root-mg/deployments/d", {}, "template"),
+        ("PUT", "/providers/Microsoft.Management/managementGroups/root-mg/providers/Microsoft.Resources/deployments/d", {}, "template"),
+        # @ and * only as a DNS record set's name.
+        ("PUT", f"{RG}/providers/Microsoft.Compute/virtualMachines/@", {}, "not an ARM name"),
+        ("PUT", f"{RG}/providers/Microsoft.Network/dnsZones/*", {}, "not an ARM name"),
+        ("PUT", f"{ZONE}/A/a*b", {}, "not an ARM name"),
+        ("PUT", f"{ZONE}/A/www.*", {}, "not an ARM name"),
+        ("PUT", f"{ZONE}/NOTATYPE/@", {}, "not an ARM name"),
+        ("GET", f"{ZONE}/A/@/more/x", None, "integration can check"),
         (
             "PUT",
             f"{RG}/providers/Microsoft.Network/networkInterfaces/nic-1",

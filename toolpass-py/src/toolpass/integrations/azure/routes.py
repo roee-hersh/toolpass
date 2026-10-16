@@ -19,13 +19,16 @@ group, ``resourcegroup:``, ``subscription:`` or ``managementgroup:`` for
 those themselves. An object directly under a subscription or management
 group (a role assignment there, a subscription-level deployment) is checked
 on that subscription or management group: a role or deny assignment on the
-object alone is not seen.
+object alone is not seen. A DNS record set named ``@`` (the apex) or ``*``
+(a wildcard) is checked on its zone, likewise.
 
 Refused: a path that does not parse exactly (percent-encoded characters,
 dot or empty segments, a subscription that is not a GUID), the batch
 endpoint, tenant-level writes (``/providers/Microsoft.Authorization/elevateAccess``),
 resource moves, creating or changing a template deployment or deployment
-stack (the template can create anything, anywhere, as the agent), and a
+stack however the path spells it (``.../providers/Microsoft.Resources/deployments/{d}``
+or ``.../resourcegroups/{rg}/deployments/{d}``: the template can create
+anything, anywhere, as the agent), and a
 write whose JSON body names another Azure resource by id: ARM checks the
 linked permission (joining a subnet, attaching a disk, assigning an
 identity) as the agent, and one request is checked against one scope here.
@@ -52,6 +55,11 @@ __all__ = ["ROUTES"]
 # Every segment of a path the table reads: what ARM allows in resource
 # group, resource type and resource names, all of it safe unescaped.
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9_.()-]{1,260}")
+# A DNS record set's name may also be the apex (@) or a wildcard (*, *.name),
+# in .../providers/Microsoft.Network/{dnsZones|privateDnsZones}/{zone}/{type}/{name}.
+_RECORD_NAME_RE = re.compile(r"@|\*(\.[A-Za-z0-9_-]{1,63})*")
+_DNS_ZONES = ("dnszones", "privatednszones")
+_RECORD_TYPES = frozenset(["a", "aaaa", "caa", "cname", "ds", "mx", "naptr", "ns", "ptr", "soa", "srv", "tlsa", "txt"])
 _NS_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(\.[A-Za-z0-9]+)+")
 _ROLE_DEFINITION_RE = re.compile(
     r"(/subscriptions/[0-9a-f-]{36}(/resourcegroups/[^/]+)?)?/providers/microsoft\.authorization/roledefinitions/[0-9a-f-]{36}",
@@ -62,11 +70,16 @@ _EFFECTS = {"read": "read", "write": "write", "delete": "destructive", "action":
 _REFUSED = {
     "microsoft.resources/subscriptions/resourcegroups/moveresources/action": "a move takes resources to the resource group named in the body",
     "microsoft.resources/subscriptions/resourcegroups/validatemoveresources/action": "a move takes resources to the resource group named in the body",
-    "microsoft.resources/deployments/write": "a deployment's template creates resources the request does not name, as the agent",
-    "microsoft.resources/deploymentstacks/write": "a deployment stack's template creates resources the request does not name, as the agent",
     "microsoft.management/managementgroups/subscriptions/write": "moving a subscription between management groups changes its old parent too",
     "microsoft.management/managementgroups/subscriptions/delete": "moving a subscription between management groups changes its old parent too",
 }
+# Writes of these types, however the path spells them (with or without
+# /providers/Microsoft.Resources), run a template that creates anything.
+_TEMPLATES = {
+    "deployments": "a deployment's template creates resources the request does not name, as the agent",
+    "deploymentstacks": "a deployment stack's template creates resources the request does not name, as the agent",
+}
+_TEMPLATE_NS = ("microsoft.resources", "microsoft.management")
 
 
 class _Base:
@@ -90,10 +103,10 @@ def _arm(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     if "%" in path:
         return _unresolved("an ARM path with percent-encoded characters is not routed; resource names need none")
     segs = path.split("/")[1:]
-    for s in segs:
-        if not _SEGMENT_RE.fullmatch(s) or dots(s):
-            return _unresolved(f"the path segment {s!r} is not an ARM name")
     low = [s.lower() for s in segs]
+    for i, s in enumerate(segs):
+        if not (_SEGMENT_RE.fullmatch(s) or _record_name(low, i)) or dots(s):
+            return _unresolved(f"the path segment {s!r} is not an ARM name")
     if low[0] == "subscriptions":
         if len(segs) == 1:
             return _tenant(method, low)
@@ -119,6 +132,18 @@ def _arm(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     else:
         return _unresolved(f"/{segs[0]} is not under /subscriptions or /providers (the batch endpoint is not routed)")
     return _resolve(r, method, base, rest)
+
+
+def _record_name(low: list[str], i: int) -> bool:
+    """Whether segment i is a DNS record set's apex or wildcard name."""
+    return (
+        i >= 5
+        and low[i - 5] == "providers"
+        and low[i - 4] == "microsoft.network"
+        and low[i - 3] in _DNS_ZONES
+        and low[i - 1] in _RECORD_TYPES
+        and _RECORD_NAME_RE.fullmatch(low[i]) is not None
+    )
 
 
 def _tenant(method: str, low: list[str]) -> dict[str, str]:
@@ -200,12 +225,15 @@ def _done(r: Request, base: _Base, op_prefix: str, verb: str, target: str) -> di
     refused = _REFUSED.get(op.lower())
     if refused is not None:
         return _unresolved(refused)
+    types = op_prefix.lower().split("/")
+    if verb == "write" and types[0] in _TEMPLATE_NS and types[-1] in _TEMPLATES:
+        return _unresolved(_TEMPLATES[types[-1]])
     if verb == "action":
         last = op_prefix.rsplit("/", 1)[-1].lower()
         effect = "destructive" if last.startswith("delete") or last == "purge" else "write"
     else:
         effect = _EFFECTS[verb]
-    resource = _scope(base, target)
+    resource = _scope(base, _record_set_owner(target))
     action = "raw:" + op
     try:
         parse_target(action, parse_resource(resource))
@@ -216,6 +244,18 @@ def _done(r: Request, base: _Base, op_prefix: str, verb: str, target: str) -> di
         if problem is not None:
             return _unresolved(problem)
     return {"_action": action, "_resource": resource, "_effect": effect, "operation": op}
+
+
+def _record_set_owner(target: str) -> str:
+    """A DNS record set named @ or * is checked on its zone: the integration's
+    resource ids take neither character, and the zone's grants and denies
+    are the record set's too (an assignment on the record set alone is not
+    seen). Any other target is itself."""
+    segs = target.split("/")
+    low = [s.lower() for s in segs]
+    if len(segs) >= 6 and _record_name(low, len(segs) - 1) and not _SEGMENT_RE.fullmatch(segs[-1]):
+        return "/".join(segs[:-2])
+    return target
 
 
 def _scope(base: _Base, target: str) -> str:

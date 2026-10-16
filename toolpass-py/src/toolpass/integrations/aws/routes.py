@@ -12,12 +12,19 @@ resource (``iam:ListRoles``, ``s3:ListAllMyBuckets``). Covered:
 - S3: bucket and object requests on ``arn:aws:s3:::<bucket>[/<key>]``, with
   the IAM action S3 authorizes (``ListObjectsV2`` is ``s3:ListBucket``, a
   read with ``versionId`` is ``s3:GetObjectVersion``). Only path-style
-  requests reach a host the table claims; configure the client with
-  path-style addressing (virtual-hosted buckets are hosts of their own).
+  requests reach a host the table claims (the regional, dualstack,
+  dash-style and Transfer Acceleration hosts); configure the client with
+  path-style addressing (virtual-hosted buckets are hosts of their own,
+  which exact endpoints cannot claim). An ``x-amz-*`` query parameter other
+  than the SigV4 ones of a presigned URL is read as that header, as S3 does.
 - Lambda: function requests on the function's ARN (with its qualifier),
   plus layers, code signing configs and tags by ARN.
-- Secrets Manager: secret requests on the secret's full ARN.
-- STS: ``AssumeRole`` on the role's ARN; IAM: managed policies, OIDC and
+- Secrets Manager: secret requests on the secret's full ARN (Secrets
+  Manager takes a SecretId ending in a hyphen and six characters as a full
+  ARN). A secret whose name itself ends that way is refused: its full ARN
+  could also be read as a partial ARN of another secret.
+- STS: ``AssumeRole`` on the role's ARN (``GetSessionToken``, which IAM
+  policies do not authorize, is refused); IAM: managed policies, OIDC and
   SAML providers and virtual MFA devices by ARN, and the account-wide
   actions.
 
@@ -42,7 +49,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -118,10 +125,15 @@ _GLOBAL = {
     "sts.amazonaws.com": ("sts", "us-east-1"),
     "s3.amazonaws.com": ("s3", "us-east-1"),
     "s3-external-1.amazonaws.com": ("s3", "us-east-1"),
+    # Transfer Acceleration: the bucket's ARN does not name a region.
+    "s3-accelerate.amazonaws.com": ("s3", "us-east-1"),
+    "s3-accelerate.dualstack.amazonaws.com": ("s3", "us-east-1"),
 }
 _HOST_RE = re.compile(
     r"(?P<svc>s3|sts|lambda|secretsmanager)(-fips)?(\.dualstack)?\.(?P<region>[a-z]{2}(-gov)?-[a-z]+-[0-9])\.(?P<domain>amazonaws\.com|amazonaws\.com\.cn|api\.aws)"
 )
+# The legacy dash-style regional S3 hosts (s3-us-west-2.amazonaws.com).
+_S3_DASH_RE = re.compile(r"s3-(?P<region>[a-z]{2}(-gov)?-[a-z]+-[0-9])\.amazonaws\.com")
 
 
 def _partition(region: str) -> str:
@@ -144,6 +156,10 @@ def place(host: str) -> _Place | None:
     g = _GLOBAL.get(host)
     if g is not None:
         return _Place(g[0], g[1], _partition(g[1]))
+    m = _S3_DASH_RE.fullmatch(host)
+    if m is not None:
+        region = m.group("region")
+        return None if region.startswith("cn-") else _Place("s3", region, _partition(region))
     m = _HOST_RE.fullmatch(host)
     if m is None:
         return None
@@ -155,7 +171,13 @@ def place(host: str) -> _Place | None:
 
 def _locate(settings: Any) -> Sequence[tuple[str, str]]:
     """Every regional host of the covered services in the connection's
-    partition, and the global IAM, STS and S3 hosts."""
+    partition (with S3's dualstack and dash-style ones), and the global IAM,
+    STS and S3 hosts (with Transfer Acceleration's).
+
+    Endpoints are exact hosts, so a virtual-hosted bucket
+    (``<bucket>.s3[.<region>].amazonaws.com``, ``<bucket>.s3-accelerate...``)
+    cannot be claimed: every bucket name is a host of its own. Such requests
+    reach no route; only ``strict`` refuses them."""
     get = getattr(settings, "get", None)
     partition = (get("partition") if callable(get) else "") or "aws"
     region = get("region") if callable(get) else ""
@@ -168,6 +190,8 @@ def _locate(settings: Any) -> Sequence[tuple[str, str]]:
         for svc in _SERVICES:
             hosts += [f"{svc}.{r}.{suffix}", f"{svc}-fips.{r}.{suffix}"]
         hosts += [f"s3.dualstack.{r}.{suffix}", f"s3-fips.dualstack.{r}.{suffix}"]
+        if partition != "aws-cn":
+            hosts.append(f"s3-{r}.{suffix}")
         if partition != "aws-cn":
             hosts.append(f"lambda.{r}.api.aws")
     return [(h, "") for h in hosts]
@@ -509,7 +533,6 @@ _SESSION_EXTRAS = ("Tags", "TransitiveTagKeys", "SourceIdentity", "ProvidedConte
 STS: dict[str, _Op] = {
     "AssumeRole": _Op("write", "RoleArn", ("role/",), forbid=_SESSION_EXTRAS),
     "GetCallerIdentity": _Op("read", check=False),
-    "GetSessionToken": _Op("read", check=False),
     "DecodeAuthorizationMessage": _Op("read"),
     "GetAccessKeyInfo": _Op("read"),
     "GetWebIdentityToken": _Op("write", forbid=("Tags",)),
@@ -520,10 +543,15 @@ STS_UNROUTED: dict[str, str] = {
     "AssumeRoot": "acts on another account's root user; the connection answers for its own account",
     "GetFederationToken": "the federated user's ARN carries the account id, which the request does not",
     "GetDelegatedAccessToken": "trades a delegation token the request does not tie to a resource",
+    "GetSessionToken": "returns temporary credentials with the agent's own permissions, which IAM policies do not authorize",
 }
 
 _SECRET = ("secret:",)
 _SECRET_ARN_RE = re.compile(r"arn:[a-z-]+:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}")
+# A full ARN whose name, without the suffix, itself ends in a hyphen and six
+# characters: Secrets Manager may read the whole of it as a partial ARN of
+# another secret, so which secret it names is not certain.
+_SECRET_AMBIGUOUS_RE = re.compile(r".*:secret:.*-[A-Za-z0-9]{6}-[A-Za-z0-9]{6}")
 SECRETSMANAGER: dict[str, _Op] = {
     **{
         op: _Op(effect, "SecretId", _SECRET)
@@ -585,6 +613,12 @@ def _rpc(service: str, operation: str, spec: _Op | None, unrouted: Mapping[str, 
     if not isinstance(value, str) or not value:
         return _unresolved(f"{operation} names no {spec.member}", operation)
     if service == "secretsmanager":
+        if _SECRET_AMBIGUOUS_RE.fullmatch(value):
+            return _unresolved(
+                f"{operation}: {spec.member} {value!r} could be a full ARN or a partial ARN of another secret "
+                "(its name ends in a hyphen and six characters before the suffix); rename the secret",
+                operation,
+            )
         arn = _arn(value, p, "secretsmanager", spec.kinds, True) if _SECRET_ARN_RE.fullmatch(value) else None
         want = f"the secret's full ARN (arn:{p.partition}:secretsmanager:{p.region}:<account>:secret:<name>-<6 characters>)"
     else:
@@ -1236,9 +1270,21 @@ _S3_EXTRA_PREFIXES = {
     "x-amz-grant-": "an ACL grant needs s3:PutObjectAcl or s3:PutBucketAcl too",
     "x-amz-object-lock-": "an object lock needs s3:PutObjectRetention or s3:PutObjectLegalHold too",
 }
+# The SigV4 query parameters of a presigned URL, which select nothing. S3
+# reads any other x-amz-* query parameter as the header of that name.
+_S3_SIGV4_PARAMS = frozenset(
+    ["x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-expires", "x-amz-signedheaders", "x-amz-signature", "x-amz-security-token"]
+)
 
 
-def _s3_operation(method: str, key: str, sub: str, params: Mapping[str, str], headers: Mapping[str, str]) -> str:
+def _s3_extra(op: str, name: str) -> str | None:
+    """Why the header ``name`` (lowercased) makes S3 authorize more than ``op``, or None."""
+    if op in ("PutBucketAcl", "PutObjectAcl") and (name == "x-amz-acl" or name.startswith("x-amz-grant-")):
+        return None  # the ACL is what these operations set
+    return _S3_EXTRA_HEADERS.get(name) or next((why for pre, why in _S3_EXTRA_PREFIXES.items() if name.startswith(pre)), None)
+
+
+def _s3_operation(method: str, key: str, sub: str, params: Mapping[str, str], headers: Collection[str]) -> str:
     """The S3 operation a request is, by method, level, subresource and the
     headers that tell the operations on one path apart; "" when none."""
     if key:
@@ -1287,26 +1333,33 @@ def _s3(r: Request, p: _Place) -> dict[str, str]:
     if isinstance(params, str):
         return _unresolved(params)
     subs = []
+    amz: dict[str, str] = {}  # x-amz-* query parameters S3 reads as headers, lowercased
     for k in params:
+        low = k.lower()
         if k in _S3_SUBRESOURCES:
             subs.append(k)
-        elif k not in _S3_PARAMS and not k.startswith(("response-", "x-amz-", "X-Amz-")):
+        elif low.startswith("x-amz-"):
+            if low not in _S3_SIGV4_PARAMS:
+                amz[low] = k
+        elif k not in _S3_PARAMS and not k.startswith("response-"):
             return _unresolved(f"the S3 query parameter {k!r} is not one the table knows")
     if len(subs) > 1:
         return _unresolved(f"the request names several S3 subresources ({', '.join(sorted(subs))})")
     sub = subs[0] if subs else ""
-    op = _s3_operation(method, key, sub, params, r.headers)
+    op = _s3_operation(method, key, sub, params, {*r.headers, *amz})
     if not op:
         return _unresolved(f"{method} on {'an object' if key else 'a bucket'}{' with ?' + sub if sub else ''} is not an S3 operation the table knows")
     routed = S3.get(op)
     if routed is None:
         return _unresolved(f"s3:{op} is not routed: {S3_UNROUTED.get(op, 'not described')}", op)
     for h in r.headers:
-        if op in ("PutBucketAcl", "PutObjectAcl") and (h == "x-amz-acl" or h.startswith("x-amz-grant-")):
-            continue  # the ACL is what these operations set
-        reason = _S3_EXTRA_HEADERS.get(h) or next((why for pre, why in _S3_EXTRA_PREFIXES.items() if h.startswith(pre)), None)
+        reason = _s3_extra(op, h)
         if reason is not None:
             return _unresolved(f"{op} with {h}: {reason}", op)
+    for low, k in amz.items():
+        reason = _s3_extra(op, low)
+        if reason is not None:
+            return _unresolved(f"{op} with ?{k}= (S3 reads it as the {low} header): {reason}", op)
     if op == "RestoreObject" and r.body and (b"OutputLocation" in r.body or b"SelectParameters" in r.body):
         return _unresolved("a restore with an output location writes to a second bucket", op)
     action, effect = routed
