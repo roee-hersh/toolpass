@@ -79,7 +79,7 @@ def test_the_gateway_command(monkeypatch: object) -> None:
 
 def test_a_rewritten_entry_still_starts_its_server() -> None:
     """`toolpass mcp ... -- COMMAND` runs COMMAND with the client's stdio, unrecorded."""
-    echo = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"]
+    echo = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read().upper())"]  # bytes: no newline translation on Windows
     done = subprocess.run(
         [sys.executable, "-m", "toolpass.cli", "mcp", "-server", "x", "-client", "c", "--", *echo], input=b"ping\n", capture_output=True, timeout=60
     )
