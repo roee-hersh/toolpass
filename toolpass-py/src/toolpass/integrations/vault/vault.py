@@ -52,6 +52,7 @@ from toolpass.core.integration import (
     credential_field,
     url_field,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.core.template import is_email
 from toolpass.integrations.vault.actions import catalog_actions, match_action, parse_target
@@ -106,6 +107,11 @@ class Vault(Integration):
 
     def match_action(self, name: str) -> Action | None:
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.vault.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network."""
@@ -630,6 +636,28 @@ class VaultConnection(Connection):
             return mount, key, 2
         return mount, key, 1
 
+    def _relative(self, namespace: str, path: str) -> str | Decision:
+        """A path given relative to a request's namespace, made relative to
+        the connection's: Vault Enterprise joins the X-Vault-Namespace header
+        and the path into one path from the root (``team`` + ``secret/x`` is
+        ``team/secret/x``), and applies a namespace's policies to its child
+        namespaces' paths with the child's name in front. A path outside the
+        connection's namespace is answered unknown: its policies live there."""
+        conn = self.namespace.strip("/")
+        if namespace != "" and conn == "":
+            # Vault Community ignores the header and Enterprise applies it, and
+            # a connection to the root namespace does not say which this is.
+            return unsupported(
+                f"the request names namespace {namespace}/, which Vault Enterprise applies and Vault Community ignores; "
+                "set the connection's namespace, or name the namespace in the path instead of the header"
+            )
+        full = namespace + "/" + path if namespace != "" else path
+        if conn == "":
+            return full
+        if not full.startswith(conn + "/"):
+            return unsupported(f"{full} is outside the connection's namespace {conn}/, whose policies are the ones toolpass reads")
+        return full[len(conn) + 1 :]
+
     def check(self, ctx: Context, r: CheckRequest) -> Decision:
         t = parse_target(r.action_name, r.resource)
         ident = r.identity
@@ -640,6 +668,11 @@ class VaultConnection(Connection):
             return unsupported(f"Vault did not say whether entity {ident.attr('entity_name')} ({who}) is disabled")
         # The API path the request goes to.
         api_path = t.path
+        if t.namespace is not None:
+            rel = self._relative(t.namespace, t.path)
+            if isinstance(rel, Decision):
+                return rel
+            api_path = rel
         if t.kind == "kv":
             try:
                 mount, key, version = self._kv_mount(ctx, t.path)

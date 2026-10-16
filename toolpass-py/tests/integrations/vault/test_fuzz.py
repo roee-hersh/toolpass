@@ -101,6 +101,10 @@ TARGET_SEEDS = [
     ("secret.read", "kv:secret/../x"),
     ("secret.read", "path:a//b"),
     ("raw:read", "path:secret/data/x?v=1"),
+    ("raw:read", "path:secret/data/x?namespace=team/child"),
+    ("raw:read", "path:secret/data/x?namespace="),
+    ("secret.read", "kv:secret/x?namespace=team"),
+    ("raw:read", "path:x?namespace=a/../b"),
     ("secret.write", "kv:secret/a+b/c"),
 ]
 
@@ -116,7 +120,12 @@ def fuzz_parse_target(action: str, resource: str) -> None:
         tg = parse_target(action, res)
     except ToolpassError:
         return
-    assert not res.query, f"query slipped through {res}"
+    # The only query is the namespace a path: is relative to, a namespace path or "".
+    assert not res.query or (tg.kind == "path" and set(res.query) == {"namespace"}), f"query slipped through {res}"
+    ns = tg.namespace
+    if ns is not None:
+        assert ns == "" or not (ns.startswith("/") or ns.endswith("/") or any(c in ns for c in "*+?# \\%@:~=")), f"bad namespace {ns!r} from {resource!r}"
+        assert all(seg != "" and seg.strip(".") != "" for seg in ns.split("/")) or ns == "", f"bad namespace segment in {ns!r}"
     p = tg.path
     assert not (p == "" or p.startswith("/") or p.endswith("/") or any(c in p for c in "*+?# \\%") or len(p.encode()) > 512), (
         f"bad path {p!r} from {resource!r}"
