@@ -25,6 +25,13 @@ def sample_path(template: str) -> str:
     return re.sub(r"\{\+?([A-Za-z0-9_]+)\}", lambda m: m.group(1), template)
 
 
+def spec_template(path: str) -> PathTemplate:
+    """A description's path as a template. A segment that mixes text and a
+    variable (GitLab's ``binary-{architecture}``) counts as one variable."""
+    segs = ["{" + re.sub(r"\W", "_", s) + "}" if ("{" in s or "}" in s) and not re.fullmatch(r"\{[A-Za-z0-9_]+\+?\}", s) else s for s in path.split("/")]
+    return PathTemplate("/".join(segs))
+
+
 def spec_operations(name: str) -> list[tuple[str, str]] | None:
     """(METHOD, template) for every operation of a loaded OpenAPI/Swagger
     description, or None when the description is not at hand."""
@@ -42,8 +49,8 @@ def check_routes_against_spec(table: RouteTable, name: str, *, host: str) -> lis
     ops = spec_operations(name)
     if ops is None:
         return []
-    shapes = {(m, PathTemplate(p).shape()) for m, p in ops}
-    paths = {PathTemplate(p).shape() for _, p in ops}
+    shapes = {(m, spec_template(p).shape()) for m, p in ops}
+    paths = {spec_template(p).shape() for _, p in ops}
     problems: list[str] = []
     for r in table.routes:
         if not r.spec:
@@ -58,7 +65,7 @@ def check_routes_against_spec(table: RouteTable, name: str, *, host: str) -> lis
     for method, path in ops:
         if method not in WRITES:
             continue
-        shape = PathTemplate(path).shape()
+        shape = spec_template(path).shape()
         if not any(shape == c or shape.startswith(c.rstrip("/") + "/") for c in claims):
             continue
         concrete = sample_path(path)

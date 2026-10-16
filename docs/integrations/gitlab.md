@@ -192,6 +192,31 @@ Marked `# UNVERIFIED:` in the code:
   published description does not list `emails` on the user record (secondary emails have their own
   `GET /users/:id/emails` endpoint), so a real listing may never carry it.
 
+## Observed requests
+
+For secured tools, the route table (`toolpass routes gitlab`) maps every request to the instance's
+host to an action of this integration, on the project or group in the path (`project:<id>` or
+`group:<id>`, the URL-encoded path or the numeric id):
+
+- Reads check `project.read` or `group.member`; CI/CD variables, hooks, integrations, tokens, keys,
+  triggers, secure files, Terraform state and exports check what changing them needs.
+- A write that lands on a branch (a file, a commit, a cherry-pick, a new or deleted branch) checks
+  `repo.push` on `project:<id>@<branch>`, the branch read from the request's parameters; a merge
+  checks `mr.merge` on the project, which answers unknown when the project has protected branches.
+- Writes GitLab allows a role below the integration's nearest action (wikis, snippets,
+  environments, deployments) check `project.admin`, the stricter answer.
+- `pipeline.run` does not evaluate protected refs: a Developer is allowed to run a pipeline on any
+  ref through it.
+
+Parameters are read as GitLab reads them (the query string merged with a JSON or URL-encoded body);
+a name given twice, in two places with different values, or as a nested form key is refused, and so
+is a body of another type where the route reads it. Refused, or not routed: writes that reach a
+second project or group (moving or cloning issues, merge requests into another project, forks into a
+group, sharing, transfers, importing members), Owner-only writes (deleting issues, merge requests and
+pipelines, archiving), tags and releases that create one (protected tags are not evaluated), changes
+to an existing member (who may be an Owner), merges that remove the source branch, force pushes,
+GraphQL and git over HTTPS.
+
 ## Test
 
 Unit tests run against a fake GitLab API (`tests/integrations/gitlab/test_gitlab.py`) that models users (with `external`,
