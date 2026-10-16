@@ -1,7 +1,7 @@
 """The demo in one command: two people use the ``shop`` MCP server, built with
-toolpass, and the dashboard shows every tool run: who it ran for, and each
-request it made to GitHub, Jira, Slack, Linear and Kubernetes, allowed or
-refused by the system itself.
+toolpass, and the toolpass server's dashboard shows every tool run: who it
+ran for, and each request it made to GitHub, Jira, Slack, Linear and
+Kubernetes, allowed or refused by the system itself.
 
     pip install toolpass            # or, from toolpass-py: pip install -e .
     python examples/demo/run.py     # then open the address it prints
@@ -11,8 +11,10 @@ and files a bug. Sam, who joined support this week, can look at everything
 and change nothing: the same tools stop at the first request Sam may not
 make, and the dashboard shows which one and why.
 
-Everything runs on this machine: the five systems are stand-ins
-(``fake_*.py``), and the record is kept in a temporary folder, not your own.
+Everything runs on this machine, the way a team would run it: a toolpass
+server (``toolpass serve``) holds the connections, answers the shop server's
+permission questions and collects its runs; the five systems are stand-ins
+(``fake_*.py``). Nothing is written outside a temporary folder.
 """
 
 from __future__ import annotations
@@ -21,9 +23,13 @@ import argparse
 import contextlib
 import json
 import os
+import secrets
+import socket
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from typing import IO, Any
 
@@ -48,6 +54,60 @@ TOUR: list[tuple[str, str, dict[str, str]]] = [
 
 def toolpass(*args: str) -> list[str]:
     return [sys.executable, "-m", "toolpass.cli", *args]
+
+
+class Collector:
+    """A toolpass server for the demo: the engine the shop server asks about
+    each request, and the dashboard that collects and shows its runs."""
+
+    def __init__(self, connections: list[dict[str, Any]], listen: str = "127.0.0.1:0") -> None:
+        host, _, port = listen.rpartition(":")
+        host = host or "127.0.0.1"
+        if port in ("", "0"):
+            with socket.socket() as s:  # a free port, picked here so the address is known before the server starts
+                s.bind((host, 0))
+                port = str(s.getsockname()[1])
+        self.url = f"http://{host}:{port}"
+        self.key = secrets.token_urlsafe(18)
+        self._dir = tempfile.TemporaryDirectory(prefix="toolpass-demo-")
+        config = Path(self._dir.name) / "toolpass.yaml"
+        doc = {"api_key": "env:TOOLPASS_API_KEY", "listen": f"{host}:{port}", "decision_log": "none", "connections": connections}
+        config.write_text(json.dumps(doc))  # JSON is YAML
+        self.proc = subprocess.Popen(
+            toolpass("serve", "-config", str(config), "-log-level", "warn"), env={**os.environ, "TOOLPASS_API_KEY": self.key}, stderr=subprocess.PIPE, text=True
+        )
+        for _ in range(100):
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"toolpass serve stopped: {self.proc.stderr.read() if self.proc.stderr else ''}")
+            try:
+                with urllib.request.urlopen(self.url + "/healthz", timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("toolpass serve did not come up")
+
+    @property
+    def dashboard(self) -> str:
+        """The page, with the key in the fragment: the browser keeps it, the server never sees it."""
+        return f"{self.url}/dashboard/#key={self.key}"
+
+    def env(self) -> dict[str, str]:
+        """What a process needs to ask this server and report to it."""
+        return {"TOOLPASS_URL": self.url, "TOOLPASS_API_KEY": self.key}
+
+    def runs(self) -> list[dict[str, Any]]:
+        req = urllib.request.Request(self.url + "/dashboard/events?since=0", headers={"Authorization": "Bearer " + self.key})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return list(json.load(resp)["events"])
+
+    def close(self) -> None:
+        self.proc.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            self.proc.wait(timeout=10)
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self._dir.cleanup()
 
 
 class Client:
@@ -104,23 +164,29 @@ def tour(env: dict[str, str], say: Any = print) -> list[tuple[str, str, bool]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-listen", default="127.0.0.1:0", help="the dashboard's address (default: a free port on 127.0.0.1)")
+    parser.add_argument("-listen", default="127.0.0.1:0", help="the toolpass server's address (default: a free port on 127.0.0.1)")
     parser.add_argument("-no-dashboard", action="store_true", help="run the calls and exit")
     parser.add_argument("-open", action="store_true", help="open the dashboard in a browser")
     a = parser.parse_args()
     systems = Systems()
+    collector = None
     try:
-        with tempfile.TemporaryDirectory(prefix="toolpass-demo-") as data:
-            env = {**os.environ, "TOOLPASS_DATA_DIR": data, "TOOLPASS_DASHBOARD": "1", "DEMO_SYSTEMS": systems.shared()}
-            print("Two people use the shop MCP server, built with toolpass:\n")
-            tour(env)
-            if a.no_dashboard:
-                return
-            print("\nThe dashboard shows each run and every request the tool made. Ctrl-C to stop.\n")
-            cmd = toolpass("dashboard", "-listen", a.listen, *(["-open"] if a.open else []))
-            with contextlib.suppress(KeyboardInterrupt):
-                subprocess.run(cmd, env=env, check=False)
+        collector = Collector(systems.connections, a.listen)
+        env = {**os.environ, **collector.env(), "DEMO_SYSTEMS": systems.shared()}
+        print("Two people use the shop MCP server, built with toolpass; a toolpass server decides each request:\n")
+        tour(env)
+        if a.no_dashboard:
+            return
+        print(f"\nThe dashboard shows each run and every request the tool made: {collector.dashboard}\nCtrl-C to stop.\n")
+        if a.open:
+            from toolpass._watch import open_in_browser
+
+            open_in_browser(collector.dashboard)
+        with contextlib.suppress(KeyboardInterrupt):
+            collector.proc.wait()
     finally:
+        if collector is not None:
+            collector.close()
         systems.close()
 
 

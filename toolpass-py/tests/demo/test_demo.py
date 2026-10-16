@@ -1,7 +1,7 @@
 """examples/demo/run.py: two people use the shop MCP server, built with
-toolpass; every tool run, and every request each tool made to GitHub, Jira,
-Slack, Linear and Kubernetes, lands in the dashboard's record, decided by the
-real integrations."""
+toolpass; a toolpass server decides every request each tool makes to GitHub,
+Jira, Slack, Linear and Kubernetes, by the real integrations, and collects
+every run for its dashboard."""
 
 from __future__ import annotations
 
@@ -18,27 +18,26 @@ if str(DEMO) not in sys.path:
 import run  # noqa: E402
 from shop_server import Systems  # noqa: E402
 
-from toolpass._store import Store  # noqa: E402
 
-
-def _runs(data: Path, want: int) -> list[dict[str, Any]]:
-    store = Store(data / "dashboard.db")
-    for _ in range(100):  # each server's writer drains at its exit; allow a slow runner a moment
-        rows, _ = store.runs(0)
+def _runs(collector: run.Collector, want: int) -> list[dict[str, Any]]:
+    for _ in range(100):  # each shop server sends its runs as it exits; allow a slow runner a moment
+        rows = collector.runs()
         if len(rows) >= want:
             return rows
         time.sleep(0.1)
-    return store.runs(0)[0]
+    return collector.runs()
 
 
 def _actions(run_: dict[str, Any]) -> list[tuple[str, str]]:
     return [(a.get("action") or "", a["outcome"]) for a in run_.get("actions", [])]
 
 
-def test_the_tour(tmp_path: Path) -> None:
+def test_the_tour() -> None:
     systems = Systems()
+    collector = run.Collector(systems.connections)
     try:
-        env = {**os.environ, "TOOLPASS_DATA_DIR": str(tmp_path), "TOOLPASS_DASHBOARD": "1", "DEMO_SYSTEMS": systems.shared()}
+        env = {**os.environ, **collector.env(), "DEMO_SYSTEMS": systems.shared()}
+        env.pop("TOOLPASS_DASHBOARD", None)
         outcomes = run.tour(env, say=lambda _: None)
         assert [(u.split("@")[0], t, ok) for u, t, ok in outcomes] == [
             ("dana", "status", True),
@@ -55,11 +54,12 @@ def test_the_tour(tmp_path: Path) -> None:
         assert systems.fakes["github"].seen.count("POST /api/v3/repos/acme/shop/pulls") == 1
         patches = [s for s in systems.fakes["kubernetes"].seen if s.startswith("PATCH")]
         assert patches == ["PATCH /apis/apps/v1/namespaces/shop-staging/deployments/shop-web"]
+        runs = _runs(collector, len(run.TOUR))
     finally:
+        collector.close()
         systems.close()
 
-    runs = _runs(tmp_path, len(run.TOUR))
-    # Each server writes its own runs; within one person's server they are in the order sent.
+    # Each shop server reports its own runs, in the order it ran them.
     by_user = {u: [r for r in runs if r.get("user") == u] for u in (run.world.DANA, run.world.SAM)}
     assert [r["tool"] for r in by_user[run.world.DANA]] == [t for u, t, _ in run.TOUR if u == run.world.DANA]
     assert [r["tool"] for r in by_user[run.world.SAM]] == [t for u, t, _ in run.TOUR if u == run.world.SAM]

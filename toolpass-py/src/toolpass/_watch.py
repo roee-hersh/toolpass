@@ -38,6 +38,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from toolpass._audit import AuditEvent, AuditSink
 from toolpass._default import default_toolkit
+from toolpass._page import PAGE as _PAGE
+from toolpass._page import SCRIPT as _SCRIPT
+from toolpass._page import STYLE as _STYLE
 from toolpass._toolkit import Toolkit
 
 __all__ = ["Watch", "open_in_browser", "watch"]  # _Page is shared with the dashboard
@@ -285,13 +288,3 @@ class _V4Server(_Server):
 
 class _V6Server(_Server):
     address_family = socket.AF_INET6
-
-
-def _asset(name: str) -> bytes:
-    return (pathlib.Path(__file__).parent / "_page" / name).read_bytes()
-
-
-# The page, its stylesheet and its script, read once: src/toolpass/_page/.
-_PAGE = _asset("index.html")
-_STYLE = _asset("watch.css")
-_SCRIPT = _asset("watch.js")

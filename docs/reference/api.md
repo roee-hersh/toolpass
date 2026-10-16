@@ -1,6 +1,7 @@
 # HTTP API reference
 
-The toolpass server (`toolpass serve`) has two routes. Clients: `Toolpass.remote` in the
+The toolpass server (`toolpass serve`) answers permission checks (`POST /check`), collects the runs
+agents report (`POST /runs`) and serves the dashboard over them (`GET /dashboard/`). Clients: `Toolpass.remote` in the
 [`toolpass` package](client.md), [`toolpass-client`](client.md#toolpass-client-node) for Node, or any
 HTTP client. The in-process engine answers with the same decisions and codes, without HTTP.
 
@@ -71,3 +72,25 @@ request that carries it (`invalid_request: unknown field "fresh"`, which the cli
 
 Returns `{"status":"ok"}` with status 200, without authentication. It says the process is up, not
 that every connection works; `toolpass probe` checks connections.
+
+## POST /runs
+
+The runs of secured tools an agent reports, for [the dashboard](../guides/dashboard.md). Send the
+`api_key` as a bearer token and a JSON body of at most 1 MiB: the reporting process's name and 1
+to 500 runs, each an audit event (`AuditEvent.to_dict()`: at least a string `tool` and `outcome`).
+A run larger than 64 KiB keeps its outcome and loses its `actions` and `arguments`.
+
+```json
+{"server": "shop", "runs": [{"time": "...", "tool": "open_pr", "outcome": "refused", "user": "sam@acme.dev", "actions": [...]}]}
+```
+
+`202 {"accepted": N}`; `400` with `{"error": "..."}` for a body that is not that; `401` without the
+key; `413` over the size. The server keeps the latest 10,000 runs in memory; a toolkit sends them
+itself (see the guide), so nothing calls this by hand.
+
+## GET /dashboard/
+
+The dashboard page, with `watch.js` and `watch.css` beside it, served to anyone: it holds no data.
+`GET /dashboard/events?since=N` returns the runs after sequence `N` (`0`: the latest 500), as
+`{"kind": "dashboard", "events": [...], "next": M}`, to holders of the `api_key` as a bearer token
+(`401` otherwise); the page asks for the key and keeps it in the browser tab.

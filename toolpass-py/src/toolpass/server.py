@@ -1,4 +1,6 @@
-"""The engine over HTTP: POST /check and GET /healthz. Standard library only."""
+"""The engine over HTTP: POST /check and GET /healthz; the runs agents report
+(POST /runs) and the dashboard that shows them (GET /dashboard/). Standard
+library only."""
 
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
+from urllib.parse import parse_qs
 
 from toolpass.core.context import Context, background
 from toolpass.core.decision import Code, Decision, unknown_decision
@@ -18,6 +21,9 @@ from toolpass.core.log import Logger, go_json
 from toolpass.core.secret import Secret
 
 __all__ = ["MAX_REQUEST_BODY", "Checker", "Server", "check_body", "decision_body"]
+
+from toolpass._page import PAGE, SCRIPT, STYLE
+from toolpass._runs import MAX_RUNS_BODY, RunLog, decode_runs
 
 # Bounds a /check body.
 MAX_REQUEST_BODY = 64 << 10
@@ -193,10 +199,11 @@ class Server:
     read_timeout = 15.0
     idle_timeout = 15.0
 
-    def __init__(self, checker: Checker, api_key: Secret, logger: Logger | None = None) -> None:
+    def __init__(self, checker: Checker, api_key: Secret, logger: Logger | None = None, runs: RunLog | None = None) -> None:
         self.checker = checker
         self.api_key = api_key
         self.logger = logger or Logger()
+        self.runs = runs if runs is not None else RunLog()
         self._httpd: ThreadingHTTPServer | None = None
         # Requests being answered, so shutdown can let them finish.
         self._inflight = threading.Condition()
@@ -246,6 +253,66 @@ class Server:
             ),
         )
         return res.status, headers, decision_body(res.decision)
+
+    def handle_runs(self, method: str, auth: str, body: bytes | None, remote: str, too_large: bool = False) -> tuple[int, dict[str, str], bytes]:
+        """``POST /runs``: a batch of tool runs an agent reports, kept for the dashboard."""
+        headers = {"Content-Type": "application/json", "Cache-Control": "no-store"}
+        if method != "POST":
+            headers["Allow"] = "POST"
+            return 405, headers, b'{"error":"use POST"}\n'
+        if not self.authorized(auth):
+            headers["WWW-Authenticate"] = 'Bearer realm="toolpass"'
+            return 401, headers, b'{"error":"missing or wrong API key"}\n'
+        if too_large:
+            return 413, headers, json.dumps({"error": f"body larger than {MAX_RUNS_BODY} bytes"}).encode() + b"\n"
+        if body is None:
+            return 400, headers, b'{"error":"could not read body"}\n'
+        try:
+            server, runs = decode_runs(body)
+        except ValueError as e:
+            return 400, headers, json.dumps({"error": str(e)}).encode() + b"\n"
+        for run in runs:
+            self.runs.add(server, run)
+        self.logger.info("runs", server=server, count=len(runs), remote=remote)
+        return 202, headers, json.dumps({"accepted": len(runs)}).encode() + b"\n"
+
+    def handle_dashboard(self, method: str, path: str, query: str, auth: str) -> tuple[int, dict[str, str], bytes]:
+        """``GET /dashboard/``: the page and its assets to anyone, the runs
+        (``events``) to holders of the API key, which the page asks for."""
+        plain = {"Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff"}
+        if method not in ("GET", "HEAD"):
+            return 405, {**plain, "Allow": "GET, HEAD"}, b"method not allowed\n"
+        rest = path[len("/dashboard") :]
+        if rest == "":
+            return 308, {**plain, "Location": "/dashboard/"}, b""
+        static = {
+            "/": ("text/html; charset=utf-8", PAGE),
+            "/watch.js": ("text/javascript; charset=utf-8", SCRIPT),
+            "/watch.css": ("text/css; charset=utf-8", STYLE),
+        }
+        if rest in static:
+            kind, body = static[rest]
+            headers = {
+                "Content-Type": kind,
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+            }
+            if rest == "/":
+                headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'"
+            return 200, headers, body
+        if rest == "/events":
+            if not self.authorized(auth):
+                return 401, {"Content-Type": "application/json", "WWW-Authenticate": 'Bearer realm="toolpass"'}, b'{"error":"missing or wrong API key"}\n'
+            try:
+                since = int(parse_qs(query).get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            events, nxt = self.runs.runs(since)
+            payload = {"kind": "dashboard", "title": "toolpass", "events": events, "next": nxt}
+            return 200, {"Content-Type": "application/json", "Cache-Control": "no-store"}, json.dumps(payload, default=repr, ensure_ascii=False).encode()
+        return 404, plain, b"404 page not found\n"
 
     def handler_class(self) -> type[BaseHTTPRequestHandler]:
         server = self
@@ -309,8 +376,9 @@ class Server:
 
             def _route_counted(self) -> None:
                 start = time.monotonic()
-                path = self.path.split("?", 1)[0]
+                path, _, query = self.path.partition("?")
                 status = 200
+                self._limit = MAX_REQUEST_BODY
                 try:
                     if sum(len(k) + len(v) for k, v in self.headers.items()) > _MAX_HEADER_BYTES:
                         status = 431
@@ -324,6 +392,19 @@ class Server:
                         )
                         if too_large:
                             self.close_connection = True
+                        self._send(status, headers, out)
+                    elif path == "/runs":
+                        self._limit = MAX_RUNS_BODY
+                        body, too_large = self._body()
+                        status, headers, out = server.handle_runs(
+                            self.command, self.headers.get("Authorization", ""), body, _client_ip(self.client_address[0]), too_large
+                        )
+                        if too_large:
+                            self.close_connection = True
+                        self._send(status, headers, out)
+                    elif path == "/dashboard" or path.startswith("/dashboard/"):
+                        self._drain()
+                        status, headers, out = server.handle_dashboard(self.command, path, query, self.headers.get("Authorization", ""))
                         self._send(status, headers, out)
                     elif path == "/healthz":
                         self._drain()
@@ -378,7 +459,7 @@ class Server:
                 if n < 0:
                     self.close_connection = True
                     return None, False
-                if n > MAX_REQUEST_BODY:
+                if n > self._limit:
                     # Read at most the cap, then close: the rest is not ours.
                     self.close_connection = True
                     return None, True
@@ -414,7 +495,7 @@ class Server:
                                     raise ValueError("truncated trailer")
                                 if trailer in (b"\r\n", b"\n"):
                                     return bytes(out), False
-                        if len(out) + size > MAX_REQUEST_BODY:
+                        if len(out) + size > self._limit:
                             self.close_connection = True
                             return None, True
                         data = self.rfile.read(size)

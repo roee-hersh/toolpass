@@ -943,9 +943,9 @@ class Toolkit:
 
     def _emit(self, ev: AuditEvent) -> None:
         try:
-            _record.emit(ev)  # with TOOLPASS_DASHBOARD set: the dashboard's record too; otherwise nothing
-        except Exception:  # the record must never change the call's outcome
-            log.debug("toolpass: could not queue the run for the dashboard's record", exc_info=True)
+            _record.emit(ev, self.permissions)  # to the toolpass server's dashboard, when this process reports to one
+        except Exception:  # reporting must never change the call's outcome
+            log.debug("toolpass: could not queue the run for the dashboard", exc_info=True)
         if self.audit is None:
             return
         try:

@@ -7,7 +7,6 @@
     toolpass check    -server URL -api-key env:TOOLPASS_API_KEY -connection id ... [-fresh]
     toolpass catalog  [integration]
     toolpass routes   [integration]
-    toolpass dashboard [-open] [-listen ADDR]
     toolpass gateway  off
 
 Flags keep the single-dash form the command has always taken (``-config
@@ -62,7 +61,6 @@ Usage:
   toolpass check    -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] -connection ID -user EMAIL -action NAME -resource RES ...
   toolpass catalog  [INTEGRATION]
   toolpass routes   [INTEGRATION]
-  toolpass dashboard [-open] [-listen ADDR]
   toolpass gateway  off
   toolpass version
 
@@ -624,7 +622,7 @@ def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     if args != ["off"]:
         stderr.write(
             "toolpass no longer wraps other MCP servers; `toolpass gateway off` puts back the entries an earlier"
-            " version rewrote. The dashboard shows the runs of toolpass tools: see `toolpass dashboard`.\n"
+            " version rewrote. The dashboard is on the toolpass server, at /dashboard/.\n"
         )
         return EXIT_ERROR
     from toolpass import _gateway
@@ -633,48 +631,6 @@ def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     for r in done:
         stdout.write(f"{r.client:<15} {r.name:<24} put back   {r.config}\n")
     stdout.write("restart your MCP clients to pick the change up\n" if done else "no rewritten MCP server entries found\n")
-    return 0
-
-
-def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading.Event | None = None) -> int:
-    """Serve the dashboard over the record of toolpass tool runs until interrupted."""
-    fs = _FlagSet("dashboard", stderr)
-    fs.add("listen", "str", "127.0.0.1:0", "address for the page, on the loopback interface")
-    fs.add("open", "bool", False, "open the page in the default browser")
-    fs.add("no-wrap", "bool", False, "ignored; kept so scripts written for 0.9 still run")
-    try:
-        fs.parse(args)
-    except _FlagError:
-        return EXIT_ERROR
-    if fs.args:
-        stderr.write(f'dashboard takes flags only, unexpected argument "{fs.args[0]}"\n')
-        return EXIT_ERROR
-    from toolpass import _record
-    from toolpass._dashboard import Dashboard
-    from toolpass._store import Store
-    from toolpass._watch import open_in_browser
-
-    store = Store(_record.target())
-    try:
-        store.prune(days=90)
-        try:
-            page = Dashboard(store, listen=fs.values["listen"])
-        except (ValueError, OSError) as e:
-            stderr.write(f"dashboard: {e}\n")
-            return EXIT_ERROR
-        stdout.write(f"toolpass dashboard: {page.url}\n")
-        stdout.write(f"the runs of every process started with {_record.ENV}=1; press Ctrl-C to stop\n")
-        stdout.flush()
-        if fs.values["open"]:
-            open_in_browser(page.url)
-        stop = stop or threading.Event()
-        try:
-            stop.wait()
-        except KeyboardInterrupt:
-            pass
-        page.close()
-    finally:
-        store.close()
     return 0
 
 
@@ -721,8 +677,6 @@ def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None =
         return routes(rest, stdout, stderr)
     if cmd == "gateway":
         return gateway(rest, stdout, stderr)
-    if cmd == "dashboard":
-        return dashboard(rest, stdout, stderr)
     if cmd == "mcp":
         return mcp(rest, stderr)
     if cmd == "version":

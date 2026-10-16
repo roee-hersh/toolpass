@@ -13,6 +13,9 @@ it up, see [Deploy](deploy.md). For the file format, see the
 - `toolpass probe -config FILE [-connection ID]` repeats that probe on demand, for example after
   rotating a credential. In-process, `tp.probe()` returns `(connection id, ok, summary or error)`
   for each connection; building a `Toolpass` does not probe.
+- `GET /dashboard/` shows the runs the agents report to this server, live, with each request a
+  tool made and whether the system allowed it ([the dashboard](dashboard.md)). Each batch of runs
+  taken is a `runs` line in the server's log, with the reporting process's name and the count.
 
 ## Decision log
 

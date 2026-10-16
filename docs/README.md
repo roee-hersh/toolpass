@@ -33,8 +33,9 @@ agents in any language call.
   entitlements and holding it to them.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
-- [The dashboard](guides/dashboard.md): every run of your secured tools, from every MCP server and
-  agent started with `TOOLPASS_DASHBOARD=1`, with each request it made and who it ran for.
+- [The dashboard](guides/dashboard.md): every run of your secured tools, from every agent and MCP
+  server that reports to your toolpass server, with each request it made and who it ran for; and
+  the OpenTelemetry export.
 
 ## Reference
 
@@ -43,11 +44,12 @@ agents in any language call.
 - [The toolkit's observed actions](reference/toolkit.md): the `permissions`, `entitlements`,
   `record` and `strict` settings, `as_agent()`, `ActionRefused`, `ObservedAction`, the
   entitlements file and the route tables.
-- [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`.
+- [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`,
+  `POST /runs` and `GET /dashboard/`.
 - [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,
-  `dashboard` and `gateway off`.
+  and `gateway off`.
 - [Integrations](integrations/README.md): the twenty-one systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.
