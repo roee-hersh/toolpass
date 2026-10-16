@@ -162,12 +162,9 @@ runs on its own, in-process or as a server, with adapters for nine agent framewo
 pip install toolpass
 ```
 
-Python 3.10 or later; the core depends only on PyYAML. Until the first `toolpass` release reaches
-PyPI, install from this repository:
-
-```sh
-pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=toolpass-py"
-```
+Python 3.10 or later; the core depends only on PyYAML. If your shell cannot find `toolpass` after
+installing (pip warns that its scripts folder is not on PATH, common on Windows), run it as
+`python -m toolpass` (`py -m toolpass` on Windows): `py -m toolpass gateway on`.
 
 ## Honest limits
 

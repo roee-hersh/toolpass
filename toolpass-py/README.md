@@ -270,7 +270,8 @@ Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear and Zende
 pip install toolpass
 ```
 
-Python 3.10 or later. The core depends only on PyYAML. The engine runs in your process, so there is
+Python 3.10 or later. The core depends only on PyYAML. If `toolpass` is not found afterwards (pip's
+scripts folder is not on PATH, common on Windows), run `python -m toolpass` (`py -m toolpass`). The engine runs in your process, so there is
 no service to deploy; the same package also runs it as a server (`toolpass serve`).
 
 ### In-process

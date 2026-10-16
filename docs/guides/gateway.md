@@ -11,6 +11,9 @@ pip install toolpass
 toolpass gateway on
 ```
 
+If `toolpass` is not found after installing (pip's scripts folder is not on PATH, common on
+Windows), use `python -m toolpass gateway on`, or `py -m toolpass gateway on` on Windows.
+
 `gateway on` finds the clients' config files, rewrites each stdio server entry to start through
 toolpass, and prints what it found:
 
