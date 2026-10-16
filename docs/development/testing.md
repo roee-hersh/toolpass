@@ -21,7 +21,7 @@ tree instead).
 | `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `TOOLPASS_SPECS_DIR` to validate requests (below) |
 | `tests/integrations/test_registry.py` | the coverage gate: `test_action_<name>_allow` and `_deny` for every action | nothing |
 | `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `TOOLPASS_SPECS_DIR` for the description checks |
-| `tests/dashboard` | the dashboard: runs written by a process with `TOOLPASS_DASHBOARD` set, the record under two writers, the page; `gateway off` putting back entries 0.8 and 0.9 rewrote | nothing |
+| `tests/dashboard` | the server collecting the runs agents report (`POST /runs`, bounds, the key) and serving them to the page; a toolkit reporting to its server, in-process or remote, without ever waiting on it; `gateway off` putting back entries 0.8 and 0.9 rewrote | nothing |
 | `tests/demo` | `examples/demo`: each stand-in system answers the real integration's permission checks for Dana and Sam, and the tour records every run with its requests | nothing |
 | `tests/toolkit` | the secure-tools toolkit: every check, the hook under the SDKs (`test_wire.py`), recorded entitlements, the examples | nothing |
 | `tests/sdks` | real SDKs (PyGithub, slack_sdk) under a secured tool, against the fake upstreams | `pip install PyGithub slack_sdk`; each file skips without its SDK |

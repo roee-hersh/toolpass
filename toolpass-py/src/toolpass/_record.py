@@ -1,26 +1,32 @@
-"""Send each run of a toolpass tool to the dashboard's record.
+"""Report each run of a toolpass tool to the toolpass server, which collects
+them from every agent and shows them at ``/dashboard/``.
 
-Set ``TOOLPASS_DASHBOARD`` in the environment of a process that uses toolpass
-tools (an MCP server, an agent) and every run is written there: the tool, the
-user it ran for, the outcome and why, and each request the body made to
-GitHub, Jira, Slack, ... as toolpass understood it, allowed or refused.
-``toolpass dashboard`` shows them. ``TOOLPASS_DASHBOARD=1`` writes to the
-record ``toolpass dashboard`` reads by default; any other value is the path of
-the file. ``TOOLPASS_SERVER_NAME`` names the process on the page (by default,
-its script's name).
+A toolkit whose ``permissions`` is ``Toolpass.remote(...)`` already knows the
+server and its API key, and reports there with nothing else configured. A
+toolkit with an in-process engine reports when ``TOOLPASS_URL`` and
+``TOOLPASS_API_KEY`` are set. ``TOOLPASS_DASHBOARD=off`` turns reporting off;
+``TOOLPASS_DASHBOARD=https://...`` names another server (with
+``TOOLPASS_API_KEY``). ``TOOLPASS_SERVER_NAME`` names this process on the
+page (by default, its script's name).
 
-One background thread writes, so a slow record never delays a tool; what is
-queued when the process exits is written within a couple of seconds.
+What is sent is the audit event: the tool, the user it ran for, the outcome
+and why, and each request the body made as toolpass understood it. One
+background thread sends, in batches, so a slow or unreachable server never
+delays a tool; the queue is bounded, and what is queued when the process
+exits is sent within a couple of seconds.
 """
 
 from __future__ import annotations
 
 import atexit
+import collections
+import json
 import os
-import queue
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -29,25 +35,30 @@ from toolpass._audit import AuditEvent
 __all__ = ["ENV", "emit", "target"]
 
 ENV = "TOOLPASS_DASHBOARD"
-_OFF = ("", "0", "false", "off", "no")
-_ON = ("1", "true", "on", "yes")
+_OFF = ("0", "false", "off", "no", "none")
+_BATCH = 50  # runs per POST
+_QUEUE = 10_000  # runs waiting; the oldest go when it is full
+_TIMEOUT = 5.0
+_PAUSE = 0.2  # seconds to gather a batch before sending
 
 _lock = threading.Lock()
-_queue: queue.Queue[tuple[str, dict[str, Any], float] | None] | None = None
-_writer: threading.Thread | None = None
-_warned = False
+_sender: _Sender | None = None
+_warned: set[str] = set()
 
 
-def target() -> Path | None:
-    """The record runs go to, or None when this process writes none."""
+def target(permissions: Any = None) -> tuple[str, str] | None:
+    """Where this process reports its runs: ``(url, api_key)``, or None."""
     raw = os.environ.get(ENV, "").strip()
     if raw.lower() in _OFF:
         return None
-    if raw.lower() in _ON:
-        from toolpass._store import default_store_path
-
-        return default_store_path()
-    return Path(raw)
+    key = os.environ.get("TOOLPASS_API_KEY", "")
+    if raw and raw != "1":
+        return (raw.rstrip("/"), key) if key else None
+    remote = getattr(permissions, "server", None) if permissions is not None else None
+    if isinstance(remote, tuple) and len(remote) == 2 and all(isinstance(x, str) for x in remote):
+        return remote[0], remote[1]
+    url = os.environ.get("TOOLPASS_URL", "")
+    return (url.rstrip("/"), key) if url and key else None
 
 
 def _server_name() -> str:
@@ -58,49 +69,97 @@ def _server_name() -> str:
     return script or "python"
 
 
-def _start(path: Path) -> queue.Queue[tuple[str, dict[str, Any], float] | None]:
-    global _queue, _writer
-    q: queue.Queue[tuple[str, dict[str, Any], float] | None] = queue.Queue()
+def _warn(key: str, text: str) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        print(f"toolpass: {text}", file=sys.stderr, flush=True)
 
-    def write() -> None:
-        global _warned
-        from toolpass._store import Store
 
-        store = None
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would re-send the API key to whatever host it names."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class _Sender:
+    """One queue and one thread per process, whatever the target: the first
+    event decides where every run goes."""
+
+    def __init__(self, url: str, key: str) -> None:
+        self.url, self.key = url, key
+        self.queue: collections.deque[dict[str, Any]] = collections.deque(maxlen=_QUEUE)
+        self.wake = threading.Condition()
+        self.closing = False
+        self.dropped = 0
+        self.opener = urllib.request.build_opener(_NoRedirect())
+        self.thread = threading.Thread(target=self._run, name="toolpass-runs", daemon=True)
+        self.thread.start()
+        atexit.register(self.close)
+
+    def put(self, run: dict[str, Any]) -> None:
+        with self.wake:
+            if len(self.queue) == self.queue.maxlen:
+                self.dropped += 1
+            self.queue.append(run)
+            self.wake.notify()
+
+    def _run(self) -> None:
         while True:
-            item = q.get()
-            if item is None:
-                break
+            with self.wake:
+                while not self.queue and not self.closing:
+                    self.wake.wait()
+                if not self.queue and self.closing:
+                    return
+                if not self.closing:
+                    self.wake.wait(_PAUSE)  # a tool often makes several runs at once: one POST for them
+                batch = [self.queue.popleft() for _ in range(min(_BATCH, len(self.queue)))]
+                dropped, self.dropped = self.dropped, 0
+            if dropped:
+                _warn("dropped", f"{dropped} tool run(s) were not reported to the dashboard: the server at {self.url} is not keeping up")
+            self._post(batch)
+
+    def _post(self, batch: list[dict[str, Any]]) -> None:
+        body = json.dumps({"server": _server_name(), "runs": batch}, default=repr, ensure_ascii=False).encode()
+        req = urllib.request.Request(
+            self.url + "/runs",
+            data=body,
+            method="POST",
+            headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json", "Accept": "application/json"},
+        )
+        for attempt in (1, 2):
             try:
-                if store is None:
-                    store = Store(path)
-                store.record_run(*item)
-            except Exception as e:  # noqa: BLE001 - the record must never break a tool
-                if not _warned:
-                    _warned = True
-                    print(f"toolpass: could not write a run to the dashboard's record ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
-        if store is not None:
-            store.close()
+                with self.opener.open(req, timeout=_TIMEOUT) as resp:
+                    resp.read(1024)
+                return
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    _warn("auth", f"the toolpass server at {self.url} refused this process's API key; its tool runs are not reported")
+                    return
+                if 400 <= e.code < 500:
+                    _warn("rejected", f"the toolpass server at {self.url} did not take a batch of tool runs (HTTP {e.code}); they are not reported")
+                    return
+            except (OSError, ValueError):
+                pass
+            if attempt == 1:
+                time.sleep(0.5)
+        _warn("unreachable", f"the toolpass server at {self.url} did not take a batch of tool runs; they are not reported")
 
-    _writer = threading.Thread(target=write, name="toolpass-dashboard-record", daemon=True)
-    _writer.start()
-    _queue = q
-    atexit.register(_drain)
-    return q
+    def close(self) -> None:
+        with self.wake:
+            self.closing = True
+            self.wake.notify()
+        self.thread.join(2.0)
 
 
-def _drain() -> None:
-    if _queue is not None and _writer is not None and _writer.is_alive():
-        _queue.put(None)
-        _writer.join(2.0)
-
-
-def emit(event: AuditEvent) -> None:
-    """Queue ``event`` for the dashboard's record, when ``TOOLPASS_DASHBOARD``
-    is set; otherwise do nothing."""
-    path = target()
-    if path is None:
+def emit(event: AuditEvent, permissions: Any = None) -> None:
+    """Queue ``event`` for the toolpass server this process reports to, if any."""
+    global _sender
+    found = target(permissions)
+    if found is None:
         return
     with _lock:
-        q = _queue if _queue is not None else _start(path)
-    q.put((_server_name(), event.to_dict(), time.time()))
+        sender = _sender
+        if sender is None or sender.closing:
+            sender = _sender = _Sender(*found)
+    sender.put({**event.to_dict(), "at": time.time()})

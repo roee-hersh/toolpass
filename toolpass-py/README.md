@@ -5,10 +5,12 @@
 > The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
-`toolpass dashboard` shows every run of your secured tools: who it ran for, and every request
-each run made inside GitHub, Jira, Slack and the other systems, allowed or refused. Start the
-server or agent with `TOOLPASS_DASHBOARD=1`; see [the dashboard guide](../docs/guides/dashboard.md),
-and `python examples/demo/run.py` for five systems at once.
+The toolpass server's dashboard (`/dashboard/`) shows every run of your secured tools, from every
+agent that reports to it: who it ran for, and every request each run made inside GitHub, Jira,
+Slack and the other systems, allowed or refused. A toolkit whose permissions are remote reports
+with nothing else configured; `toolpass.otel` exports each run as a span. See
+[the dashboard guide](../docs/guides/dashboard.md), and `python examples/demo/run.py` for five
+systems at once.
 
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
 scale a deployment, read customer records, post to Slack. Those tools usually run with one service

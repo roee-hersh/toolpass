@@ -117,3 +117,12 @@ untrusted_output, body)`, `RouteTable(integration, routes, claims, unrouted, pre
 `Request`, `Observed`. An integration exposes its table from `Integration.routes()`;
 `toolpass routes [INTEGRATION]` prints it. Path templates: `{name}` is one segment, `{name+}` the
 rest of the path, `**` anything; the most specific template whose route takes the method wins.
+
+## `toolpass.otel.audit_sink(tracer=None, *, then=None)`
+
+An audit sink (`Toolkit(audit=...)`, `toolpass.configure(audit=...)`) that records each run as an
+OpenTelemetry span, `toolpass.tool <name>`, with the user, outcome, code and reason as attributes
+and each request the body made as a `toolpass.request` span event; a refused or failed run has
+status ERROR. Arguments are not exported. It uses the global tracer provider, or `tracer`; `then`
+is a sink to hand each event on to as well. Needs `toolpass[otel]`. See
+[the dashboard guide](../guides/dashboard.md#export-to-opentelemetry).

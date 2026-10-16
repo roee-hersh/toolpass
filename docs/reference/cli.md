@@ -14,7 +14,6 @@ FILE`); `--config=FILE` works too.
 | `toolpass check -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] ...` | Ask a running toolpass the same question; `-fresh` skips its caches |
 | `toolpass catalog [INTEGRATION]` | List integrations, config keys and actions |
 | `toolpass routes [INTEGRATION]` | List how requests to an integration's API map to its actions (the secure-tools toolkit's [observed actions](../guides/intercepted-actions.md)) |
-| `toolpass dashboard [-open] [-listen ADDR]` | Serve the page with every recorded run of your secured tools, on the loopback interface ([the dashboard](../guides/dashboard.md)) |
 | `toolpass gateway off` | Put back the MCP server entries toolpass 0.8 and 0.9 rewrote with `gateway on` |
 
 At startup `serve` reads the API key and exits with an error when it cannot (a server that could
@@ -50,7 +49,7 @@ toolpass check -server https://toolpass.internal -connection jira-main \
 `serve` also takes `-listen ADDR`, which overrides `listen` in the file, and
 `-log-level debug|info|warn|error` (default `info`).
 
-`dashboard` reads `dashboard.db` in the per-user data folder, or in `TOOLPASS_DATA_DIR`, or the file
-`TOOLPASS_DASHBOARD` names. `gateway off` exits 0 and prints one line per entry put back. An entry an
-earlier version rewrote starts `toolpass mcp ... -- COMMAND`, which still runs `COMMAND`, unrecorded,
-with its exit code.
+`serve` also collects the runs agents report (`POST /runs`) and serves [the dashboard](../guides/dashboard.md)
+at `/dashboard/`. `gateway off` exits 0 and prints one line per entry put back. An entry an earlier
+version rewrote starts `toolpass mcp ... -- COMMAND`, which still runs `COMMAND`, unrecorded, with
+its exit code.

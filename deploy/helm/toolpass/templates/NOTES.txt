@@ -18,6 +18,10 @@ Ask it a question from your machine:
     -H "Authorization: Bearer $TOOLPASS_API_KEY" -H 'Content-Type: application/json' \
     -d '{"user":"dana@example.com","connection":"demo","action":"thing.write","resource":"thing:1"}'
 
+The dashboard, with every run the agents report: http://localhost:8080/dashboard/
+(it asks for the API key; put the Service behind your ingress's authentication
+before more people than its operators can open it).
+
 Check the pod: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
 
 Then replace the demo connection in `config.connections` with your own systems.

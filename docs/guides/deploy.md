@@ -189,6 +189,9 @@ it does not know, and the clients report that as `unknown`, so nothing fails ope
       describes.
 - [ ] `toolpass probe` passes for every connection.
 - [ ] The decision log goes to your log pipeline (`decision_log: stdout` in containers).
+- [ ] [The dashboard](dashboard.md) at `/dashboard/` is behind your ingress's authentication when
+      more people than the server's operators should open it: its runs carry tool arguments and are
+      served to holders of the API key.
 - [ ] You alert on a rise in `unknown` decisions; [Operating](operating.md#when-the-answer-is-unknown)
       lists the codes.
 - [ ] The image, chart or package is pinned to a version.

@@ -17,7 +17,9 @@ the server, never by the model. GitHub, Jira, Slack, Linear and Kubernetes
 are stand-ins (``fake_*.py``) answering from the grants in ``world.py``,
 started in this process, or shared with other servers through
 ``DEMO_SYSTEMS`` (``run.py`` does that); point the connections at real
-systems and nothing else changes.
+systems and nothing else changes. With ``TOOLPASS_URL`` and
+``TOOLPASS_API_KEY`` set, a toolpass server decides each request and
+collects the runs for its dashboard; without them the engine runs here.
 """
 
 from __future__ import annotations
@@ -95,7 +97,11 @@ def http(method: str, url: str, body: Any = None, content_type: str = "applicati
 
 def build(connections: list[dict[str, Any]], urls: dict[str, str]) -> list[tuple[mcpstdio.Tool, dict[str, Any]]]:
     s = Endpoints(urls)
-    tools = Toolkit(permissions=Toolpass(connections=connections), audit=None)
+    if os.environ.get("TOOLPASS_URL"):
+        # A toolpass server (run.py starts one) answers each permission question and collects the runs.
+        tools = Toolkit(permissions=Toolpass.remote(), connections=connections, audit=None)
+    else:
+        tools = Toolkit(permissions=Toolpass(connections=connections), audit=None)
 
     def say(channel: str, text: str) -> None:
         http("POST", f"{s.slack_api}/chat.postMessage", {"channel": world.SLACK_CHANNELS[channel]["id"], "text": text})
@@ -154,7 +160,7 @@ def build(connections: list[dict[str, Any]], urls: dict[str, str]) -> list[tuple
 
 
 def main() -> None:
-    os.environ.setdefault("TOOLPASS_SERVER_NAME", "shop")  # its name on the dashboard, with TOOLPASS_DASHBOARD set
+    os.environ.setdefault("TOOLPASS_SERVER_NAME", "shop")  # its name on the toolpass server's dashboard
     user = os.environ.get("DEMO_USER") or world.DANA
     shared = os.environ.get("DEMO_SYSTEMS")
     systems = None if shared else Systems()

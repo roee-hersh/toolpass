@@ -481,9 +481,36 @@ function live(on, text) {
   $('live-text').textContent = text;
 }
 
+// The toolpass server's page needs its API key to read the runs: given once
+// in the address (#key=..., which never leaves the browser), or asked for.
+const KEY = 'toolpass-key';
+function takeKeyFromAddress() {
+  const m = /[#&]key=([^&]+)/.exec(location.hash);
+  if (!m) return;
+  try { sessionStorage.setItem(KEY, decodeURIComponent(m[1])); } catch (err) { /* private mode */ }
+  history.replaceState(null, '', location.pathname + location.search);
+}
+function headers() {
+  let key = '';
+  try { key = sessionStorage.getItem(KEY) || ''; } catch (err) { /* private mode */ }
+  return key ? {Authorization: 'Bearer ' + key} : {};
+}
+function askForKey() {
+  const key = window.prompt('This toolpass server shows its runs to holders of its API key. Paste the key:');
+  if (!key) return false;
+  try { sessionStorage.setItem(KEY, key.trim()); } catch (err) { /* private mode */ }
+  return true;
+}
+takeKeyFromAddress();
+
 async function poll() {
   try {
-    const r = await fetch('events?since=' + state.next, {cache: 'no-store'});
+    const r = await fetch('events?since=' + state.next, {cache: 'no-store', headers: headers()});
+    if (r.status === 401) {
+      live(false, 'needs the API key');
+      if (askForKey()) { setTimeout(poll, 0); return; }
+      setTimeout(poll, 5000); return;
+    }
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
     if (d.kind !== state.kind) { state.kind = d.kind; state.dirty = true; }

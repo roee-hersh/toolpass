@@ -153,6 +153,13 @@ class Toolpass:
         """True when the engine runs in this process."""
         return isinstance(self._backend, _Local)
 
+    @property
+    def server(self) -> tuple[str, str] | None:
+        """The ``(url, api_key)`` of the toolpass server a remote engine asks,
+        where a toolkit also reports its tool runs; None in-process."""
+        b = self._backend
+        return (b.url, b.api_key) if isinstance(b, _Remote) else None
+
     def check(
         self,
         user: str,

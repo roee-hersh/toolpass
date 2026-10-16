@@ -38,6 +38,8 @@ google-adk = ["google-adk>=2.10"]
 pydantic-ai = ["pydantic-ai-slim>=2.51"]
 crewai = ["crewai>=1.15"]
 llamaindex = ["llama-index-core>=0.14"]
+# Export each tool run as a span: toolpass.otel.
+otel = ["opentelemetry-api>=1.20"]
 
 [project.scripts]
 toolpass = "toolpass.cli:main"
@@ -81,7 +83,7 @@ warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 # The framework adapters import their framework, an optional extra.
-module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "mcp.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*"]
+module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "mcp.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

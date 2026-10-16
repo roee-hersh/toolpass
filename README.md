@@ -9,13 +9,14 @@ checks each request they make against what that person may do, and shows you eve
 ## See what your agent's tools do
 
 When an MCP server or an agent is built with toolpass [secured tools](#check-what-your-own-tools-do),
-each run is recorded: who it ran for, and every request the tool made to GitHub, Jira, Slack, Linear
-or Kubernetes, allowed or refused by the system itself, with the reason.
+it reports each run to your toolpass server: who it ran for, and every request the tool made to
+GitHub, Jira, Slack, Linear or Kubernetes, allowed or refused by the system itself, with the reason.
+The server's dashboard shows them, from every agent, live:
 
 ```sh
 pip install toolpass
-TOOLPASS_DASHBOARD=1 python my_server.py   # or in the server's "env" in your MCP client's config
-toolpass dashboard -open
+toolpass serve -config toolpass.yaml        # your connections and an API key; agents ask it and report to it
+open https://toolpass.internal/dashboard/   # every run, from every agent
 ```
 
 ![The dashboard: 9 tool calls by Dana and Sam, a map from the MCP server shop to its tools open_pr, ship, report_bug and status to the systems they reached (Kubernetes, GitHub, Jira, Slack, Linear), and the calls, Sam's refused at Linear, Kubernetes and GitHub](docs/assets/dashboard.png)
@@ -28,9 +29,10 @@ git clone https://github.com/roee-hersh/toolpass && cd toolpass/toolpass-py
 pip install -e . && python examples/demo/run.py -open
 ```
 
-Nothing to register and nothing sent anywhere: every process started with `TOOLPASS_DASHBOARD=1`
-writes to one file on your machine, and the [dashboard guide](docs/guides/dashboard.md) has the
-details.
+Nothing to register and nothing written to disk: an agent whose permissions come from the server
+reports there with no further setup, the server keeps the latest runs in memory for the page, and
+`toolpass.otel` exports each run as a span into the tracing you already have. The
+[dashboard guide](docs/guides/dashboard.md) has the details.
 
 ## Check what your own tools do
 
@@ -159,7 +161,7 @@ pip install toolpass
 
 Python 3.10 or later; the core depends only on PyYAML. If your shell cannot find `toolpass` after
 installing (pip warns that its scripts folder is not on PATH, common on Windows), run it as
-`python -m toolpass` (`py -m toolpass` on Windows): `py -m toolpass dashboard -open`.
+`python -m toolpass` (`py -m toolpass` on Windows): `py -m toolpass serve -config toolpass.yaml`.
 
 ## Honest limits
 
