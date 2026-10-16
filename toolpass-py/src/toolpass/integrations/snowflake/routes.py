@@ -30,9 +30,13 @@ function may read other tables with its owner's rights), and session
 parameters or body fields toolpass does not know. Bindings only fill
 values: no name can be bound once ``IDENTIFIER()`` is refused.
 
-A statement's results (``GET /api/v2/statements/{handle}``) and its
-cancellation are not checked again: the handle comes from a statement that
-was. The warehouse a statement runs on is not checked.
+A statement's results read by handle (``GET /api/v2/statements/{handle}``,
+the connector's ``GET /queries/{id}/result`` and ``/monitoring/queries/{id}``)
+are refused: the agent's credential is shared, so a handle may be any
+statement's, and toolpass cannot tie it to one it checked. Results are read
+from the response to the statement itself (a synchronous statement that
+finishes within the request). Cancelling by handle is not checked. The
+warehouse a statement runs on is not checked.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from toolpass.core.errors import go_trim_space
-from toolpass.core.routes import Request, Route, RouteTable, endpoint_of_url
+from toolpass.core.routes import Extractor, Request, Route, RouteTable, endpoint_of_url
 from toolpass.integrations.snowflake.sql import quote
 
 __all__ = ["ACTIONS_ROUTED", "ROUTES", "read_statement"]
@@ -84,15 +88,25 @@ _RESERVED = _BANNED | frozenset(
 )  # fmt: skip
 # The clauses that may follow a SELECT's table.
 _SELECT_CLAUSES = frozenset({"WHERE", "GROUP", "HAVING", "QUALIFY", "ORDER", "LIMIT", "OFFSET", "FETCH"})
-# Keywords and type names that may stand before "(" without being a call.
-_PAREN_WORDS = frozenset(
+# Reserved words that may stand before "(" anywhere: Snowflake reserves them,
+# so no user-defined function can be called by one of them unquoted.
+_PAREN_KEYWORDS = frozenset(
     {
-        "IN", "OVER", "AND", "OR", "NOT", "AS", "WHEN", "THEN", "ELSE", "IS", "LIKE", "ILIKE", "RLIKE", "BETWEEN",
-        "EXCLUDE", "RENAME", "ANY", "ALL", "SOME", "DISTINCT", "CASE", "BY", "WITHIN", "ROWS", "RANGE", "PRECEDING",
-        "FOLLOWING", "NUMBER", "DECIMAL", "NUMERIC", "VARCHAR", "CHAR", "CHARACTER", "STRING", "TEXT", "BINARY",
-        "VARBINARY", "TIME", "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ", "DATETIME",
+        "IN", "AND", "OR", "NOT", "AS", "WHEN", "THEN", "ELSE", "IS", "LIKE", "ILIKE", "RLIKE", "BETWEEN", "ANY",
+        "ALL", "SOME", "DISTINCT", "CASE", "BY",
     }
 )  # fmt: skip
+# Type names with a precision or length, read before "(" only where a type
+# stands: after ``AS`` directly inside CAST or TRY_CAST, or after ``::``.
+# Elsewhere ``NUMBER(x)`` could call a user-defined function of that name.
+_TYPE_WORDS = frozenset(
+    {
+        "NUMBER", "DECIMAL", "NUMERIC", "VARCHAR", "CHAR", "CHARACTER", "STRING", "TEXT", "BINARY", "VARBINARY",
+        "TIME", "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ", "DATETIME",
+    }
+)  # fmt: skip
+# The tokens after which a "*" is the select list's wildcard, not a multiplication.
+_WILDCARD_AFTER = frozenset({("p", ","), ("p", "."), ("p", "("), ("w", "DISTINCT"), ("w", "ALL")})
 # Built-in functions that compute on their arguments and touch no object.
 _FUNCTIONS = frozenset(
     {
@@ -231,10 +245,38 @@ def _tokens(sql: str) -> list[_Token]:
     return out
 
 
+def _wildcard(toks: Sequence[_Token], i: int) -> bool:
+    """Whether toks[i] is the select list's ``*`` (or ``t.*``)."""
+    return toks[i] == ("p", "*") and (i == 0 or toks[i - 1] in _WILDCARD_AFTER)
+
+
+def _not_a_call(toks: Sequence[_Token], k: int, opener: str, closed: str) -> bool:
+    """Whether the word toks[k], followed by "(", is a keyword or a type
+    rather than a function call. ``opener`` is the word that opened the
+    enclosing parenthesis, ``closed`` the word before the parenthesis that
+    closed last."""
+    v = toks[k][1]
+    prev = toks[k - 1] if k else ("", "")
+    if v in _PAREN_KEYWORDS:
+        return True
+    if v in _TYPE_WORDS:
+        return prev == ("p", "::") or (prev == ("w", "AS") and opener in ("CAST", "TRY_CAST"))
+    if v == "OVER":  # f(...) OVER (...), after a built-in's or WITHIN GROUP's arguments
+        return prev == ("p", ")") and (closed in _FUNCTIONS or closed == "GROUP")
+    if v == "GROUP":  # LISTAGG(...) WITHIN GROUP (ORDER BY ...)
+        return prev == ("w", "WITHIN")
+    if v == "EXCLUDE":  # SELECT * EXCLUDE (a, b)
+        return k > 0 and _wildcard(toks, k - 1)
+    if v == "RENAME":  # SELECT * RENAME (a AS b), or after EXCLUDE (...)
+        return (k > 0 and _wildcard(toks, k - 1)) or (prev == ("p", ")") and closed == "EXCLUDE")
+    return False
+
+
 def _check_expr(toks: Sequence[_Token]) -> None:
     """An expression region: no word that brings in another object, calls
     only to known built-ins, balanced parentheses."""
-    depth = 0
+    openers: list[str] = []  # the word before each open "(", or ""
+    closed = ""
     for k, (kind, v) in enumerate(toks):
         nxt = toks[k + 1] if k + 1 < len(toks) else ("", "")
         if kind == "w":
@@ -243,17 +285,18 @@ def _check_expr(toks: Sequence[_Token]) -> None:
             if nxt == ("p", "("):
                 if k and toks[k - 1] == ("p", "."):
                     raise _Unreadable(f"a qualified function call (.{v})")
-                if v not in _FUNCTIONS and v not in _PAREN_WORDS:
+                if v not in _FUNCTIONS and not _not_a_call(toks, k, openers[-1] if openers else "", closed):
                     raise _Unreadable(f"the function {v} is not one toolpass knows touches no other object")
         elif kind == "q" and nxt == ("p", "("):
             raise _Unreadable("a quoted function name")
         elif (kind, v) == ("p", "("):
-            depth += 1
+            prev = toks[k - 1] if k else ("", "")
+            openers.append(prev[1] if prev[0] == "w" else "")
         elif (kind, v) == ("p", ")"):
-            depth -= 1
-            if depth < 0:
+            if not openers:
                 raise _Unreadable("unbalanced parentheses")
-    if depth:
+            closed = openers.pop()
+    if openers:
         raise _Unreadable("unbalanced parentheses")
 
 
@@ -525,6 +568,13 @@ def _connector(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         extra = sorted(k for k in set(doc) - _CONNECTOR_FIELDS if doc[k] is not None)
         if extra:
             raise _Unreadable(f"the body carries {', '.join(extra)}, which toolpass does not read")
+        # A described job's id ties the request to another statement; a query context
+        # carries server state toolpass cannot read. Only their empty forms are accepted.
+        if doc.get("describedJobId") is not None:
+            raise _Unreadable("describedJobId refers to another statement")
+        if not isinstance(doc.get("queryContextDTO"), (dict, type(None))):
+            # The server's caching hints the connector echoes from the previous query; not a statement.
+            raise _Unreadable("queryContextDTO is not an object")
         sql = doc.get("sqlText")
         if not isinstance(sql, str) or not sql.strip():
             raise _Unreadable("the body has no sqlText")
@@ -535,6 +585,10 @@ def _connector(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         return _observed(*read_statement(sql))
     except _Unreadable as e:
         return {"_unresolved": f"the SQL statement cannot be read exactly ({e}); send one statement on one fully qualified table"}
+
+
+def _refuse(reason: str) -> Extractor:
+    return lambda r, vars_: {"_unresolved": reason}
 
 
 def _locate(settings: Any) -> Sequence[tuple[str, str]]:
@@ -558,18 +612,19 @@ def _locate(settings: Any) -> Sequence[tuple[str, str]]:
 def _routes() -> list[Route]:
     own = "the agent's own session with Snowflake"
     statement = "one SQL statement on one table; the action is the statement's (table.select, table.insert, ...)"
+    by_handle = _refuse(
+        "a statement's results are read by handle, which may name any statement run with the agent's shared credential; "
+        "toolpass cannot tie it to a statement it checked, so read results from the statement's own (synchronous) response"
+    )
     return [
         Route("POST", "/api/v2/statements", None, "", body=_sqlapi, description=statement),
-        Route(
-            "GET",
-            "/api/v2/statements/{statementHandle}",
-            None,
-            "",
-            description="a statement's status and results; the handle comes from a statement toolpass checked",
-        ),
-        Route("POST", "/api/v2/statements/{statementHandle}/cancel", None, "", untrusted_output=False, description="cancel a statement toolpass checked"),
+        # A route that refuses, not a missing one: an unrouted read would pass unchecked.
+        Route("GET", "/api/v2/statements/{statementHandle}", None, "", body=by_handle),
+        Route("POST", "/api/v2/statements/{statementHandle}/cancel", None, "", untrusted_output=False, description="cancel a statement by handle"),
         # The Python connector.
         Route("POST", "/queries/v1/query-request", None, "", body=_connector, spec=False, description=statement),
+        Route("GET", "/queries/{queryId}/result", None, "", body=by_handle, spec=False),
+        Route("GET", "/monitoring/queries/{queryId}", None, "", body=by_handle, spec=False),
         Route("POST", "/queries/v1/abort-request", None, "", untrusted_output=False, spec=False, description="cancel a statement toolpass checked"),
         Route("POST", "/session/v1/login-request", None, "", untrusted_output=False, spec=False, description=own),
         Route("POST", "/session/token-request", None, "", untrusted_output=False, spec=False, description=own),

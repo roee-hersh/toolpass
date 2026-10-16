@@ -79,34 +79,40 @@ CASES = [
     ("GET", "/api/2.0/repos/123", None, "", "notebook.read", "repo:123", "read"),
     ("PATCH", "/api/2.0/repos/123", {"branch": "main"}, "", "notebook.edit", "repo:123", "write"),
     ("DELETE", "/api/2.0/repos/123", None, "", "raw:CAN_MANAGE", "repo:123", "destructive"),
-    ("POST", "/serving-endpoints/churn-model/invocations", {"inputs": [[1, 2]]}, "", "endpoint.query", "endpoint:churn-model", "write"),
-    ("GET", "/api/2.0/serving-endpoints/churn-model", None, "", "raw:CAN_VIEW", "endpoint:churn-model", "read"),
+    ("GET", "/api/2.0/serving-endpoints", None, "", None, "", "read"),
     # Access control lists.
     ("GET", "/api/2.0/permissions/jobs/42", None, "", "raw:CAN_MANAGE", "job:42", "read"),
     ("PATCH", "/api/2.0/permissions/clusters/0123-456789-abcde1f2",
      {"access_control_list": [{"user_name": "bob@example.com", "permission_level": "CAN_RESTART"}]}, "", "raw:CAN_MANAGE",
      "cluster:0123-456789-abcde1f2", "write"),
     ("PUT", "/api/2.0/permissions/notebooks/987654321", {"access_control_list": []}, "", "raw:CAN_MANAGE", "notebook:987654321", "write"),
+    # A serving endpoint's ACL is kept under its id.
+    ("GET", "/api/2.0/permissions/serving-endpoints/0123456789abcdef0123456789abcdef", None, "", "raw:CAN_MANAGE",
+     "endpoint:0123456789abcdef0123456789abcdef", "read"),
     # Unity Catalog.
     ("GET", "/api/2.1/unity-catalog/catalogs/main", None, "", "catalog.use", "catalog:main", "read"),
-    ("GET", "/api/2.1/unity-catalog/schemas/main.sales", None, "", "raw:USE_SCHEMA", "schema:main.sales", "read"),
+    ("GET", "/api/2.1/unity-catalog/schemas/main.sales", None, "", "schema.read", "schema:main.sales", "read"),
     ("GET", "/api/2.1/unity-catalog/tables/Main.Sales.Orders", None, "", "table.read", "table:main.sales.orders", "read"),
     ("GET", "/api/2.1/unity-catalog/tables/main.sales.orders/exists", None, "", "table.read", "table:main.sales.orders", "read"),
-    ("PATCH", "/api/2.1/unity-catalog/tables/main.sales.orders", {"owner": "data-eng"}, "", "uc.manage", "table:main.sales.orders", "write"),
-    ("DELETE", "/api/2.1/unity-catalog/tables/main.sales.orders", None, "", "uc.manage", "table:main.sales.orders", "destructive"),
-    ("PATCH", "/api/2.1/unity-catalog/volumes/main.sales.files", {"new_name": "files2"}, "", "uc.manage", "volume:main.sales.files", "write"),
+    ("PATCH", "/api/2.1/unity-catalog/tables/main.sales.orders", {"owner": "data-eng"}, "", "table.manage", "table:main.sales.orders", "write"),
+    ("DELETE", "/api/2.1/unity-catalog/tables/main.sales.orders", None, "", "table.manage", "table:main.sales.orders", "destructive"),
+    ("PATCH", "/api/2.1/unity-catalog/volumes/main.sales.files", {"new_name": "files2"}, "", "volume.manage", "volume:main.sales.files", "write"),
     ("GET", "/api/2.1/unity-catalog/functions/main.sales.fn", None, "", "function.execute", "function:main.sales.fn", "read"),
-    ("GET", "/api/2.1/unity-catalog/models/main.sales.churn/versions/3", None, "", "raw:EXECUTE", "model:main.sales.churn", "read"),
-    ("PUT", "/api/2.1/unity-catalog/models/main.sales.churn/aliases/champion", {"version_num": 3}, "", "uc.manage", "model:main.sales.churn", "write"),
+    ("GET", "/api/2.1/unity-catalog/models/main.sales.churn", None, "", "model.read", "model:main.sales.churn", "read"),
+    ("GET", "/api/2.1/unity-catalog/models/main.sales.churn/versions", None, "", "model.read", "model:main.sales.churn", "read"),
+    ("GET", "/api/2.1/unity-catalog/models/main.sales.churn/versions/3", None, "", "model.read", "model:main.sales.churn", "read"),
+    ("PUT", "/api/2.1/unity-catalog/models/main.sales.churn/aliases/champion", {"version_num": 3}, "", "model.manage", "model:main.sales.churn", "write"),
+    ("DELETE", "/api/2.1/unity-catalog/schemas/main.sales", None, "", "schema.manage", "schema:main.sales", "destructive"),
+    ("PATCH", "/api/2.1/unity-catalog/functions/main.sales.fn", {"owner": "x"}, "", "function.manage", "function:main.sales.fn", "write"),
     ("DELETE", "/api/2.1/unity-catalog/catalogs/main", None, "force=true", "uc.manage", "catalog:main", "destructive"),
-    ("GET", "/api/2.1/unity-catalog/permissions/table/main.sales.orders", None, "", "uc.manage", "table:main.sales.orders", "read"),
-    ("GET", "/api/2.1/unity-catalog/effective-permissions/SCHEMA/main.sales", None, "", "uc.manage", "schema:main.sales", "read"),
+    ("GET", "/api/2.1/unity-catalog/permissions/table/main.sales.orders", None, "", "table.manage", "table:main.sales.orders", "read"),
+    ("GET", "/api/2.1/unity-catalog/effective-permissions/SCHEMA/main.sales", None, "", "schema.manage", "schema:main.sales", "read"),
     ("PATCH", "/api/2.1/unity-catalog/permissions/catalog/main", {"changes": [{"principal": "bob@example.com", "add": ["USE_CATALOG"]}]}, "",
      "uc.manage", "catalog:main", "write"),
     ("POST", "/api/2.1/unity-catalog/schemas", {"name": "new", "catalog_name": "main"}, "", "schema.create", "catalog:main", "write"),
     ("POST", "/api/2.1/unity-catalog/volumes", {"name": "v", "catalog_name": "main", "schema_name": "sales", "volume_type": "MANAGED"}, "",
-     "raw:CREATE_VOLUME", "schema:main.sales", "write"),
-    ("POST", "/api/2.1/unity-catalog/models", {"name": "m", "catalog_name": "main", "schema_name": "sales"}, "", "raw:CREATE_MODEL",
+     "volume.create", "schema:main.sales", "write"),
+    ("POST", "/api/2.1/unity-catalog/models", {"name": "m", "catalog_name": "main", "schema_name": "sales"}, "", "model.create",
      "schema:main.sales", "write"),
     ("GET", "/api/2.1/unity-catalog/tables", None, "catalog_name=main&schema_name=sales", None, "", "read"),
     # Files in volumes.
@@ -175,6 +181,11 @@ def test_resources_parse_as_the_integration_reads_them(method, path, body, query
         ("GET", "/api/2.1/unity-catalog/permissions/external_location/loc", None, ""),
         ("PATCH", "/api/2.1/unity-catalog/schemas/main.sales", {"new_name": "hr.sales"}, ""),
         ("PATCH", "/api/2.1/unity-catalog/schemas/main.sales", {"new_name": "x", "newName": "y"}, ""),
+        ("PATCH", "/api/2.1/unity-catalog/schemas/main.sales", {"newName": "hr.sales"}, ""),
+        ("PATCH", "/api/2.1/unity-catalog/schemas/main.sales", {"new-name": "hr.sales"}, ""),
+        ("PATCH", "/api/2.1/unity-catalog/tables/main.sales.orders", {"NEW_NAME": "x"}, ""),
+        ("PATCH", "/api/2.1/unity-catalog/tables/main.sales.orders", {"new_name": "a/b"}, ""),
+        ("PATCH", "/api/2.1/unity-catalog/tables/main.sales.orders", {"new_name": ""}, ""),
         # New securables reaching outside storage, or a parent given twice.
         ("POST", "/api/2.1/unity-catalog/schemas", {"name": "n", "catalog_name": "main", "storage_root": "s3://bucket/x"}, ""),
         ("POST", "/api/2.1/unity-catalog/volumes", {"name": "v", "catalog_name": "main", "schema_name": "sales", "storage_location": "s3://b"}, ""),
@@ -183,6 +194,17 @@ def test_resources_parse_as_the_integration_reads_them(method, path, body, query
         # Permissions on objects toolpass does not check, and owner changes.
         ("GET", "/api/2.0/permissions/authorization/tokens", None, ""),
         ("PATCH", "/api/2.0/permissions/jobs/42", {"access_control_list": [{"user_name": "bob@example.com", "permission_level": "IS_OWNER"}]}, ""),
+        # IS_OWNER, or the list itself, in another spelling or another place.
+        ("PUT", "/api/2.0/permissions/jobs/123", {"accessControlList": [{"user_name": "agent@x.com", "permission_level": "IS_OWNER"}]}, ""),
+        ("PUT", "/api/2.0/permissions/jobs/123", {"accessControlList": [{"user_name": "agent@x.com", "permission_level": "CAN_VIEW"}]}, ""),
+        ("PUT", "/api/2.0/permissions/jobs/123", {"ACCESS-CONTROL-LIST": []}, ""),
+        ("PUT", "/api/2.0/permissions/jobs/123", {"access_control_list": [], "accessControlList": []}, ""),
+        ("PUT", "/api/2.0/permissions/jobs/123", {"access_control_list": [{"user_name": "a@x.com", "permission_level": "is-owner"}]}, ""),
+        ("PUT", "/api/2.0/permissions/jobs/123", {"access_control_list": [], "owner": {"permission_level": "IS_OWNER"}}, ""),
+        ("PATCH", "/api/2.0/permissions/jobs/123", {"access_control_list": [{"user_name": "a@x.com", "permissionLevel": "Is_Owner"}]}, ""),
+        # Serving endpoints by name: their permissions are kept under the endpoint's id.
+        ("GET", "/api/2.0/serving-endpoints/churn-model", None, ""),
+        ("GET", "/api/2.0/serving-endpoints/churn-model/logs", None, ""),
         # Files outside one volume, or climbing out of it.
         ("GET", "/api/2.0/fs/files/Volumes/main/sales/files/../../hr/salaries/x.csv", None, ""),
         ("GET", "/api/2.0/fs/files/Volumes/main/sales/files%2F..%2F..%2Fhr/x.csv", None, ""),
@@ -227,6 +249,9 @@ def test_requests_toolpass_cannot_check_exactly_are_refused(method, path, body, 
         ("POST", "/api/2.1/unity-catalog/tables"),
         ("POST", "/api/2.1/unity-catalog/functions"),
         ("POST", "/api/2.1/unity-catalog/external-locations"),
+        ("POST", "/serving-endpoints/churn-model/invocations"),
+        ("PUT", "/api/2.0/serving-endpoints/churn-model/config"),
+        ("DELETE", "/api/2.0/serving-endpoints/churn-model"),
     ],
 )
 def test_writes_left_out_on_purpose_have_no_route(method, path):
@@ -240,8 +265,38 @@ def test_lists_are_reads_without_a_check_and_untrusted():
         assert (o.action, o.effect, o.untrusted_output, o.unresolved) == (None, "read", True, None), path
 
 
-def test_invocations_send_data_out():
-    assert match(req("POST", "/serving-endpoints/churn-model/invocations", {"inputs": []})).sends_out
+def test_serving_endpoints_by_name_are_refused_with_a_reason():
+    # The Permissions API takes the endpoint's id, not the name the serving API is addressed by.
+    for method, path in (("POST", "/serving-endpoints/churn-model/invocations"), ("PUT", "/api/2.0/serving-endpoints/churn-model/config")):
+        assert "endpoint's id" in (ROUTES.is_unrouted(method, path) or ""), path
+    o = match(req("GET", "/api/2.0/serving-endpoints/churn-model"))
+    assert o.unresolved and "endpoint's id" in o.unresolved and o.action is None
+
+
+def test_the_acl_owner_check_holds_for_every_spelling():
+    o = match(req("PUT", "/api/2.0/permissions/jobs/123", {"accessControlList": [{"user_name": "agent@x.com", "permission_level": "IS_OWNER"}]}))
+    assert o.unresolved and o.resource is None, o
+    # A level that only mentions an owner in prose is not IS_OWNER.
+    o = match(req("PATCH", "/api/2.0/permissions/jobs/123", {"access_control_list": [{"group_name": "this owner", "permission_level": "CAN_VIEW"}]}))
+    assert (o.unresolved, o.action, o.resource) == (None, "raw:CAN_MANAGE", "job:123")
+
+
+@pytest.mark.parametrize(
+    ("action", "resource", "privileges"),
+    [
+        ("volume.create", "schema:c.s", ("CREATE_VOLUME", "USE_SCHEMA", "USE_CATALOG")),
+        ("model.create", "schema:c.s", ("CREATE_MODEL", "USE_SCHEMA", "USE_CATALOG")),
+        ("schema.read", "schema:c.s", ("USE_SCHEMA", "USE_CATALOG")),
+        ("model.read", "model:c.s.m", ("EXECUTE", "USE_SCHEMA", "USE_CATALOG")),
+        ("schema.manage", "schema:c.s", ("MANAGE", "USE_CATALOG")),
+        ("table.manage", "table:c.s.t", ("MANAGE", "USE_SCHEMA", "USE_CATALOG")),
+        ("volume.manage", "volume:c.s.v", ("MANAGE", "USE_SCHEMA", "USE_CATALOG")),
+        ("function.manage", "function:c.s.f", ("MANAGE", "USE_SCHEMA", "USE_CATALOG")),
+        ("model.manage", "model:c.s.m", ("MANAGE", "USE_SCHEMA", "USE_CATALOG")),
+    ],
+)
+def test_unity_catalog_routes_need_the_parents_use_privileges(action, resource, privileges):
+    assert parse_ref(action, parse_resource(resource)).privileges == privileges
 
 
 @pytest.fixture
@@ -269,3 +324,8 @@ def test_routed_requests_are_checked_on_the_users_permissions(dbx: Env):
     assert decide(dana, "PUT", "/api/2.0/fs/files/Volumes/main/sales/files/x.csv", {}) == Code.ALLOWED
     assert decide(bob, "GET", "/api/2.0/fs/files/Volumes/main/sales/files/x.csv") == Code.DENIED
     assert decide(dana, "POST", "/api/2.1/unity-catalog/schemas", {"name": "n", "catalog_name": "main"}) == Code.ALLOWED
+    # dana holds EXECUTE on the model but not USE_SCHEMA or USE_CATALOG on its parents, which Databricks also requires.
+    assert check(c, dana, "raw:EXECUTE", "model:main.sales.churn").code == Code.ALLOWED
+    assert decide(dana, "GET", "/api/2.1/unity-catalog/models/main.sales.churn/versions") == Code.DENIED
+    assert decide(dana, "GET", "/api/2.1/unity-catalog/schemas/main.sales") == Code.ALLOWED
+    assert decide(bob, "GET", "/api/2.1/unity-catalog/schemas/main.sales") == Code.DENIED

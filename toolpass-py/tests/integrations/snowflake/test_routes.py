@@ -84,6 +84,12 @@ SQLAPI_CASES = [
      "table.select", "table:PROD.SALES.ORDERS", "read"),
     # A fully qualified name wins over the defaults.
     ("select * from dev.play.t", {"database": "PROD", "schema": "SALES"}, "table.select", "table:DEV.PLAY.T", "read"),
+    # Keywords and types before "(" where they cannot be a call.
+    ("select * exclude (a, b) rename (c as d) from prod.sales.orders", {}, "table.select", "table:PROD.SALES.ORDERS", "read"),
+    ("select o.* rename (c as d), try_cast(x as timestamp_ntz(9)), y::varchar(10) from prod.sales.orders o", {},
+     "table.select", "table:PROD.SALES.ORDERS", "read"),
+    ("select listagg(a, ',') within group (order by a) over (partition by b), sum(c) over (order by a) from prod.sales.orders", {},
+     "table.select", "table:PROD.SALES.ORDERS", "read"),
 ]  # fmt: skip
 
 
@@ -142,6 +148,22 @@ def test_the_connector_reads_the_same_statements(statement, fields, action, reso
         ("select my_udf(id) from prod.sales.orders", {}),
         ("select prod.util.f(id) from prod.sales.orders", {}),
         ('select "UPPER"(id) from prod.sales.orders', {}),
+        # Keywords and type names that would be a call to a function of that name where they stand.
+        ("select range(1, 5) from prod.sales.orders", {}),
+        ("select rename(id) from prod.sales.orders", {}),
+        ("select exclude(id) from prod.sales.orders", {}),
+        ("select 2 * exclude(id) from prod.sales.orders", {}),
+        ("select id, within(id) from prod.sales.orders", {}),
+        ("select over(id) from prod.sales.orders", {}),
+        ("select (id) over (partition by id) from prod.sales.orders", {}),
+        ("select text(id) from prod.sales.orders", {}),
+        ("select string(id) from prod.sales.orders", {}),
+        ("select timestamp_ntz(id) from prod.sales.orders", {}),
+        ("select * from prod.sales.orders where number(id) = 1", {}),
+        ("select coalesce(a as number(5)) from prod.sales.orders", {}),
+        ("update prod.sales.orders set a = varchar(b)", {}),
+        ("insert into prod.sales.orders values (decimal(1))", {}),
+        ("select rows(1), preceding(1), following(1) from prod.sales.orders", {}),
         # Writes reaching beyond one table.
         ("insert into prod.sales.orders select * from prod.hr.salaries", {}),
         ("insert overwrite into prod.sales.orders values (1)", {}),
@@ -203,16 +225,31 @@ def test_the_connector_needs_fully_qualified_names_and_known_fields():
     assert match(connector("select * from prod.sales.orders", parameters={"MULTI_STATEMENT_COUNT": 0})).unresolved
     o = match(connector("select * from prod.sales.orders", parameters={"QUERY_TAG": "x"}, bindings=None, queryContextDTO={"entries": []}))
     assert (o.action, o.resource, o.unresolved) == ("table.select", "table:PROD.SALES.ORDERS", None)
+    for empty in ({}, None):
+        assert match(connector("select * from prod.sales.orders", queryContextDTO=empty, describedJobId=None)).unresolved is None
+    # The query context the connector echoes after its first query is accepted; it runs nothing.
+    context = {"entries": [{"id": 0, "timestamp": 1, "priority": 0, "context": {"base64Data": "AAAA"}}]}
+    assert match(connector("select * from prod.sales.orders", queryContextDTO=context)).unresolved is None
+    # Another statement's job is refused: the server could run its plan instead of this text.
+    assert match(connector("select * from prod.sales.orders", describedJobId="01b0f0f0-0000-0000-0000-000000000002")).unresolved
+    assert match(connector("select * from prod.sales.orders", queryContextDTO="x")).unresolved
     bad = Request("https", HOST, 443, "POST", "/queries/v1/query-request", "", {**JSON, "content-encoding": "br"}, b"{}")
     assert match(bad).unresolved
     truncated = gzip.compress(json.dumps({"sqlText": "select 1"}).encode())[:-4]
     assert match(Request("https", HOST, 443, "POST", "/queries/v1/query-request", "", {**JSON, "content-encoding": "gzip"}, truncated)).unresolved
 
 
-def test_results_and_the_session_need_no_check():
+def test_results_by_handle_are_refused():
+    # The agent's credential is shared: a handle may be any statement's, not one toolpass checked.
     handle = "01b0f0f0-0000-0000-0000-000000000002"
-    o = match(Request("https", HOST, 443, "GET", f"/api/v2/statements/{handle}", "partition=1"))
-    assert (o.action, o.effect, o.untrusted_output) == (None, "read", True)
+    for path, query in ((f"/api/v2/statements/{handle}", "partition=1"), (f"/api/v2/statements/{handle}", ""),
+                        (f"/queries/{handle}/result", ""), (f"/monitoring/queries/{handle}", "")):  # fmt: skip
+        o = match(Request("https", HOST, 443, "GET", path, query))
+        assert o.unresolved and "handle" in o.unresolved and o.action is None, path
+
+
+def test_the_session_and_cancelling_need_no_check():
+    handle = "01b0f0f0-0000-0000-0000-000000000002"
     o = match(Request("https", HOST, 443, "POST", f"/api/v2/statements/{handle}/cancel", "", JSON, b""))
     assert (o.action, o.effect, o.unresolved) == (None, "write", None)
     for path in ("/session/v1/login-request", "/session/token-request", "/session/heartbeat", "/queries/v1/abort-request"):

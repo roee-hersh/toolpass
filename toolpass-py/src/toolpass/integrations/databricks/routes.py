@@ -3,10 +3,11 @@ databricks integration's actions on the workspace object or Unity Catalog
 securable they name.
 
 Workspace objects are checked by id: a job (``job_id``), a cluster
-(``cluster_id``), a SQL warehouse, a pipeline, a Git folder (repo), a model
-serving endpoint, read from the path, the query (GET) or the JSON body
-(POST). Unity Catalog securables are checked by full name from the path, in
-lower case as Unity Catalog compares them; files in a volume
+(``cluster_id``), a SQL warehouse, a pipeline, a Git folder (repo), read
+from the path, the query (GET) or the JSON body (POST). Unity Catalog
+securables are checked by full name from the path, in lower case as Unity
+Catalog compares them, with USE_CATALOG and USE_SCHEMA on their parents as
+Databricks requires; files in a volume
 (``/api/2.0/fs/files/Volumes/<catalog>/<schema>/<volume>/...``) check the
 volume. A body or query that names the id twice, in another spelling
 (``jobId``), or in a form toolpass does not read exactly is refused.
@@ -28,7 +29,11 @@ Refused, because toolpass cannot check them as one action on one object:
   and creating jobs, clusters, warehouses, catalogs, tables, views and
   functions (which would belong to the agent and read with its rights);
 - the Workspace and DBFS APIs, which name objects by path while toolpass
-  checks notebooks and directories by id, and secrets.
+  checks notebooks and directories by id, and secrets;
+- model serving endpoints addressed by name (get, query, update, delete):
+  their permissions are kept under the endpoint's id, which the request does
+  not carry. Their ACLs (``/api/2.0/permissions/serving-endpoints/<id>``) are
+  routed.
 """
 
 from __future__ import annotations
@@ -88,7 +93,9 @@ def _body(r: Request) -> dict[str, Any]:
 
 
 def _norm(key: str) -> str:
-    return key.replace("_", "").lower()
+    """A member name with case, underscores and other separators folded away:
+    accessControlList, ACCESS-CONTROL-LIST and access_control_list are one."""
+    return re.sub(r"[^0-9a-z]", "", key.lower())
 
 
 def _canon(v: Any, kind: str) -> str:
@@ -189,14 +196,15 @@ def _full_name(value: str, parts: int) -> str:
 
 def _uc_path(rtype: str) -> Extractor:
     """A securable named by the path's full name. A rename keeps it in its
-    parent: a new_name with a dot, which could name another parent, is refused."""
+    parent: new_name must be one plain name part, in its one spelling, so it
+    cannot name another parent."""
 
     def extract(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         name = _full_name(vars_.get("full_name", ""), UC_TYPES[rtype].parts)
         if r.method.upper() == "PATCH":
             doc = _body(r)
             for k, v in doc.items():
-                if _norm(k) == "newname" and (k != "new_name" or not isinstance(v, str) or "." in v):
+                if _norm(k) == "newname" and (k != "new_name" or not isinstance(v, str) or not UC_NAME_RE.fullmatch(v)):
                     raise _Unreadable("new_name must be a plain name in the same parent, given once")
         elif r.method.upper() in ("GET", "HEAD") and r.body:
             raise _Unreadable("a read with a body")
@@ -205,12 +213,18 @@ def _uc_path(rtype: str) -> Extractor:
     return _guard(extract)
 
 
+def _uc_manage(rtype: str) -> str:
+    """The action that manages a securable: MANAGE (or ownership) with the USE
+    privileges on its parents, which Databricks also requires."""
+    return "uc.manage" if rtype == "catalog" else f"{rtype}.manage"
+
+
 def _uc_grants(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """/permissions/{securable_type}/{full_name}: the securable the grants are on."""
     rtype = _UC_SECURABLES.get(vars_.get("securable_type", "").lower())
     if rtype is None:
         raise _Unreadable(f"grants on a {vars_.get('securable_type', '')!r} are not checked; toolpass checks {', '.join(sorted(_UC_SECURABLES))}")
-    return {"_resource": f"{rtype}:{_full_name(vars_.get('full_name', ''), UC_TYPES[rtype].parts)}"}
+    return {"_action": _uc_manage(rtype), "_resource": f"{rtype}:{_full_name(vars_.get('full_name', ''), UC_TYPES[rtype].parts)}"}
 
 
 def _uc_create(parent: str, *names: str, nested: str = "", forbid: tuple[str, ...] = ()) -> Extractor:
@@ -264,18 +278,33 @@ def _volume_file(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
 # -- the Permissions API ----------------------------------------------------------
 
 
+def _strings(v: Any) -> list[str]:
+    """Every member name and string value in a JSON document."""
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, dict):
+        return [s for k, x in v.items() for s in (k, *_strings(x))]
+    if isinstance(v, list):
+        return [s for x in v for s in _strings(x)]
+    return []
+
+
 def _object_acl(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """/api/2.0/permissions/{object_type}/{object_id}: CAN_MANAGE on the object.
-    Granting IS_OWNER changes the owner, which needs more than CAN_MANAGE."""
+    Granting IS_OWNER changes the owner, which needs more than CAN_MANAGE: it
+    is refused wherever it appears in the body, in any spelling."""
     rtype = _PERMISSION_TYPES.get(vars_.get("object_type", ""))
     if rtype is None:
         raise _Unreadable(f"permissions on {vars_.get('object_type', '')!r} are not checked; toolpass checks {', '.join(sorted(_PERMISSION_TYPES))}")
     oid = _canon(vars_.get("object_id", ""), "ws")
     if r.method.upper() in ("PUT", "PATCH"):
-        acl = _body(r).get("access_control_list")
+        doc = _body(r)
+        if any(_norm(k) == "accesscontrollist" and k != "access_control_list" for k in doc):
+            raise _Unreadable("access_control_list is given in another spelling")
+        acl = doc.get("access_control_list")
         if acl is not None and not isinstance(acl, list):
             raise _Unreadable("access_control_list is not a list")
-        if "IS_OWNER" in json.dumps(acl).upper():
+        if any("IS_OWNER" in s.upper() or _norm(s) == "isowner" for s in _strings(doc)):
             raise _Unreadable("granting IS_OWNER changes the object's owner; not routed")
     elif r.body:
         raise _Unreadable("a read with a body")
@@ -350,22 +379,11 @@ def _routes() -> list[Route]:
         Route("GET", "/api/2.0/repos/{id}", "notebook.read", "repo:{id}", body=_path_id("num"), spec=False),
         Route("PATCH", "/api/2.0/repos/{id}", "notebook.edit", "repo:{id}", body=_path_id("num"), description="check out a branch or tag", spec=False),
         Route("DELETE", "/api/2.0/repos/{id}", "raw:CAN_MANAGE", "repo:{id}", body=_path_id("num"), spec=False),
-        # Model serving.
+        # Model serving: the endpoint API names an endpoint by name, its ACL by id; reads by name are refused
+        # (an unrouted read would pass unchecked), writes by name have no route (see unrouted below).
         Route("GET", "/api/2.0/serving-endpoints", None, "", description=agent_list, spec=False),
-        Route("GET", "/api/2.0/serving-endpoints/{id}", "raw:CAN_VIEW", "endpoint:{id}", body=_path_id(), spec=False),
-        Route("GET", "/api/2.0/serving-endpoints/{id}/{rest+}", "raw:CAN_MANAGE", "endpoint:{id}", body=_path_id(), description="logs and metrics", spec=False),
-        Route(
-            "POST",
-            "/serving-endpoints/{id}/invocations",
-            "endpoint.query",
-            "endpoint:{id}",
-            sends_out=True,
-            body=_path_id(),
-            description="the request goes to the model, which may be an external provider",
-            spec=False,
-        ),
-        Route("PUT", "/api/2.0/serving-endpoints/{id}/config", "raw:CAN_MANAGE", "endpoint:{id}", body=_path_id(), spec=False),
-        Route("DELETE", "/api/2.0/serving-endpoints/{id}", "raw:CAN_MANAGE", "endpoint:{id}", body=_path_id(), spec=False),
+        Route("GET", "/api/2.0/serving-endpoints/{name}", None, "", body=_refuse(_REASON_ENDPOINT_NAME), spec=False),
+        Route("GET", "/api/2.0/serving-endpoints/{name}/{rest+}", None, "", body=_refuse(_REASON_ENDPOINT_NAME), spec=False),
         # Access control lists on workspace objects.
         *(
             Route(m, "/api/2.0/permissions/{object_type}/{object_id}", "raw:CAN_MANAGE", "", body=_guard(_object_acl), spec=False)
@@ -406,33 +424,35 @@ def _routes() -> list[Route]:
         Route("GET", "/api/2.0/preview/scim/v2/Me", None, "", untrusted_output=False, description="the agent's own identity", spec=False),
     ]
     # Unity Catalog.
+    # Reads need the parents' USE_CATALOG and USE_SCHEMA as well, as Databricks enforces them.
     uc_reads = {
         "catalog": "catalog.use",
-        "schema": "raw:USE_SCHEMA",
+        "schema": "schema.read",
         "table": "table.read",
         "volume": "volume.read",
         "function": "function.execute",
-        "model": "raw:EXECUTE",
+        "model": "model.read",
     }
     for rtype, read in uc_reads.items():
         coll = f"{_UC}/{UC_TYPES[rtype].securable}s"
         item = coll + "/{full_name}"
         res = f"{rtype}:{{name}}"
+        manage = _uc_manage(rtype)
         out += [
             Route("GET", coll, None, "", description=agent_list, spec=False),
             Route("GET", item, read, res, body=_uc_path(rtype), spec=False),
-            Route("PATCH", item, "uc.manage", res, body=_uc_path(rtype), description="rename, change the owner or properties", spec=False),
-            Route("DELETE", item, "uc.manage", res, body=_uc_path(rtype), spec=False),
+            Route("PATCH", item, manage, res, body=_uc_path(rtype), description="rename, change the owner or properties", spec=False),
+            Route("DELETE", item, manage, res, body=_uc_path(rtype), spec=False),
         ]
     out += [
         Route("GET", f"{_UC}/tables/{{full_name}}/exists", "table.read", "table:{name}", body=_uc_path("table"), spec=False),
-        Route("GET", f"{_UC}/models/{{full_name}}/versions", "raw:EXECUTE", "model:{name}", body=_uc_path("model"), spec=False),
-        Route("GET", f"{_UC}/models/{{full_name}}/versions/{{version}}", "raw:EXECUTE", "model:{name}", body=_uc_path("model"), spec=False),
-        Route("PATCH", f"{_UC}/models/{{full_name}}/versions/{{version}}", "uc.manage", "model:{name}", body=_uc_path("model"), spec=False),
-        Route("DELETE", f"{_UC}/models/{{full_name}}/versions/{{version}}", "uc.manage", "model:{name}", body=_uc_path("model"), spec=False),
-        Route("PUT", f"{_UC}/models/{{full_name}}/aliases/{{alias}}", "uc.manage", "model:{name}", body=_uc_path("model"), spec=False),
-        Route("DELETE", f"{_UC}/models/{{full_name}}/aliases/{{alias}}", "uc.manage", "model:{name}", body=_uc_path("model"), spec=False),
-        # Grants: reading them unfiltered, and changing them, take MANAGE.
+        Route("GET", f"{_UC}/models/{{full_name}}/versions", "model.read", "model:{name}", body=_uc_path("model"), spec=False),
+        Route("GET", f"{_UC}/models/{{full_name}}/versions/{{version}}", "model.read", "model:{name}", body=_uc_path("model"), spec=False),
+        Route("PATCH", f"{_UC}/models/{{full_name}}/versions/{{version}}", "model.manage", "model:{name}", body=_uc_path("model"), spec=False),
+        Route("DELETE", f"{_UC}/models/{{full_name}}/versions/{{version}}", "model.manage", "model:{name}", body=_uc_path("model"), spec=False),
+        Route("PUT", f"{_UC}/models/{{full_name}}/aliases/{{alias}}", "model.manage", "model:{name}", body=_uc_path("model"), spec=False),
+        Route("DELETE", f"{_UC}/models/{{full_name}}/aliases/{{alias}}", "model.manage", "model:{name}", body=_uc_path("model"), spec=False),
+        # Grants: reading them unfiltered, and changing them, take MANAGE (the action follows the securable type).
         *(
             Route(m, f"{_UC}/{p}/{{securable_type}}/{{full_name}}", "uc.manage", "", body=_guard(_uc_grants), effect=e, spec=False)
             for p in ("permissions", "effective-permissions")
@@ -444,7 +464,7 @@ def _routes() -> list[Route]:
         Route(
             "POST",
             f"{_UC}/volumes",
-            "raw:CREATE_VOLUME",
+            "volume.create",
             "",
             body=_uc_create("schema", "catalog_name", "schema_name", forbid=("storage_location",)),
             spec=False,
@@ -452,7 +472,7 @@ def _routes() -> list[Route]:
         Route(
             "POST",
             f"{_UC}/models",
-            "raw:CREATE_MODEL",
+            "model.create",
             "",
             body=_uc_create("schema", "catalog_name", "schema_name", forbid=("storage_location",)),
             spec=False,
@@ -461,6 +481,9 @@ def _routes() -> list[Route]:
     return out
 
 
+_REASON_ENDPOINT_NAME = (
+    "the serving endpoints API names an endpoint by name, while its permissions are kept under the endpoint's id, which the request does not carry; not routed"
+)
 _REASON_RUNS_AS_AGENT = "runs code or SQL as the agent's principal, not as the user"
 _REASON_RUN_ID = "a run is named by run_id, which does not say which job it belongs to"
 _REASON_CALLER = "Databricks checks these settings (run-as identity, cluster policy, pool, access mode) against the agent's principal"
@@ -486,6 +509,9 @@ ROUTES = RouteTable(
         ("POST", "/api/2.0/sql/warehouses"): "a new warehouse belongs to the agent",
         ("POST", "/api/2.0/repos"): "a new Git folder is placed by workspace path, which toolpass does not check",
         ("POST", "/api/2.0/serving-endpoints"): "a new endpoint belongs to the agent",
+        ("POST", "/serving-endpoints/{name}/invocations"): _REASON_ENDPOINT_NAME,
+        ("DELETE", "/api/2.0/serving-endpoints/{name}"): _REASON_ENDPOINT_NAME,
+        ("*", "/api/2.0/serving-endpoints/{name}/**"): _REASON_ENDPOINT_NAME,
         ("POST", "/api/2.0/libraries/{rest+}"): "installs code from paths Databricks checks against the agent's principal",
         **{("POST", f"/api/2.0/workspace/{p}"): _REASON_PATH for p in ("import", "mkdirs", "delete")},
         ("POST", "/api/2.0/dbfs/{rest+}"): "DBFS files have no permissions toolpass checks",
