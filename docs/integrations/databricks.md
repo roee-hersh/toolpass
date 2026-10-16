@@ -163,6 +163,24 @@ Only `error_code` is read from an error body; messages are never copied into a d
 workspace admin, and warns either way: a non-admin cannot read most ACLs, an admin can change the
 workspace.
 
+## Intercepted requests
+
+A secured tool's requests to the workspace REST API are mapped to these actions
+(`src/toolpass/integrations/databricks/routes.py`, `toolpass routes databricks`): jobs by `job_id`
+(get, runs of a job, run now, cancel all runs, delete), clusters by `cluster_id` (get, events, start,
+restart, terminate, resize, delete), SQL warehouses, pipelines, Git folders and serving endpoints by
+id, ACLs through the Permissions API (`CAN_MANAGE` on the object), Unity Catalog catalogs, schemas,
+tables, volumes, functions and models by full name (read, update, delete, grants, and creating
+schemas, managed volumes and models), and files under `/Volumes/<catalog>/<schema>/<volume>` as
+`volume.read` and `volume.write`. Lists need no user check; the workspace filters them by the agent's
+own access.
+
+Refused: SQL statement execution, the command execution API and one-time job runs (they run as the
+agent), runs named only by `run_id`, edits Databricks checks against the caller (job and pipeline
+settings, cluster edits), creating jobs, clusters, warehouses, catalogs, tables, views and functions,
+the Workspace and DBFS APIs (they name objects by path), secrets, and any request that names its id
+twice or in a form toolpass does not read exactly.
+
 ## What it cannot see
 
 - Metastore admins: their implicit privileges are not in SCIM or in the effective-permissions list,

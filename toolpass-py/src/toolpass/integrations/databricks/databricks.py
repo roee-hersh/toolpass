@@ -54,6 +54,7 @@ from toolpass.core.integration import (
     url_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.core.template import is_email
 from toolpass.integrations.databricks.actions import (
@@ -131,6 +132,11 @@ class Databricks(Integration):
 
     def match_action(self, name: str) -> Action | None:
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.databricks.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network; the secret is read at
