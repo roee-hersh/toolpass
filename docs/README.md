@@ -26,7 +26,7 @@ agents in any language call.
 - [Deploy](guides/deploy.md): in-process, sidecar or shared service, TLS, Docker, pip, Kubernetes
   with Helm, scaling and a production checklist.
 - [Add toolpass to your agent](guides/agent-tools.md): which tools to guard, where the user comes
-  from, and the adapters for Strands, LangChain and LangGraph, MCP, the OpenAI Agents SDK, the
+  from, and the adapters for Strands, LangChain and LangGraph, the OpenAI Agents SDK, the
   Claude Agent SDK, Google ADK, CrewAI, Pydantic AI, LlamaIndex and the Vercel AI SDK.
 - [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
   body makes, mapped to actions and checked before they are sent; `as_agent()`; recording a tool's

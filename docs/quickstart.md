@@ -73,7 +73,7 @@ dana@example.com -> refused: denied: dana@example.com is not an admin
 ```
 
 In a real agent, use your framework's adapter instead, configured once on the agent
-(`toolpass.strands`, `toolpass.langchain`, `toolpass.mcp`, ...), or put the framework's tool
+(`toolpass.strands`, `toolpass.langchain`, ...), or put the framework's tool
 decorator on top of `guarded`. The [agent guide](guides/agent-tools.md) covers each framework and
 where the user comes from.
 

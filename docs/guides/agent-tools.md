@@ -11,7 +11,7 @@ in which `admin@example.com` may write and `dana@example.com` may not. The
 ## 1. Install
 
 ```sh
-pip install "toolpass[strands]"   # or [langchain], [mcp], [openai-agents], [claude-agent-sdk],
+pip install "toolpass[strands]"   # or [langchain], [openai-agents], [claude-agent-sdk],
                                   # [google-adk], [crewai], [pydantic-ai], [llamaindex]
 npm install toolpass-client       # Node, talking to a toolpass server
 ```
@@ -185,7 +185,7 @@ docstring has every option.
 |---|---|---|
 | Strands Agents | `toolpass.strands.ToolpassAuthorization` | [`strands_agent.py`](../../toolpass-py/examples/strands_agent.py) |
 | LangChain, LangGraph | `toolpass.langchain.ToolpassMiddleware` | [`langchain_agent.py`](../../toolpass-py/examples/langchain_agent.py) |
-| MCP servers, any host | `toolpass.mcp.guard` | [`mcp_server.py`](../../toolpass-py/examples/mcp_server.py) |
+| MCP servers, any host | `secured_tool` and `session_from_header`, no adapter | [`mcp_server.py`](../../toolpass-py/examples/mcp_server.py) |
 | OpenAI Agents SDK | `toolpass.openai_agents.ToolpassGuardrails` | [`openai_agents_agent.py`](../../toolpass-py/examples/openai_agents_agent.py) |
 | Claude Agent SDK | `toolpass.claude_agent_sdk.ToolpassHooks` | [`claude_agent_sdk_agent.py`](../../toolpass-py/examples/claude_agent_sdk_agent.py) |
 | Google ADK | `toolpass.google_adk.ToolpassCallbacks` | [`google_adk_agent.py`](../../toolpass-py/examples/google_adk_agent.py) |
@@ -230,29 +230,52 @@ agent.invoke({"messages": [...]}, context=Context(user_id=user.email))
 For a LangGraph graph you assemble yourself, `guard.tool_node(tools)` is a `ToolNode` with the
 same check.
 
-**MCP servers** (`toolpass[mcp]`, the official `mcp` SDK v2 and its `MCPServer`). Server
-middleware, whatever transport the call came over. The user is the authenticated access token's
-`email` claim (`user_claim="sub"` for its subject), refused when the token says
-`email_verified: false`; a request without a token (stdio, or HTTP without auth) uses `user=`. A refusal is a tool result with `isError: true`:
+**MCP servers** (the official `mcp` package or FastMCP; no extra). No adapter: the tools are
+plain functions under `secured_tool`, and the server only needs the user. The agent names the
+user in the `X-Toolpass-User` header of every request, set once on its MCP client from the login
+the agent already did; `session_from_header` wraps the server's Streamable HTTP app and runs each
+request under a `Session` for that user (`X-Toolpass-Groups`, comma-separated, names the user's
+groups). The requests of one conversation share one `Session`, so a tool's limits, the
+untrusted-input check and the exfiltration guard hold across its calls: the agent names the
+conversation in `X-Toolpass-Session` (its own chat or thread id), or else the MCP session is the
+conversation (a sessionless client has none, and then each request is a session of its own). A
+request without the user header runs under no session, so a secured tool refuses it. The SDK reports an exception
+as only `Error executing tool`, so set `on_refuse=str` and the model reads the reason:
 
 ```python
-from toolpass.mcp import Rule, guard
+import toolpass
+from toolpass import secured_tool, session_from_header
 
-mcp = MCPServer("tools", token_verifier=verifier, auth=AuthSettings(...))
+toolpass.configure(permissions=tp, on_refuse=str)
 
 @mcp.tool()
+@secured_tool()
 def delete_issue(key: str) -> str: ...
 
-guard(mcp, tp, {"delete_issue": Rule("jira-main", "DELETE_ISSUES", "issue:{key}", fresh=True)})
+app = session_from_header(mcp.streamable_http_app())   # FastMCP: mcp.http_app()
+uvicorn.run(app, host="127.0.0.1", port=8000)
 ```
 
-A stdio server serves one user, whom the host names when it starts the server. The example takes
-it from `AGENT_USER`:
+Whoever can reach the server can set the header. On a private network (localhost, the agent's own
+pod, a network only the agent reaches) that is the agent, and nothing more is needed. On a network
+others reach, pass `key=`, a secret the agent sends in `X-Toolpass-Key` on every request; a request
+without it is refused with 403 before anything runs. Either way the user logs in only to your app,
+never to the server. A server whose callers authenticate themselves (the SDK's token auth) takes
+the user from that instead and does not use this wrapper: here the header would win.
+
+On the agent's side, set the header once on the MCP client: Claude Code with
+`claude mcp add --transport http ops http://host:8000/mcp --header "X-Toolpass-User: dana@example.com"`,
+the Claude Agent SDK with `mcp_servers={"ops": {"type": "http", "url": url, "headers": {"X-Toolpass-User": user}}}`,
+the `mcp` client through the headers of the `httpx` client it is given.
+
+A stdio server serves one user, whom the host names when it starts the server: open one `Session`
+around `run()`. The example does both:
 
 ```sh
-pip install "toolpass[mcp]"
+pip install mcp
+python /path/to/toolpass/toolpass-py/examples/mcp_server.py -http 8000   # the user from the header
 claude mcp add toolpass -e AGENT_USER=dana@example.com \
-  -- python /path/to/toolpass/toolpass-py/examples/mcp_server.py
+  -- python /path/to/toolpass/toolpass-py/examples/mcp_server.py        # stdio, the user from AGENT_USER
 ```
 
 The example runs the engine in-process on the `demo` connection. With real credentials, do not run

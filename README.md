@@ -69,6 +69,9 @@ and toolpass writes down exactly which permissions it needs, from whom; hand tha
 `configure(entitlements=...)` and the tool is held to it. A tool can still declare what it does
 (`effect`, `scope`, `credential`) and the two compose; `as_tool=` hands any framework a
 real tool with the checks inside. [The guide](docs/guides/intercepted-actions.md) has the details.
+An MCP server gets the user the same way: the agent sends it in the `X-Toolpass-User` header, and
+`session_from_header` on the server's HTTP app opens the session for each request
+([the agent guide](docs/guides/agent-tools.md)).
 
 ## What it stops
 

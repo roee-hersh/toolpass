@@ -29,10 +29,9 @@ classifiers = [
 # GitHub App, Google service accounts, Snowflake key pair, Salesforce JWT,
 # Microsoft 365 certificates.
 crypto = ["cryptography>=42"]
-# Agent framework adapters: toolpass.strands, toolpass.langchain, toolpass.mcp, ...
+# Agent framework adapters: toolpass.strands, toolpass.langchain, toolpass.openai_agents, ...
 strands = ["strands-agents>=1.57.1"]
 langchain = ["langchain>=1.4", "langgraph>=1.2"]
-mcp = ["mcp>=2.1"]
 openai-agents = ["openai-agents>=0.22"]
 claude-agent-sdk = ["claude-agent-sdk>=0.2.160"]
 google-adk = ["google-adk>=2.10"]
@@ -82,13 +81,13 @@ warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 # The framework adapters import their framework, an optional extra.
-module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "mcp.*", "mcp_types.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*"]
+module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # Without the framework installed its base classes are Any; the adapters
 # subclass them on purpose.
-module = ["toolpass.strands", "toolpass.langchain", "toolpass.mcp", "toolpass.openai_agents", "toolpass.claude_agent_sdk", "toolpass.google_adk", "toolpass.pydantic_ai", "toolpass.crewai", "toolpass.llamaindex"]
+module = ["toolpass.strands", "toolpass.langchain", "toolpass.openai_agents", "toolpass.claude_agent_sdk", "toolpass.google_adk", "toolpass.pydantic_ai", "toolpass.crewai", "toolpass.llamaindex"]
 disallow_subclassing_any = false
 warn_return_any = false
 

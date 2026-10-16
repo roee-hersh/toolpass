@@ -9,15 +9,18 @@ model, how many calls each tool and each effect made.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars
+import hmac
 import threading
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
+from typing import Any
 
 from toolpass._untrusted import DEFAULT_CAPACITY, DEFAULT_NGRAM, UntrustedText
 
-_current: contextvars.ContextVar[Session] = contextvars.ContextVar("toolpass_session")
+_current: contextvars.ContextVar[Session | None] = contextvars.ContextVar("toolpass_session")
 
 
 class Session:
@@ -118,3 +121,147 @@ class Session:
 def current_session() -> Session | None:
     """The session made current with ``Session.active()``, or None."""
     return _current.get(None)
+
+
+USER_HEADER = "X-Toolpass-User"
+GROUPS_HEADER = "X-Toolpass-Groups"
+SESSION_HEADER = "X-Toolpass-Session"
+KEY_HEADER = "X-Toolpass-Key"
+_REMEMBERED = 4096  # MCP sessions a wrapper keeps a Session for; the least recently used goes first
+
+_Scope = MutableMapping[str, Any]
+_Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
+_Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+_ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
+_SessionKey = tuple[str, tuple[str, ...] | None, bytes]
+
+
+def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
+    """Run each request of an ASGI app under a ``Session`` for the user the
+    agent names in the ``X-Toolpass-User`` header.
+
+    For an MCP server over Streamable HTTP, wrap the server's app::
+
+        app = session_from_header(mcp.streamable_http_app())   # then uvicorn.run(app, ...)
+
+    The agent that calls the server sets the header to the user it
+    authenticated (an SSO session, the Slack user who wrote the message),
+    once, on its MCP client; ``X-Toolpass-Groups``, comma-separated, names
+    the user's groups for the systems that grant by group. Every
+    ``secured_tool`` the server runs then checks that user. The requests of
+    one conversation share one ``Session``, so its limits, its
+    untrusted-input check and its exfiltration guard hold across the tool
+    calls of the conversation: the agent names the conversation in
+    ``X-Toolpass-Session`` (its own chat or thread id), or else the MCP
+    session (the ``Mcp-Session-Id`` header, which a sessionless client does
+    not have) is the conversation. The ``Session`` ends with the MCP session
+    (its DELETE) or when the wrapper has 4096 newer ones; a request naming
+    neither gets a ``Session`` of its own.
+
+    A request without the user header runs under no session at all, even
+    when the process made one current, so a secured tool refuses it
+    (``no_session``). A request with an empty or doubled header is refused
+    with 400.
+
+    Whoever can reach the server can set the header. On a private network
+    (localhost, the agent's own pod, a network only the agent can reach) that
+    is the agent. A server reachable by others takes ``key``: a secret the
+    agent sends in ``X-Toolpass-Key`` on every request, and a request without
+    it is refused with 403 before anything runs. A websocket connection is
+    held to the same headers (refused with a close code 4403 or 4400). A
+    server whose callers authenticate themselves (the SDK's token auth) takes
+    the user from that, not from this header: here the header would win.
+    """
+
+    remembered: collections.OrderedDict[_SessionKey, Session] = collections.OrderedDict()
+    lock = threading.Lock()
+
+    def session_for(user: str, groups: tuple[str, ...] | None, sid: bytes | None) -> Session:
+        if sid is None:
+            return Session(user, groups=groups)
+        k = (user, groups, sid)
+        with lock:
+            session = remembered.get(k)
+            if session is None:
+                session = remembered[k] = Session(user, groups=groups)
+                while len(remembered) > _REMEMBERED:
+                    remembered.popitem(last=False)
+            else:
+                remembered.move_to_end(k)
+            return session
+
+    async def wrapped(scope: _Scope, receive: _Receive, send: _Send) -> None:
+        kind = scope.get("type")
+        if kind not in ("http", "websocket"):
+            await app(scope, receive, send)
+            return
+        headers = list(scope.get("headers", ()))
+
+        def values(name: bytes) -> list[bytes]:
+            return [v for k, v in headers if k == name]
+
+        async def refuse(status: int, text: str) -> None:
+            if kind == "http":
+                await _respond(send, status, text)
+            else:
+                await send({"type": "websocket.close", "code": 4000 + status, "reason": text})
+
+        keys = values(b"x-toolpass-key")
+        if key is not None and not (len(keys) == 1 and hmac.compare_digest(keys[0], key.encode())):
+            await refuse(403, "toolpass: this server needs the X-Toolpass-Key header, and this request's is missing or wrong")
+            return
+        users = values(b"x-toolpass-user")
+        if not users:
+            # Under no session: one the process made current must not serve a request that names nobody.
+            token = _current.set(None)
+            try:
+                await app(scope, receive, send)
+            finally:
+                _current.reset(token)
+            return
+        if len(users) > 1:
+            await refuse(400, "toolpass: the request carries more than one X-Toolpass-User header")
+            return
+        user = _text(users[0])
+        if not user:
+            await refuse(400, "toolpass: the X-Toolpass-User header is empty")
+            return
+        group_headers = values(b"x-toolpass-groups")
+        if len(group_headers) > 1:
+            await refuse(400, "toolpass: the request carries more than one X-Toolpass-Groups header")
+            return
+        groups = tuple(g.strip() for g in _text(group_headers[0]).split(",") if g.strip()) if group_headers else None
+        named, mcp = values(b"x-toolpass-session"), values(b"mcp-session-id")
+        if len(named) > 1:
+            await refuse(400, "toolpass: the request carries more than one X-Toolpass-Session header")
+            return
+        sid = b"named:" + named[0] if named and named[0].strip() else b"mcp:" + mcp[0] if len(mcp) == 1 else None
+        session = session_for(user, groups, sid)
+        try:
+            with session.active():
+                await app(scope, receive, send)
+        finally:
+            if sid is not None and not named and kind == "http" and scope.get("method") == "DELETE":
+                with lock:
+                    remembered.pop((user, groups, sid), None)
+
+    return wrapped
+
+
+def _text(value: bytes) -> str:
+    try:
+        return value.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return ""
+
+
+async def _respond(send: _Send, status: int, text: str) -> None:
+    body = text.encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [(b"content-type", b"text/plain; charset=utf-8"), (b"content-length", str(len(body)).encode())],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})

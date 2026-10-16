@@ -95,7 +95,7 @@ jobs:
         include:
           - {extra: strands, test: strands, live: "strands-agents[anthropic]"}
           - {extra: langchain, test: langchain, live: "langchain-anthropic"}
-          - {extra: mcp, test: mcp, live: "anthropic uvicorn"}
+          - {extra: crypto, test: mcp, live: "", deps: "mcp"}  # no adapter and no extra: secured tools in an MCP server
           - {extra: openai-agents, test: openai_agents, live: ""}
           - {extra: claude-agent-sdk, test: claude_agent_sdk, live: ""}
           - {extra: google-adk, test: google_adk, live: "anthropic"}
@@ -108,7 +108,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: docker pull hashicorp/vault:1.17
-      - run: python -m pip install --quiet -e "./toolpass-py[crypto,${{ matrix.extra }}]" ${{ matrix.live }} pytest pytest-timeout hypothesis
+      - run: python -m pip install --quiet -e "./toolpass-py[crypto,${{ matrix.extra }}]" ${{ matrix.deps }} ${{ matrix.live }} pytest pytest-timeout hypothesis
       - working-directory: toolpass-py
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
