@@ -96,7 +96,7 @@ the call of its session that was running when it ran; when several were (paralle
 one of the same tool, paired in the order they were sent. A server whose tools are not secured
 tools shows the MCP call only.
 
-GitHub, Slack, Jira, Linear and Kubernetes have route tables today; a request to another
+GitHub, Slack, Jira, Confluence, Zendesk, Linear and Kubernetes have route tables today; a request to another
 integration's connection is recorded by host, without an action.
 
 ### See it with five systems

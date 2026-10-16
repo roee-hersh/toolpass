@@ -225,8 +225,8 @@ has the details; `toolpass routes github` prints what toolpass understands of an
 
 - **The hook sees HTTP from the libraries it patches** (urllib3 and everything on it, the standard
   library, httpx, aiohttp), in the thread or task the body runs in. gRPC, a custom httpx transport
-  and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub, Slack, Jira, Linear and Kubernetes have route
-  tables today; a request to another integration is placed by host but not mapped to an action.
+  and a thread an SDK starts (boto3's managed transfers) are not seen. GitHub, Slack, Jira, Confluence, Zendesk, Linear and
+  Kubernetes have route tables today; a request to another integration is placed by host but not mapped to an action.
 - **The untrusted-input check matches words, not meaning.** A model that paraphrases injected text,
   or an argument shorter than six words, is not caught. The exfiltration guard catches a
   paraphrase only when the session also read private data and the tool sends data out; otherwise

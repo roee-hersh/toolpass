@@ -101,6 +101,34 @@ An action on the wrong resource type is `invalid_request`.
 | no `identity_connection` | unknown (`unsupported`) |
 | 401, 429, 5xx, timeout | unknown (`credential_rejected`, `upstream_rate_limited`, `upstream_error`, `upstream_timeout`) |
 
+## Route table
+
+What a secured tool's request to the site means (`toolpass routes confluence` prints the table):
+
+| Request | Action, resource |
+|---|---|
+| `GET`, `PUT`, `DELETE /wiki/api/v2/pages/{id}` (and `/title`, `/properties`, `/classification-level`) | `page.read`, `page.update`, `page.delete` on `page:{id}` |
+| the same under `/wiki/api/v2/blogposts/{id}` | `blogpost.read`, `blogpost.update`, `blogpost.delete` on `blogpost:{id}` |
+| `POST /wiki/rest/api/content` with `type` `page` or `blogpost` and `space.key` | `page.create` or `blogpost.create` on `space:{key}` |
+| `GET /wiki/rest/api/content/{id}` and below | `page.read` on `page:{id}` (v1 does not say the type; the check is on the content id) |
+| `GET /wiki/rest/api/space/{key}` and below | `space.read` on `space:{key}` |
+| `PUT`, `DELETE /wiki/rest/api/space/{key}`, its labels, permissions, settings and theme | `space.admin` on `space:{key}` |
+| CQL search, `GET /wiki/rest/api/user/current` | no check (the agent's own access) |
+
+Refused, so the tool stops there:
+
+- an update with `parentId` or `ownerId` (a move or a hand-over), a body whose `id` is another
+  page's, and a delete with `purge`;
+- every v2 create and `/wiki/api/v2/spaces/{id}`: they name the space by numeric id and toolpass
+  checks spaces by key; create through `POST /wiki/rest/api/content` with `space.key` instead;
+- a v1 create under a parent page (`ancestors`), or naming `space.id`, a container or
+  restrictions: the parent's restrictions would need a second check;
+- v1 writes to content by id (`PUT /wiki/rest/api/content/{id}`, labels, versions): v1 does not
+  say whether the id is a page or a blog post;
+- comments, attachments, restrictions, folders, whiteboards, databases, tasks and the other
+  content types: the integration has no action or resource for them;
+- a body that is not one JSON object sent as `application/json`, or that names a member twice.
+
 ## Probe
 
 `GET /wiki/rest/api/user/current` proves the credential. The probe warns when `identity_connection`
