@@ -63,6 +63,8 @@ ROUTING = [
     ("GET", "/api/v1/monitor/search", None, "raw:monitors_read", "org", "read"),
     ("POST", "/api/v1/monitor/validate", {}, "raw:monitors_read", "org", "read"),
     ("PATCH", "/api/v2/monitor/policy/p1", {}, "raw:monitor_config_policy_write", "org", "write"),
+    # A read: on the org, not as a change to the monitor.
+    ("GET", "/api/v2/monitor/123/downtime_matches", None, "raw:monitors_downtime", "org", "read"),
     # Downtimes.
     ("POST", "/api/v1/downtime", {"monitor_id": 123, "scope": ["*"]}, "monitor.mute", "monitor:123", "write"),
     ("POST", "/api/v1/downtime", {"scope": ["env:prod"]}, "raw:monitors_downtime", "org", "write"),
@@ -114,12 +116,24 @@ ROUTING = [
     ("POST", "/api/v1/logs-queries/list", {}, "logs.read", "org", "read"),
     ("POST", "/api/v2/query/timeseries", {}, "raw:timeseries_query", "org", "read"),
     ("GET", "/api/v1/events", None, "raw:events_read", "org", "read"),
+    ("GET", "/api/v2/logs/archive_searches/as-1", None, "logs.read", "org", "read"),
+    ("GET", "/api/v2/trace/abc123", None, "raw:apm_read", "org", "read"),
+    ("GET", "/api/v2/pruned_trace/abc123", None, "raw:apm_read", "org", "read"),
     # Users, roles, keys.
     ("POST", "/api/v2/users", {"data": {"type": "users", "attributes": {"email": "a@b.c"}}}, "raw:user_access_invite", "org", "write"),
     ("PATCH", "/api/v2/users/u-1", {}, "users.manage", "org", "write"),
     ("POST", "/api/v2/roles/r-1/users", {}, "users.manage", "org", "write"),
     ("DELETE", "/api/v2/roles/r-1", None, "users.manage", "org", "destructive"),
     ("POST", "/api/v2/api_keys", {}, "apikeys.manage", "org", "write"),
+    # Reads that return the keys themselves.
+    ("GET", "/api/v1/api_key", None, "raw:api_keys_read", "org", "read"),
+    ("GET", "/api/v1/api_key/abc", None, "raw:api_keys_read", "org", "read"),
+    ("GET", "/api/v2/api_keys", None, "raw:api_keys_read", "org", "read"),
+    ("GET", "/api/v2/api_keys/k-1", None, "raw:api_keys_read", "org", "read"),
+    ("GET", "/api/v1/application_key", None, "raw:org_app_keys_read", "org", "read"),
+    ("GET", "/api/v1/application_key/k-1", None, "raw:org_app_keys_read", "org", "read"),
+    ("GET", "/api/v2/application_keys", None, "raw:org_app_keys_read", "org", "read"),
+    ("GET", "/api/v2/application_keys/k-1", None, "raw:org_app_keys_read", "org", "read"),
     ("DELETE", "/api/v2/api_keys/k-1", None, "raw:api_keys_delete", "org", "destructive"),
     ("DELETE", "/api/v1/application_key/k-1", None, "raw:org_app_keys_write", "org", "destructive"),
     ("POST", "/api/v2/service_accounts", {"data": {"type": "users", "attributes": {"email": "sa@b.c"}}}, "raw:service_account_write", "org", "write"),
@@ -198,6 +212,20 @@ def test_bodies_are_read_strictly():
     assert "not valid JSON" in unresolved("POST", "/api/v1/downtime", b'{"monitor_id": ')
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("PATCH", "/api/v2/service_accounts/../application_keys/x"),
+        ("PATCH", "/api/v2/service_accounts/sa/%2e%2e/application_keys/x"),
+        ("GET", "/api/v1/monitor/123/%2E"),
+        ("DELETE", "/api/v1/monitor/./123"),
+    ],
+)
+def test_dot_segments_are_not_routed(method, path):
+    o = ROUTES.match(req(method, path, {}))
+    assert o is not None and o.route is None and o.unresolved is not None and ". or .." in o.unresolved
+
+
 def test_writes_left_out():
     for method, path in (
         ("PUT", "/api/v1/synthetics/tests/api/abc"),  # restriction policies not read
@@ -258,6 +286,13 @@ def test_routed_resources_through_the_check():
         assert decide(dana, "DELETE", "/api/v2/users/u-1") == Code.DENIED
         assert decide(root, "DELETE", "/api/v2/users/u-1") == Code.ALLOWED
         assert decide(root, "POST", "/api/v2/api_keys", {}) == Code.ALLOWED
+        # Reading keys returns them: the read permission, which Read Only lacks.
+        assert decide(dana, "GET", "/api/v1/api_key") == Code.ALLOWED
+        assert decide(bob, "GET", "/api/v1/api_key") == Code.DENIED
+        assert decide(bob, "GET", "/api/v2/application_keys/k-1") == Code.DENIED
+        # Monitor 2 is restricted to a role dana lacks; reading its downtime matches is not a change to it.
+        assert decide(dana, "GET", "/api/v2/monitor/2/downtime_matches") == Code.ALLOWED
+        assert decide(bob, "GET", "/api/v2/monitor/1/downtime_matches") == Code.DENIED  # no monitors_downtime
     finally:
         srv.close()
     assert not f.errors, f.errors

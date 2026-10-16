@@ -25,9 +25,9 @@ from toolpass.integrations.pagerduty.routes import ROUTES
 JSON = "application/json"
 
 
-def req(method: str, path: str, body: Any = None, ct: str = JSON, headers: dict[str, str] | None = None) -> Request:
+def req(method: str, path: str, body: Any = None, ct: str = JSON, headers: dict[str, str] | None = None, host: str = "api.pagerduty.com") -> Request:
     data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
-    return Request("https", "api.pagerduty.com", 443, method, path, "", {"content-type": ct, **(headers or {})}, data)
+    return Request("https", host, 443, method, path, "", {"content-type": ct, **(headers or {})}, data)
 
 
 def ref(i: str, typ: str = "team_reference") -> dict[str, str]:
@@ -132,6 +132,8 @@ ROUTING = [
     ("PUT", "/schedules/PSCH1", {"schedule": {"type": "schedule", "time_zone": "UTC"}}, "schedule.edit", "schedule:PSCH1", "write"),
     ("POST", "/schedules/PSCH1/overrides", {"overrides": []}, "schedule.override", "schedule:PSCH1", "write"),
     ("DELETE", "/schedules/PSCH1/overrides/POV1", None, "schedule.override", "schedule:PSCH1", "destructive"),
+    ("PUT", "/v3/schedules/PSCH1", {"schedule": {"name": "x", "time_zone": "UTC"}}, "schedule.edit", "schedule:PSCH1", "write"),
+    ("DELETE", "/v3/schedules/PSCH1", None, "schedule.edit", "schedule:PSCH1", "destructive"),
     ("PUT", "/v3/schedules/PSCH1/rotations/PR1/events/PE1", {}, "schedule.edit", "schedule:PSCH1", "write"),
     ("POST", "/v3/schedules/PSCH1/overrides", {}, "schedule.override", "schedule:PSCH1", "write"),
     ("PUT", "/teams/PTEAM1/users/PU1", {"role": "manager"}, "team.manage", "team:PTEAM1", "write"),
@@ -213,6 +215,9 @@ def unresolved(method: str, path: str, body: Any, ct: str = JSON, headers: dict[
             "between teams",
         ),
         ("PUT", "/schedules/PSCH1", {"schedule": {"type": "schedule", "teams": [ref("PTEAM2")]}}, "between teams"),
+        ("PUT", "/v3/schedules/PSCH1", {"schedule": {"time_zone": "UTC", "teams": [ref("POTHER")]}}, "between teams"),
+        ("PUT", "/v3/schedules/PSCH1", {"schedule": {"id": "PSCH2", "time_zone": "UTC"}}, "not the one in the path"),
+        ("PUT", "/v3/schedules/PSCH1", {"time_zone": "UTC"}, "one object under 'schedule'"),
         ("POST", "/services", {"service": {"type": "service", "escalation_policy": ref("PEP1"), "teams": [ref("PTEAM1")]}}, "teams"),
         ("POST", "/services", {"service": {"type": "service"}}, "escalation_policy"),
         ("POST", "/escalation_policies", {"escalation_policy": {"type": "escalation_policy", "teams": [ref("PTEAM1"), ref("PTEAM2")]}}, "exactly one"),
@@ -236,17 +241,55 @@ def test_bodies_are_read_strictly():
     assert "no body" in unresolved("PUT", "/incidents/PINC1", None)
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("DELETE", "/schedules/PSCHED1/overrides/%2e%2e"),
+        ("PUT", "/incidents/PINC1/../PINC2"),
+        ("PUT", "/services/PSVC1/%2E"),
+        ("PUT", "/v3/schedules/./PSCH1"),
+    ],
+)
+def test_dot_segments_are_not_routed(method, path):
+    o = ROUTES.match(req(method, path, {}))
+    assert o is not None and o.route is None and o.unresolved is not None and ". or .." in o.unresolved
+
+
 def test_writes_without_an_action_are_left_out():
     for method, path in (("POST", "/incidents"), ("POST", "/incidents/PINC1/notes"), ("PUT", "/incidents/PINC1/merge"), ("PUT", "/session_configurations")):
         assert ROUTES.match(req(method, path, {})) is None, path
         assert ROUTES.is_unrouted(method, path) is not None, path
 
 
+EVENTS_HOSTS = [("events.pagerduty.com", ""), ("events.eu.pagerduty.com", "")]
+
+
 def test_endpoint_from_the_url_setting():
-    s = type("S", (), {"get": lambda self, k: ""})()
-    assert ROUTES.endpoints(s) == [("api.pagerduty.com", "")]
-    s = type("S", (), {"get": lambda self, k: "https://api.eu.pagerduty.com"})()
-    assert ROUTES.endpoints(s) == [("api.eu.pagerduty.com", "")]
+    def settings(url: str) -> Any:
+        return type("S", (), {"get": lambda self, k: url})()
+
+    assert ROUTES.endpoints(settings("")) == [("api.pagerduty.com", ""), *EVENTS_HOSTS]
+    assert ROUTES.endpoints(settings("https://api.eu.pagerduty.com")) == [("api.eu.pagerduty.com", ""), *EVENTS_HOSTS]
+    assert ROUTES.endpoints(settings("https://pd-proxy.example.com/pd")) == [("pd-proxy.example.com", "/pd")]
+
+
+@pytest.mark.parametrize("host", ["events.pagerduty.com", "events.eu.pagerduty.com"])
+@pytest.mark.parametrize(
+    "path",
+    ["/v2/enqueue", "/v2/change/enqueue", "/integration/0123456789abcdef0123456789abcdef/enqueue", "/generic/2010-04-15/create_event.json"],
+)
+def test_events_api_is_located_and_refused(host, path):
+    """The Events API resolves and acknowledges incidents with a routing key
+    alone: its host is the connection's, so the write is refused as unrouted
+    rather than passing as an unknown host."""
+    from toolpass._wire import Connections
+
+    conns = Connections.from_mappings([{"id": "pd", "integration": "pagerduty"}])
+    body = {"routing_key": "0123456789abcdef0123456789abcdef", "event_action": "resolve", "dedup_key": "x"}
+    hit = conns.resolve(req("POST", path, body, host=host))
+    assert hit is not None and hit[0].id == "pd"
+    assert ROUTES.match(req("POST", path, body, host=host), hit[1]) is None
+    assert ROUTES.is_unrouted("POST", path) is not None
 
 
 def test_routed_resources_through_the_check():

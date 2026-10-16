@@ -21,7 +21,9 @@ PagerDuty's own, only stricter for the roles that may do part of it.
 
 The integration has no read actions: reads are allowed and marked
 untrusted. Writes no action expresses (creating an incident, notes, status
-updates, merges) and the account's security settings are left out.
+updates, merges) and the account's security settings are left out, as is the
+Events API (events.pagerduty.com), which acts on incidents with a routing
+key alone.
 """
 
 from __future__ import annotations
@@ -328,6 +330,7 @@ def _routes() -> list[Route]:
         Route("POST", "/schedules/{id}/overrides", "schedule.override", _SCHEDULE, body=_ids("id")),
         Route("DELETE", "/schedules/{id}/overrides/{override_id}", "schedule.override", _SCHEDULE, body=_ids("id")),
         Route("POST", "/v3/schedules", "team.manage", "{target}", body=_create_in_team("schedule")),
+        Route("PUT", "/v3/schedules/{id}", "schedule.edit", _SCHEDULE, body=_update("schedule", "teams")),
         Route("POST", "/{entity_type}/{id}/change_tags", "account.admin", "{target}", body=g(_change_tags)),
         # Teams.
         Route("PUT", "/teams/{id}", "team.manage", _TEAM, body=_ids("id")),
@@ -383,7 +386,6 @@ def _routes() -> list[Route]:
         out.append(Route(method, path, "service.edit", "service:{service_id}", body=_ids("service_id")))
     # A schedule's layers in the v3 API.
     for method, path, action in (
-        ("PUT", "/v3/schedules/{id}", "schedule.edit"),
         ("DELETE", "/v3/schedules/{id}", "schedule.edit"),
         ("POST", "/v3/schedules/{id}/custom_shifts", "schedule.edit"),
         ("PUT", "/v3/schedules/{id}/custom_shifts/{custom_shift_id}", "schedule.edit"),
@@ -573,17 +575,30 @@ _ACCOUNT_WRITES: tuple[tuple[str, str, bool], ...] = (
 )
 
 
+# The Events API hosts. A routing key alone triggers, acknowledges and
+# resolves incidents there, so its writes are located and refused.
+_EVENTS_HOSTS = ("events.pagerduty.com", "events.eu.pagerduty.com")
+_API_HOSTS = (DEFAULT_HOST, "api.eu.pagerduty.com")
+
+
 def _locate(settings: Any) -> Sequence[tuple[str, str]]:
-    """The connection's ``url``, by default https://api.pagerduty.com."""
+    """The connection's ``url``, by default https://api.pagerduty.com, and,
+    for PagerDuty's own API hosts, the Events API hosts."""
     get = getattr(settings, "get", None)
-    url = get("url") if callable(get) else ""
-    if not url:
-        return [(DEFAULT_HOST, "")]
+    url = (get("url") if callable(get) else "") or "https://" + DEFAULT_HOST
     ep = endpoint_of_url(url)
-    return [ep] if ep is not None else []
+    if ep is None:
+        return []
+    out = [ep]
+    if ep[0].lower() in _API_HOSTS:
+        out += [(h, "") for h in _EVENTS_HOSTS]
+    return out
 
 
 _NO_ACTION = "the pagerduty integration has no action for this; it is refused until one exists"
+_EVENTS = (
+    "the Events API (served on events.pagerduty.com) triggers, acknowledges and resolves incidents with a routing key alone; no user permission governs it"
+)
 
 ROUTES = RouteTable(
     "pagerduty",
@@ -606,6 +621,13 @@ ROUTES = RouteTable(
         ("PUT", "/session_configurations"): "the account's security settings are left to the account owner",
         ("DELETE", "/session_configurations"): "the account's security settings are left to the account owner",
         ("DELETE", "/oauth_delegations"): "revoking users' OAuth sessions is left to the account owner",
+        # The Events API: v2 events and change events, the v1 generic and integration endpoints.
+        ("*", "/v2/enqueue"): _EVENTS,
+        ("*", "/v2/change/enqueue"): _EVENTS,
+        ("*", "/integration"): _EVENTS,
+        ("*", "/integration/**"): _EVENTS,
+        ("*", "/generic"): _EVENTS,
+        ("*", "/generic/**"): _EVENTS,
     },
     locate=_locate,
 )

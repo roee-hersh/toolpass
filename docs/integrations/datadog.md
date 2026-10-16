@@ -115,8 +115,10 @@ its logs intake host, from `url`) to these actions; `toolpass routes datadog` pr
 | creating or listing them | the permission on `org` (`raw:monitors_write`, `raw:dashboards_read`) |
 | a restriction policy of one of those assets | the asset's edit action (changes) or read action |
 | a downtime naming a monitor (v1 `monitor_id`, v2 `monitor_identifier.monitor_id`) | `monitor.mute` on the monitor |
-| a downtime by scope or monitor tags, or changing or cancelling one by id | `raw:monitors_downtime` on `org` |
-| searching or aggregating logs | `logs.read` |
+| a downtime by scope or monitor tags, or changing or cancelling one by id; the downtimes matching a monitor (`GET /api/v2/monitor/{id}/downtime_matches`) | `raw:monitors_downtime` on `org` |
+| searching or aggregating logs; an archive search's results | `logs.read` |
+| reading API keys or any user's application keys, which returns the keys | `raw:api_keys_read` or `raw:org_app_keys_read` on `org` |
+| searching spans; reading a trace (`/api/v2/trace/{id}`, `/api/v2/pruned_trace/{id}`) | `raw:apm_read` on `org` |
 | users, roles, API and application keys, service accounts, logs and metrics configuration, metric and event queries | the one permission the API description names for the operation, as `raw:<permission>` on `org` (`users.manage` and `apikeys.manage` where they are that permission) |
 
 Refused: a body that names a second asset (an `id` or `data.id` other than the path's, more than one

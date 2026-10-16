@@ -108,8 +108,9 @@ Only the numeric error code is read from an error body; messages are never copie
 
 ## Routes
 
-The secure-tools toolkit maps a tool's requests to the API (`url`, by default `api.pagerduty.com`) to
-these actions; `toolpass routes pagerduty` prints the table.
+The secure-tools toolkit maps a tool's requests to the API (`url`, by default `api.pagerduty.com`,
+and, for `api.pagerduty.com` or `api.eu.pagerduty.com`, the Events API hosts `events.pagerduty.com`
+and `events.eu.pagerduty.com`) to these actions; `toolpass routes pagerduty` prints the table.
 
 | Requests | Action and resource |
 |---|---|
@@ -129,9 +130,11 @@ it), only stricter for roles that may do part of it.
 Refused: an incident update that does two of acknowledge, resolve and reassign, or changes anything
 else (title, priority, urgency, service, type); moving an alert to another incident; bodies that
 move objects between teams (a service's `escalation_policy`, an escalation policy's `services`, any
-`teams` on an update) or name several services or teams; creating incidents, notes, status updates,
-merges, incident field values and business service impact, for which the integration has no action;
-and the account's IP allow lists, session settings and OAuth delegations. Bodies are read as
+`teams` on an update, v1 or v3) or name several services or teams; creating incidents, notes,
+status updates, merges, incident field values and business service impact, for which the
+integration has no action; the account's IP allow lists, session settings and OAuth delegations;
+and the Events API (`/v2/enqueue`, `/v2/change/enqueue`, `/integration/...`, `/generic/...`), which
+triggers, acknowledges and resolves incidents with a routing key alone. Bodies are read as
 `application/json` only; a duplicated member or a compressed body is refused. Reads are allowed and
 marked untrusted: the integration has no read actions.
 

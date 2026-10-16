@@ -8,7 +8,8 @@ downtime that names a monitor is ``monitor.mute`` on it; one by scope or by
 monitor tags is ``raw:monitors_downtime`` on the org. Users, roles, keys,
 logs and metrics configuration map to the one permission Datadog's API
 description names for the operation, as ``raw:<permission>`` on the org;
-reading log data is ``logs.read``.
+reading log data is ``logs.read``. Reading API and application keys, which
+returns the keys, is ``raw:api_keys_read`` and ``raw:org_app_keys_read``.
 
 Refused: writes to the other assets that carry restriction policies the
 integration does not read (synthetic tests, security rules, workflows,
@@ -250,7 +251,9 @@ def _routes() -> list[Route]:
         Route("POST", "/api/v1/monitor/validate", _raw("monitors_read"), _ORG, effect="read", description="validates a definition; nothing is saved"),
         Route("GET", "/api/v1/monitor/{monitor_id}/downtimes", "monitor.read", "monitor:{monitor_id}", body=_path_id("monitor_id")),
         Route("POST", "/api/v1/monitor/{monitor_id}/validate", "monitor.read", "monitor:{monitor_id}", effect="read", body=_path_id("monitor_id")),
-        Route("GET", "/api/v2/monitor/{monitor_id}/downtime_matches", _raw("monitors_downtime"), "monitor:{monitor_id}", body=_path_id("monitor_id")),
+        # A read: the permission is checked on the org, as the other downtime reads,
+        # since monitors_downtime on a monitor would be checked as a change to it.
+        Route("GET", "/api/v2/monitor/{monitor_id}/downtime_matches", _raw("monitors_downtime"), _ORG, body=_path_id("monitor_id")),
     ]
     # Downtimes: on one monitor, monitor.mute on it; by scope, the permission on the org.
     out += [
@@ -332,6 +335,7 @@ def _routes() -> list[Route]:
     # Reading data.
     out += [
         Route("POST", "/api/v1/logs-queries/list", "logs.read", _ORG, effect="read"),
+        Route("GET", "/api/v2/logs/archive_searches/{archive_search_id}", "logs.read", _ORG, description="an archive search's logs"),
         Route("GET", "/api/v2/logs/events", "logs.read", _ORG),
         Route("POST", "/api/v2/logs/events/search", "logs.read", _ORG, effect="read"),
         Route("POST", "/api/v2/logs/analytics/aggregate", "logs.read", _ORG, effect="read"),
@@ -346,6 +350,8 @@ def _routes() -> list[Route]:
         Route("POST", "/api/v2/spans/analytics/aggregate", _raw("apm_read"), _ORG, effect="read"),
         Route("GET", "/api/v2/spans/events", _raw("apm_read"), _ORG),
         Route("POST", "/api/v2/spans/events/search", _raw("apm_read"), _ORG, effect="read"),
+        Route("GET", "/api/v2/trace/{trace_id}", _raw("apm_read"), _ORG),
+        Route("GET", "/api/v2/pruned_trace/{trace_id}", _raw("apm_read"), _ORG),
     ]
     # Users, roles and keys.
     um = "users.manage"
@@ -368,6 +374,15 @@ def _routes() -> list[Route]:
         Route("POST", "/api/v2/authn_mappings", um, _ORG),
         Route("PATCH", "/api/v2/authn_mappings/{authn_mapping_id}", um, _ORG),
         Route("DELETE", "/api/v2/authn_mappings/{authn_mapping_id}", um, _ORG),
+        # Reading keys returns the secrets themselves (v1 lists every key in full).
+        Route("GET", "/api/v1/api_key", _raw("api_keys_read"), _ORG),
+        Route("GET", "/api/v1/api_key/{key}", _raw("api_keys_read"), _ORG),
+        Route("GET", "/api/v2/api_keys", _raw("api_keys_read"), _ORG),
+        Route("GET", "/api/v2/api_keys/{api_key_id}", _raw("api_keys_read"), _ORG),
+        Route("GET", "/api/v1/application_key", _raw("org_app_keys_read"), _ORG),
+        Route("GET", "/api/v1/application_key/{key}", _raw("org_app_keys_read"), _ORG),
+        Route("GET", "/api/v2/application_keys", _raw("org_app_keys_read"), _ORG),
+        Route("GET", "/api/v2/application_keys/{app_key_id}", _raw("org_app_keys_read"), _ORG),
         Route("POST", "/api/v1/api_key", "apikeys.manage", _ORG),
         Route("PUT", "/api/v1/api_key/{key}", "apikeys.manage", _ORG),
         Route("DELETE", "/api/v1/api_key/{key}", _raw("api_keys_delete"), _ORG),
