@@ -50,6 +50,7 @@ from toolpass.core.integration import (
     connection_ref_field,
 )
 from toolpass.core.integration import _go_url_parse as go_url_parse
+from toolpass.core.routes import RouteTable
 from toolpass.integrations.confluence.actions import ACTION_LIST, ACTIONS, ConfluenceAction, ConfluenceResource, ResKind, parse_resource
 from toolpass.integrations.jira import JiraConnection, Site, new_site, site_fields
 from toolpass.net import httpx
@@ -81,6 +82,11 @@ class Confluence(Integration):
 
     def actions(self) -> list[Action]:
         return [Action(name=a.name, description=a.desc) for a in ACTION_LIST]
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.confluence.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         site = new_site(s, d, "confluence")

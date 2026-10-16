@@ -104,6 +104,33 @@ sent by the caller are ignored.
 
 Error bodies are never copied into a decision text.
 
+## Routes
+
+The secure-tools toolkit maps a tool's requests to the API (`api.<site>`, the site's web host and
+its logs intake host, from `url`) to these actions; `toolpass routes datadog` prints the table.
+
+| Requests | Action and resource |
+|---|---|
+| a monitor, dashboard, SLO or notebook by id (`/api/v1/monitor/{id}`, ...) | its read or edit action on the asset (`monitor.edit` on `monitor:123`, `raw:slos_read` on `slo:<id>`), so restriction policies apply |
+| creating or listing them | the permission on `org` (`raw:monitors_write`, `raw:dashboards_read`) |
+| a restriction policy of one of those assets | the asset's edit action (changes) or read action |
+| a downtime naming a monitor (v1 `monitor_id`, v2 `monitor_identifier.monitor_id`) | `monitor.mute` on the monitor |
+| a downtime by scope or monitor tags, or changing or cancelling one by id; the downtimes matching a monitor (`GET /api/v2/monitor/{id}/downtime_matches`) | `raw:monitors_downtime` on `org` |
+| searching or aggregating logs; an archive search's results | `logs.read` |
+| reading API keys or any user's application keys, which returns the keys | `raw:api_keys_read` or `raw:org_app_keys_read` on `org` |
+| searching spans; reading a trace (`/api/v2/trace/{id}`, `/api/v2/pruned_trace/{id}`) | `raw:apm_read` on `org` |
+| users, roles, API and application keys, service accounts, logs and metrics configuration, metric and event queries | the one permission the API description names for the operation, as `raw:<permission>` on `org` (`users.manage` and `apikeys.manage` where they are that permission) |
+
+Refused: a body that names a second asset (an `id` or `data.id` other than the path's, more than one
+dashboard or SLO in a bulk request); creating a user or service account with roles (assign them
+afterwards with `POST /api/v2/roles/{id}/users`); writes to assets whose restriction policies the
+integration does not read (synthetic tests, security rules, workflows, on-call, logs pipelines, ...);
+writes the API description gives no permission for, or several; sharing dashboards outside the org;
+the agent's own application keys and profile (`/api/v2/current_user`); data intake (metrics, events,
+logs), which needs the API key alone; and every other product's writes until a route maps them.
+Bodies are read as `application/json` only; a duplicated member or a compressed body is refused.
+Reads with no route are allowed and marked untrusted.
+
 ## What it cannot see
 
 - Self-elevation: a user with `user_access_manage` can add themselves to any restriction policy.

@@ -147,6 +147,47 @@ is enabled and the policies under `scope` are readable; `UNKNOWN_INFO` warns tha
 `roles/iam.securityReviewer` is missing there. Without `googleworkspace_connection` it warns that an
 unknown email is answered as deny rather than `user_not_found`.
 
+## Requests a secured tool makes
+
+The integration's route table (`toolpass routes googlecloud`) maps the REST requests a secured tool
+sends to Google Cloud to the IAM permission each needs on the resource in its path, so the toolkit
+asks the troubleshooter about the session's user before the request leaves. A request uses the
+named action when one asks exactly that permission (`storage.read`, `secret.read`, `compute.start`,
+`gke.access`, `iam.set`), and `raw:<permission>` otherwise.
+
+| Service (host) | Routed |
+|---|---|
+| Cloud Storage (`storage.googleapis.com`, JSON API) | buckets, objects (also downloads from `/download/storage/v1/...`, the client's and an object's `mediaLink`), IAM policies and ACLs (`setIamPolicy`), uploads that cannot overwrite (`ifGenerationMatch=0`, under `/upload/` or `/resumable/upload/`) |
+| BigQuery (`bigquery.googleapis.com`) | datasets, tables (a new table's schema without column-level security), table data (`tabledata.list`, `insertAll`), table IAM policies |
+| Secret Manager (`secretmanager.googleapis.com`) | secrets, versions (`:access` is `secret.read`), IAM policies |
+| IAM (`iam.googleapis.com`), IAM Credentials (`iamcredentials.googleapis.com`) | service accounts, their keys and IAM policies, custom roles, tokens and signing |
+| Compute Engine (`compute.googleapis.com`) | instances: get, list, start, stop, reset, suspend, resume, labels, delete, IAM policy; operations |
+| Cloud Run (`run.googleapis.com`, v2) | services: get, list, delete, IAM policy |
+| GKE (`container.googleapis.com`) | clusters: get (credentials), list, delete; operations |
+| Resource Manager (`cloudresourcemanager.googleapis.com`) | projects, folders, organizations: get, IAM policies; project create, update, delete |
+
+`setIamPolicy` and ACL changes send out: they share the resource. Refused, because the request needs
+a second permission or a second resource that one check cannot cover: an upload that may overwrite
+an object or sets its ACL, copies, rewrites and composes, BigQuery jobs and queries (SQL names its
+own tables), views and external tables, `insertAll` with `templateSuffix`, dataset access lists,
+`deleteContents`, a table schema that sets `policyTags` or `dataPolicies` (column-level security
+needs `bigquery.tables.setCategory`) and any schema change on an existing table (a column sent
+without its policy tags loses them), batch requests, Cloud Run deploys and Compute changes that run code as a service account
+(`iam.serviceAccounts.actAs`), instance creation, token minting through `delegates`, project moves,
+metadata fields that need a permission of their own (object retention, bucket IP filters), object
+names that contain `?` (a toolpass resource ends its id there, so the object cannot be named), and
+any read on these hosts the table does not know. `X-HTTP-Method-Override` and `useAdminAccess` are
+refused. Query parameters are read in every spelling Google accepts, camelCase or snake_case
+(`delete_contents`, `predefined_acl`, `if_generation_match`) and `$`-prefixed for system parameters;
+one given twice, in one spelling or two, is refused, as are an unknown `$` system parameter, a `$ct`
+Content-Type override on a request with a body, `upload_protocol` and the `X-Goog-Upload-*` headers.
+The same services under `www.googleapis.com` and `content.googleapis.com` (their JSON, upload,
+resumable upload, media download and batch paths) are refused: address the service's own host,
+the client libraries' default. The Policy Troubleshooter itself is not routed: a tool does not ask
+it. Not claimed, so not checked:
+the XML API, virtual-hosted buckets (`<bucket>.storage.googleapis.com`), regional endpoints and
+every other Google Cloud service.
+
 ## What it cannot see
 
 The troubleshooter evaluates IAM allow and deny policies of the resource and its ancestors. It does
@@ -162,6 +203,11 @@ not evaluate:
 - whether the user can actually sign in (a suspended account is only caught with
   `googleworkspace_connection`);
 - resources that do not exist: the answer is `UNKNOWN_INFO`, not deny.
+
+What the request then returns is the agent's view, not the user's. A BigQuery `tabledata.list`
+(`bigquery.read`) is checked as `bigquery.tables.getData` on the table; BigQuery applies the row
+access policies and column policy tags (and data masking) of the identity that sends the request,
+the agent's, so the user can be shown rows and columns their own fine-grained access would hide.
 
 ## Unverified
 
@@ -182,3 +228,7 @@ Unit tests run against one fake server that serves the token endpoint, the metad
 `/v3/iam:troubleshoot`, verifying the JWT assertion, the bearer, the quota header and every request
 against the API's discovery document (`google-policytroubleshooter` in `test/specs/fetch.sh`). There is
 no live test; after configuring, run `toolpass probe` and one check for a user you know is allowed.
+
+`tests/integrations/googlecloud/test_routes.py` maps requests to every routed service, checks that
+each resource parses into the full resource name the troubleshooter is asked about, and covers the
+refusals above.

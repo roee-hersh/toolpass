@@ -52,6 +52,7 @@ from toolpass.core.integration import (
     credential_field,
 )
 from toolpass.core.jsonx import _get as _json_member
+from toolpass.core.routes import RouteTable
 from toolpass.core.template import is_email
 from toolpass.integrations.azure.actions import GUID_RE, Target, catalog_actions, equal_fold, match_action, parse_target
 from toolpass.net import httpx
@@ -109,6 +110,11 @@ class Azure(Integration):
 
     def match_action(self, name: str) -> Action | None:
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.azure.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network."""

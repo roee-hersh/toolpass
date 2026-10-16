@@ -36,6 +36,9 @@ fetch aws-iam           https://raw.githubusercontent.com/boto/botocore/develop/
 fetch aws-sts           https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/sts/2011-06-15/service-2.json
 fetch aws-identitystore https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/identitystore/2020-06-15/service-2.json
 fetch aws-sso-admin     https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/sso-admin/2020-07-20/service-2.json
+fetch aws-s3            https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json
+fetch aws-lambda        https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/lambda/2015-03-31/service-2.json
+fetch aws-secretsmanager https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/secretsmanager/2017-10-17/service-2.json
 fetch msgraph           https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml
 fetch google-drive      https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
 fetch google-directory  'https://admin.googleapis.com/$discovery/rest?version=directory_v1'
@@ -43,6 +46,7 @@ fetch google-calendar   https://www.googleapis.com/discovery/v1/apis/calendar/v3
 fetch google-gmail      'https://gmail.googleapis.com/$discovery/rest?version=v1'
 fetch snowflake-sqlapi  https://raw.githubusercontent.com/snowflakedb/snowflake-rest-api-specs/main/specifications/sqlapi.yaml
 fetch vault             https://raw.githubusercontent.com/hashicorp/vault-client-go/main/openapi.json
+fetch argocd            https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
 AZ=https://raw.githubusercontent.com/Azure/azure-rest-api-specs/master/specification/authorization/resource-manager/Microsoft.Authorization/stable/2022-04-01
 fetch azure-RoleAssignmentsCalls  $AZ/authorization-RoleAssignmentsCalls.json
 fetch azure-RoleDefinitionsCalls  $AZ/authorization-RoleDefinitionsCalls.json

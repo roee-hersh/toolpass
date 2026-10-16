@@ -110,7 +110,8 @@ class Request:
 
     ``path`` is percent-decoded per segment; ``raw_path`` is as sent.
     ``headers`` keys are lowercased. ``body`` is the request body when it
-    was bytes or text, else None (a stream or file is not read)."""
+    was bytes or text, else None; ``streamed`` is True when there was a body
+    the hook could not read (a stream, a file, a form it cannot encode)."""
 
     scheme: str
     host: str
@@ -120,6 +121,7 @@ class Request:
     query: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
     body: bytes | None = None
+    streamed: bool = False
 
     @property
     def path(self) -> str:
@@ -221,6 +223,10 @@ class Request:
     def describe(self) -> str:
         port = "" if self.port in (None, 80, 443) else f":{self.port}"
         return f"{self.method} {self.scheme}://{self.host}{port}{self.raw_path}"
+
+
+# Headers that make a server run another method than the request line's.
+_METHOD_OVERRIDES = ("x-http-method-override", "x-http-method", "x-method-override")
 
 
 def _decode_segment(s: str) -> str:
@@ -369,7 +375,7 @@ Locator = Callable[[Any], Sequence[tuple[str, str]]]
 
 def host_key(host: str, port: int | None, scheme: str = "https") -> str:
     """``host`` or ``host:port`` when the port is not the scheme's default."""
-    host = host.lower().strip("[]")  # an IPv6 literal, with or without the URL's brackets
+    host = host.lower().strip("[]").rstrip(".")  # an IPv6 literal, with or without the URL's brackets; a fully qualified name's dot
     if port is None or (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
         return host
     return f"{host}:{port}"
@@ -492,14 +498,32 @@ class RouteTable:
                 return path[len(p) :] or "/"
         return path
 
+    def _encoded_prefix(self, path: str, prefix: str) -> bool:
+        """True when the raw ``path`` reaches a prefix only once decoded
+        (``/%761/...``, ``/v1%2F...``): the server strips it, so the rest
+        would be checked as a different path than the one it serves."""
+        decoded = urllib.parse.unquote(path)
+        for p in (prefix.rstrip("/"), *self.prefixes):
+            if p and (decoded == p or decoded.startswith(p + "/")) and not (path == p or path.startswith(p + "/")):
+                return True
+        return False
+
     def match(self, request: Request, prefix: str = "") -> Observed | None:
         """The observed action for a request, or None when no route matches.
 
         Matching runs on the raw (still percent-encoded) path, so an encoded
         ``/`` inside one segment stays inside it, as the server reads it;
         the captured variables are decoded afterwards."""
-        path = self.strip(request.raw_path, prefix)
         method = request.method.upper()
+        if self._encoded_prefix(request.raw_path, prefix):
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the path spells its API prefix percent-encoded; it is not routed")
+        if any(h in request.headers for h in _METHOD_OVERRIDES) or "_method" in request.params() or "_method" in request.form():
+            # The server would run another method than the one this request is checked as.
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the request overrides its method; it is not routed")
+        if any(_decode_segment(seg) in (".", "..") for seg in request.raw_path.split("/")):
+            # A server that collapses /a/b/.. acts on /a, a route reading /a/b/{x} would check something else.
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the path has a . or .. segment; it is not routed")
+        path = self.strip(request.raw_path, prefix)
         # The most specific template whose route takes this method: a GET on
         # /repos/{o}/{r}/contents/{path} falls through to /repos/{o}/{r}/{rest+}
         # when only PUT and DELETE are routed on the contents template.
@@ -516,6 +540,10 @@ class RouteTable:
         action = route.action
         effect: str | None = None
         literal: str | None = None
+        if route.body is not None and request.streamed:
+            return Observed(
+                None, None, route.effect_for(method), route.sends_out, True, route=route, unresolved="the request body is a stream toolpass does not read"
+            )
         if route.body is not None:
             try:
                 extra = route.body(request, values)

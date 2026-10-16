@@ -90,10 +90,20 @@ but Vault does not have contributes nothing, as in Vault.
 |---|---|
 | `kv:<mount>/<key>` | a secret in a KV engine; the mount is the longest `sys/mounts` prefix (mounts may span several segments), its KV version decides the API path (`<mount>/data/<key>`, `metadata`, `destroy` on v2; the logical path on v1) |
 | `path:<api path>` | any API path, checked as written (`sys/seal`, `pki/issue/web`, `secret/data/x`) |
+| `path:<api path>?namespace=<ns>` | the API path of a request made in namespace `<ns>` (its `X-Vault-Namespace` header; empty for none), as the [route table](#requests-a-secured-tool-makes) writes it |
 
 Paths are plain segments (letters, digits, `_ . - @ : ~ =`); wildcards and dot-only segments are
 rejected. `LIST` questions are evaluated both with the trailing slash Vault adds and without it, as
 Vault does; an explicit deny on either form wins.
+
+With `?namespace=`, the path is resolved the way Vault Enterprise resolves a request: the namespace
+and the path joined are one path from the root (`team` + `secret/data/x` is `team/secret/data/x`,
+the same request as `secret/data/x` with the header `team`). Under the connection's `namespace` the
+rest is checked against its policies; a path into a child namespace keeps the child's name in front
+(`child/secret/data/x`), as Vault applies a parent's policies to it. A path outside the connection's
+namespace is unknown (`unsupported`): its policies live elsewhere. A non-empty `?namespace=` on a
+connection without `namespace` is unknown too, because Vault Community ignores the header and
+Enterprise applies it; name the namespace in the path instead (`team/secret/data/x`).
 
 ## Actions
 
@@ -135,13 +145,65 @@ Policies in HCL (including the deprecated `policy = "read|write|sudo|deny"` attr
 `path = { ... }` maps and nested `control_group` blocks, which are skipped) and in JSON (object and
 list forms) are parsed. Heredocs and other syntax answer `unsupported`.
 
+## Requests a secured tool makes
+
+The [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a tool's body sends
+to `<url>/v1/...` to the capability Vault itself checks on the path, whatever engine is mounted
+there, and checks it for the session's user (`toolpass routes vault` prints the table):
+
+| Request | Action | Effect |
+|---|---|---|
+| `GET`, `HEAD` | `raw:read`; with `?list=true`, `raw:list` | read |
+| `LIST` | `raw:list` | read |
+| `POST`, `PUT` | `secret.write`: `create` and `update`, since which one Vault checks depends on whether the path exists; `raw:update` on an endpoint of `sys/`, `identity/` or `auth/token/` that has no existence check (see below) | write (destructive under a `delete`, `destroy` or `revoke…` segment) |
+| `PATCH` | `raw:patch` | write |
+| `DELETE` | `raw:delete` | destructive |
+
+The resource is `path:<request path>?namespace=<the X-Vault-Namespace header>`.
+
+Vault treats a `POST` or `PUT` as a create only on an endpoint with an existence check (marked
+`x-vault-createSupported` in Vault's API description) whose target does not exist yet, and as an
+update everywhere else. Which endpoint a path reaches is certain only in the mounts Vault itself
+fixes, `sys/`, `identity/` and `auth/token/`, so there an endpoint the description lists without an
+existence check needs `update` alone: `sys/wrapping/unwrap`, `sys/policies/acl/<name>`,
+`sys/mounts/<path>`, `identity/entity`, `auth/token/revoke-accessor` and the like. The ones with an
+existence check (`auth/token/roles/<role>`, `identity/oidc/key/<name>` and the other OIDC objects,
+`sys/managed-keys/...`), endpoints the description does not list, and every path in a mount an
+operator named need both, since such a mount may be KV v1, where every path has an existence check.
+Name the namespace in the `X-Vault-Namespace` header rather than the path for this to apply inside
+one: `team/sys/...` may be a mount named `team`. A policy that grants only `update` on a path that
+needs both (a KV write, `transit/encrypt`, which creates a missing key, or `pki/issue`, whose mount
+toolpass cannot tell from a KV mount) answers unknown: grant `create` too or make the call inside
+`as_agent()`. `auth/token/lookup-self`, `sys/capabilities-self`, `sys/internal/ui/resultant-acl`
+(the agent's own token) and `sys/health`, `sys/seal-status`, `sys/leader` need no user permission.
+
+Refused, at any depth of the path, since a leading part may be a namespace (`team/cubbyhole/x`):
+
+- **What Vault scopes to the calling token**, which is the agent's: `cubbyhole/`,
+  `auth/token/renew-self` and `revoke-self`, the token's TOTP MFA secret, `identity/oidc/token/*`,
+  an OIDC provider's `authorize`, `sys/control-group/authorize`.
+- **Token creation** (`auth/token/create`, `create-orphan`, `create/<role>`): the new token inherits
+  the agent's policies.
+- **Paths that need `sudo`** besides the capability: Vault's root-protected paths (`sys/seal`,
+  `sys/auth/*`, `sys/audit`, `sys/raw`, `sys/remount`, `sys/leases/revoke-prefix/*`, ...,
+  `auth/token/accessors`, `revoke-orphan`) and a PKI root (`DELETE <mount>/root`,
+  `<mount>/root/sign-self-issued`; a KV key named `root` is refused on delete with it).
+- **Operator operations** Vault does not authorize by policy: init, unseal, rekey, root generation,
+  writes to `sys/replication/*` and `sys/license/*`.
+- **What toolpass cannot read exactly**: an empty or dot-only segment, characters outside the plain
+  set, a trailing slash on anything but a list, a `?list=` that is not a boolean or is given twice,
+  a query Go would read differently, a namespace header that is not a namespace path.
+
+A tool that logs in (`auth/<mount>/login`) is checked like any other `POST`, so users' policies
+rarely allow it: log in before the tool runs, or inside `as_agent()`.
+
 ## Decisions
 
 | Code | When |
 |---|---|
 | `allowed` | the winning stanza grants the capability |
 | `denied` | no stanza matches; the winning stanza denies or lacks the capability; the entity is disabled |
-| `unsupported` | a parameter or wrapping constraint; an unresolvable template; a policy toolpass cannot parse; the `root` policy; a KV v2 question on a v1 mount; a non-KV mount asked with `kv:`; a mixed create/update write |
+| `unsupported` | a parameter or wrapping constraint; an unresolvable template; a policy toolpass cannot parse; the `root` policy; a KV v2 question on a v1 mount; a non-KV mount asked with `kv:`; a mixed create/update write; a `?namespace=` path outside the connection's namespace, or with a namespace on a connection without one |
 | `resource_not_visible` | `kv:` names no mount `sys/mounts` lists, or a mount without a key |
 | `user_not_found` | no entity has the alias |
 | `credential_rejected` | 403 permission denied on a read toolpass needs; the AppRole login fails |
@@ -161,6 +223,11 @@ list forms) are parsed. Heredocs and other syntax answer `unsupported`.
   not checked unless asked with `raw:sudo`.
 - **Path aliases** resolved by engines (e.g. `secret/foo` on KV v2 rewritten by the CLI): toolpass
   checks the API path, so use `kv:` for KV engines.
+- **Policies held inside a child namespace** for a request into it: the connection namespace's
+  policies are evaluated on the child path. When the entity lists a group that lives in the child
+  namespace, the group cannot be read and the check fails rather than skip it.
+- **A repeated `X-Vault-Namespace` header**: Vault reads the first, the hook keeps the last value a
+  client library hands it.
 
 ## Unverified
 
@@ -181,7 +248,9 @@ entities with direct and inherited groups, a disabled entity, a `root` entity, H
 policies with globs, `+` segments, templates, a legacy `policy` attribute, parameter and wrapping
 constraints, KV v1 and v2 mounts and a PKI mount, and an AppRole login. Property tests
 (`test_fuzz_parse_target`, `test_fuzz_policy`) check the path validation and that the policy parser
-and evaluator never fail with anything but a policy error. `tests/real/test_vault_real.py` starts
+and evaluator never fail with anything but a policy error. `tests/integrations/vault/test_routes.py`
+holds the route table to the OpenAPI document, its refusals, and its resources to the check itself
+against the fake. `tests/real/test_vault_real.py` starts
 `vault server -dev` in Docker (`hashicorp/vault:1.17`, when the image is present locally), sets up
 policies, entities, aliases and groups through its API, and checks every answer against Vault's own
 `sys/capabilities`.

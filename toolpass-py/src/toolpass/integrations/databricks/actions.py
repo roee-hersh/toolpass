@@ -110,6 +110,8 @@ PRIV_CREATE_TABLE = "CREATE_TABLE"
 PRIV_CREATE_SCHEMA = "CREATE_SCHEMA"
 PRIV_READ_VOLUME = "READ_VOLUME"
 PRIV_WRITE_VOLUME = "WRITE_VOLUME"
+PRIV_CREATE_VOLUME = "CREATE_VOLUME"
+PRIV_CREATE_MODEL = "CREATE_MODEL"
 PRIV_EXECUTE = "EXECUTE"
 PRIV_MANAGE = "MANAGE"
 PRIV_ALL_PRIVILEGES = "ALL_PRIVILEGES"
@@ -150,7 +152,41 @@ ACTION_LIST = (
     DatabricksAction(
         "function.execute", "call a function: EXECUTE with USE_SCHEMA and USE_CATALOG", ("function",), (PRIV_EXECUTE, PRIV_USE_SCHEMA, PRIV_USE_CATALOG)
     ),
+    DatabricksAction(
+        "volume.create",
+        "create a volume in a schema: CREATE_VOLUME with USE_SCHEMA and USE_CATALOG",
+        ("schema",),
+        (PRIV_CREATE_VOLUME, PRIV_USE_SCHEMA, PRIV_USE_CATALOG),
+    ),
+    DatabricksAction(
+        "model.create",
+        "create a registered model in a schema: CREATE_MODEL with USE_SCHEMA and USE_CATALOG",
+        ("schema",),
+        (PRIV_CREATE_MODEL, PRIV_USE_SCHEMA, PRIV_USE_CATALOG),
+    ),
+    DatabricksAction("schema.read", "read a schema's metadata: USE_SCHEMA with USE_CATALOG", ("schema",), (PRIV_USE_SCHEMA, PRIV_USE_CATALOG)),
+    DatabricksAction(
+        "model.read",
+        "read a registered model and its versions: EXECUTE with USE_SCHEMA and USE_CATALOG",
+        ("model",),
+        (PRIV_EXECUTE, PRIV_USE_SCHEMA, PRIV_USE_CATALOG),
+    ),
     DatabricksAction("uc.manage", "manage grants on a Unity Catalog securable: MANAGE, or ownership", _UC_ALL, (PRIV_MANAGE,)),
+    DatabricksAction(
+        "schema.manage",
+        "update, drop or manage grants on a schema: MANAGE (or ownership) with USE_CATALOG",
+        ("schema",),
+        (PRIV_MANAGE, PRIV_USE_CATALOG),
+    ),
+    *(
+        DatabricksAction(
+            f"{t}.manage",
+            f"update, drop or manage grants on a {t}: MANAGE (or ownership) with USE_SCHEMA and USE_CATALOG",
+            (t,),
+            (PRIV_MANAGE, PRIV_USE_SCHEMA, PRIV_USE_CATALOG),
+        )
+        for t in ("table", "volume", "function", "model")
+    ),
     DatabricksAction("cluster.attach", "attach to a cluster (CAN_ATTACH_TO)", ("cluster",), level="CAN_ATTACH_TO"),
     DatabricksAction("cluster.restart", "restart a cluster (CAN_RESTART)", ("cluster",), level="CAN_RESTART"),
     DatabricksAction("cluster.manage", "manage a cluster (CAN_MANAGE)", ("cluster",), level="CAN_MANAGE"),

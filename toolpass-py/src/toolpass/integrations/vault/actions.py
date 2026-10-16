@@ -10,7 +10,21 @@ from toolpass.core.decision import Code, ToolpassError, errorf
 from toolpass.core.errors import go_quote, go_trim_space
 from toolpass.integrations.vault.policy import CAPABILITIES
 
-__all__ = ["ACTIONS", "ACTION_LIST", "PATH_RE", "RAW_PATTERN", "Target", "VaultAction", "catalog_actions", "match_action", "parse_raw", "parse_target"]
+__all__ = [
+    "ACTIONS",
+    "ACTION_LIST",
+    "NAMESPACE_RE",
+    "PATH_RE",
+    "RAW_PATTERN",
+    "Target",
+    "VaultAction",
+    "catalog_actions",
+    "match_action",
+    "parse_raw",
+    "parse_target",
+    "valid_namespace",
+    "valid_path",
+]
 
 
 @dataclass(frozen=True)
@@ -70,6 +84,18 @@ def match_action(name: str) -> Action | None:
 # A Vault API path: segments of ordinary characters, no wildcards (a
 # requested path is literal), no dot-only segments.
 PATH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@:~=-]*(/[A-Za-z0-9_.@:~=-]+)*")
+# A Vault Enterprise namespace path (team, team/child); "" is the root.
+NAMESPACE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_.-]+)*")
+
+
+def valid_path(p: str) -> bool:
+    """Whether p is a path toolpass checks: plain segments, no dot-only ones, at most 512 bytes."""
+    return p != "" and len(p.encode("utf-8", "surrogatepass")) <= 512 and PATH_RE.fullmatch(p) is not None and not _bad_segments(p)
+
+
+def valid_namespace(ns: str) -> bool:
+    """Whether ns is a namespace path toolpass accepts: "" (the root) or plain segments."""
+    return ns == "" or (NAMESPACE_RE.fullmatch(ns) is not None and not _bad_segments(ns))
 
 
 def _invalid(text: str) -> ToolpassError:
@@ -87,6 +113,10 @@ class Target:
     # path lives in is resolved against sys/mounts at check time, since
     # mounts may span several segments.
     path: str
+    # path: only. The namespace the path is relative to, as a request names
+    # it (the X-Vault-Namespace header; "" for the root); None when the path
+    # is relative to the connection's namespace.
+    namespace: str | None = None
 
     def __str__(self) -> str:
         return self.kind + ":" + self.path
@@ -99,12 +129,17 @@ def parse_target(action_name: str, r: Resource) -> Target:
         a = parse_raw(action_name)
         if a is None:
             raise _invalid(f"unknown action {go_quote(action_name)}")
+    namespace: str | None = None
     if r.query:
-        raise _invalid(f"resource {go_quote(r.raw)} must not carry a query")
+        if r.type != "path" or set(r.query) != {"namespace"}:
+            raise _invalid(f"resource {go_quote(r.raw)} may carry only ?namespace=, on a path: resource")
+        namespace = r.q("namespace").strip("/")
+        if not valid_namespace(namespace):
+            raise _invalid("namespace= takes a Vault namespace path of plain segments (letters, digits, _ . -), or nothing for the root")
     p = go_trim_space(r.id).strip("/")
-    if p == "" or len(p.encode("utf-8", "surrogatepass")) > 512 or not PATH_RE.fullmatch(p) or _bad_segments(p):
+    if not valid_path(p):
         raise _invalid(f"{r.type}: takes a Vault path of plain segments (letters, digits, _ . - @ : ~ =), no wildcards")
-    t = Target(a, r.type, p)
+    t = Target(a, r.type, p, namespace)
     if r.type == "kv":
         if "/" not in p:
             raise _invalid("kv: takes <mount>/<key path>")

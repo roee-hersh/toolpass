@@ -23,6 +23,13 @@ class ActionDef:
     desc: str
     res: str
     act: str
+    # Checks Argo CD makes before this one, on the same object: (resource, action) pairs.
+    first: tuple[tuple[str, str], ...] = ()
+
+
+# Argo CD's Patch, Delete and Sync check get on the application, then the
+# action; PodLogs checks get on the application, then get on its logs.
+_APP_GET = ((rbac.RESOURCE_APPLICATIONS, rbac.ACTION_GET),)
 
 
 ACTION_LIST: tuple[ActionDef, ...] = (
@@ -38,7 +45,17 @@ ACTION_LIST: tuple[ActionDef, ...] = (
         ACT_ROLLBACK,
     ),
     ActionDef("app.override", "override application parameters", rbac.RESOURCE_APPLICATIONS, rbac.ACTION_OVERRIDE),
+    ActionDef("app.update_with_get", "patch an application (Argo CD checks get, then update)", rbac.RESOURCE_APPLICATIONS, rbac.ACTION_UPDATE, _APP_GET),
+    ActionDef("app.delete_with_get", "delete an application (Argo CD checks get, then delete)", rbac.RESOURCE_APPLICATIONS, rbac.ACTION_DELETE, _APP_GET),
+    ActionDef("app.sync_with_get", "sync an application (Argo CD checks get, then sync)", rbac.RESOURCE_APPLICATIONS, rbac.ACTION_SYNC, _APP_GET),
     ActionDef("logs.get", "read pod logs of an application", rbac.RESOURCE_LOGS, rbac.ACTION_GET),
+    ActionDef(
+        "logs.get_with_app_get",
+        "read pod logs of an application (Argo CD checks get on the application, then get on its logs)",
+        rbac.RESOURCE_LOGS,
+        rbac.ACTION_GET,
+        _APP_GET,
+    ),
     ActionDef("exec.create", "exec into a pod of an application", rbac.RESOURCE_EXEC, rbac.ACTION_CREATE),
     ActionDef("appset.get", "view an ApplicationSet", rbac.RESOURCE_APPLICATION_SETS, rbac.ACTION_GET),
     ActionDef("appset.create", "create an ApplicationSet", rbac.RESOURCE_APPLICATION_SETS, rbac.ACTION_CREATE),
@@ -101,9 +118,16 @@ class EnforceRequest:
     # Fine-grained update/delete carry the top-level verb for v2 inheritance.
     fine_grained: bool = False
     top_act: str = ""
+    # (resource, action) pairs Argo CD checks first on the same object; every one must allow.
+    first: tuple[tuple[str, str], ...] = ()
 
 
 SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
+# The resource's name in app.update/... and app.delete/...: Kubernetes allows
+# ":" in some names (ClusterRole system:aggregate-to-edit), and Argo CD matches
+# the action as plain text. It is the last segment of the action name, which
+# never reaches the resource (type:id) toolpass parses.
+NAME_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,252}")
 # Bounds the object string. It is matched as a value, never as a pattern,
 # so it only needs to be printable. Always used with fullmatch.
 OBJ_RE = re.compile(r"[^\x00-\x20\x7f]{1,512}")
@@ -116,14 +140,16 @@ def parse_pattern(name: str) -> EnforceRequest | None:
     if not sep:
         return None
     parts = rest.split("/")
-    for p in parts:
-        if p != "" and SEGMENT_RE.fullmatch(p) is None:
+    fine_grained = prefix in ("app.update", "app.delete")
+    for i, p in enumerate(parts):
+        segment = NAME_SEGMENT_RE if fine_grained and i == 3 else SEGMENT_RE
+        if p != "" and segment.fullmatch(p) is None:
             return None
     if prefix == "app.action":
         if len(parts) != 3 or parts[1] == "" or parts[2] == "":
             return None
         return EnforceRequest(res=rbac.RESOURCE_APPLICATIONS, act=rbac.ACTION_ACTION + "/" + rest)
-    if prefix in ("app.update", "app.delete"):
+    if fine_grained:
         if len(parts) != 4 or parts[1] == "" or parts[3] == "":
             return None
         verb = prefix[len("app.") :]
@@ -135,7 +161,7 @@ def build_request(action_name: str, res: Resource) -> EnforceRequest:
     """Combine the action and the resource. Raises ValueError."""
     a = ACTIONS.get(action_name)
     if a is not None:
-        req = EnforceRequest(res=a.res, act=a.act)
+        req = EnforceRequest(res=a.res, act=a.act, first=a.first)
     else:
         p = parse_pattern(action_name)
         if p is None:

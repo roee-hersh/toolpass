@@ -178,7 +178,8 @@ pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=
 - Sessions and limits live in memory, in one process.
 - A permission check and the action after it are not atomic.
 - Observed actions cover HTTP from urllib3, the standard library, httpx and aiohttp, with route
-  tables for GitHub, Slack, Jira, Linear and Kubernetes so far; gRPC and threads an SDK starts are not seen.
+  tables for all 21 integrations (`toolpass routes`); gRPC and threads an SDK starts are not seen. A
+  write a table cannot map exactly is refused; such a read goes through unchecked, marked untrusted.
 
 ## Repository
 

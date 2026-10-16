@@ -31,6 +31,7 @@ from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unkn
 from toolpass.core.errors import go_lower, go_quote, go_trim_space, path_error_text
 from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, ProbeResult, Settings, credential_field
 from toolpass.core.log import Logger
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret
 from toolpass.integrations.aws.actions import arn_field, catalog_actions, match_action, parse_resource, resolve_action
 from toolpass.integrations.aws.identity import (
@@ -218,6 +219,11 @@ class AWS(Integration):
 
     def match_action(self, name: str) -> Action | None:
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.aws.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It reads role_map_file (static_map) but never

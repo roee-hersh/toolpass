@@ -229,6 +229,77 @@ def test_default_role_and_builtin(setup: Setup) -> None:
     itest.expect_code(check(c, none, "app.get", "applications:prod/web"), Code.DENIED)
 
 
+# Argo CD checks get on the application before a patch, delete, sync or log
+# read (Patch, Delete, Sync, PodLogs): the *_with_get actions need both.
+WITH_GET_POLICY = """
+p, role:writer, applications, update, dev/*, allow
+p, role:writer, applications, delete, dev/*, allow
+p, role:writer, applications, sync, dev/*, allow
+p, role:writer, logs, get, dev/*, allow
+p, role:viewer, applications, get, dev/*, allow
+g, writers, role:writer
+g, viewers, role:viewer
+"""
+
+writer = User(email="w@example.com", groups=("writers",))
+viewer = User(email="v@example.com", groups=("viewers",))
+writer_viewer = User(email="wv@example.com", groups=("writers", "viewers"))
+
+WITH_GET = [
+    ("app.update_with_get", "app.update", "applications:dev/web", "update applications"),
+    ("app.delete_with_get", "app.delete", "applications:dev/web", "delete applications"),
+    ("app.sync_with_get", "app.sync", "applications:dev/web", "sync applications"),
+    ("logs.get_with_app_get", "logs.get", "logs:dev/web", "get logs"),
+]
+
+
+def with_get_cluster(policy: str = WITH_GET_POLICY, **cm: str) -> Cluster:
+    cl = default_cluster()
+    cl.rbac_cm = {"policy.csv": policy, "policy.default": "", "scopes": "[groups]", **cm}
+    return cl
+
+
+@pytest.mark.parametrize(("action", "plain", "resource", "what"), WITH_GET)
+def test_with_get_needs_the_applications_get(setup: Setup, action: str, plain: str, resource: str, what: str) -> None:
+    _, c, _ = setup(with_get_cluster(), "none")
+    # The action alone allows the plain action, not the request Argo CD also checks get for.
+    itest.expect_code(check(c, writer, plain, resource), Code.ALLOWED)
+    d = check(c, writer, action, resource)
+    itest.expect_code(d, Code.DENIED)
+    assert "get applications on dev/web" in d.text, d
+    # get alone allows neither.
+    d = check(c, viewer, action, resource)
+    itest.expect_code(d, Code.DENIED)
+    assert what in d.text, d
+    # Both: allowed, and the reason names both.
+    d = check(c, writer_viewer, action, resource)
+    itest.expect_code(d, Code.ALLOWED)
+    assert f"allows get applications and {what} on dev/web" in d.text, d
+    # Both, but in another project: denied.
+    itest.expect_code(check(c, writer_viewer, action, resource.replace("dev/", "prod/")), Code.DENIED)
+
+
+@pytest.mark.parametrize(("action", "plain", "resource", "what"), WITH_GET)
+def test_with_get_is_unknown_when_either_check_is(setup: Setup, action: str, plain: str, resource: str, what: str) -> None:
+    # A user-level rule grants get, which user_subject none cannot evaluate: unknown, not allowed.
+    policy = WITH_GET_POLICY + "p, w@example.com, applications, get, dev/*, allow\n"
+    _, c, _ = setup(with_get_cluster(policy), "none")
+    itest.expect_code(check(c, writer, action, resource), Code.UNSUPPORTED)
+    itest.expect_code(check(c, writer_viewer, action, resource), Code.ALLOWED)
+    # A get rule toolpass cannot evaluate: unknown when the action allows, denied when it does not.
+    policy = """
+p, role:writer, applications, (update|delete|sync), dev/.*, allow
+p, role:writer, logs, get, dev/.*, allow
+p, role:writer, applications, get, (?U)dev/.*, allow
+p, role:viewer, applications, get, (?U)dev/.*, allow
+g, writers, role:writer
+g, viewers, role:viewer
+"""
+    _, c, _ = setup(with_get_cluster(policy, **{"policy.matchMode": "regex"}), "none")
+    itest.expect_code(check(c, writer, action, resource), Code.UNSUPPORTED)
+    itest.expect_code(check(c, viewer, action, resource), Code.DENIED)
+
+
 def test_no_rbac_config_map(setup: Setup) -> None:
     cl = Cluster()
     _, c, _ = setup(cl, "email")
@@ -321,7 +392,22 @@ def test_bad_requests(setup: Setup, action: str, resource: str) -> None:
     itest.expect_code(check(c, dev, action, resource), Code.INVALID_REQUEST)
 
 
-@pytest.mark.parametrize("bad", ["app.action/apps", "app.action/apps/Deployment/", "app.update/apps/Deployment/x", "app.get/x", "app.action/a b/c/d"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "app.action/apps",
+        "app.action/apps/Deployment/",
+        "app.update/apps/Deployment/x",
+        "app.get/x",
+        "app.action/a b/c/d",
+        # ":" only in the resource's name, and not first.
+        "app.delete/rbac:x/ClusterRole//name",
+        "app.delete/rbac.authorization.k8s.io/Cluster:Role//name",
+        "app.delete/rbac.authorization.k8s.io/ClusterRole/a:b/name",
+        "app.delete/rbac.authorization.k8s.io/ClusterRole//:name",
+        "app.action/apps/Deployment/re:start",
+    ],
+)
 def test_bad_requests_match_action_rejects(bad: str) -> None:
     # Go: TestBadRequests, second loop.
     assert Integration().match_action(bad) is None, f"match_action({bad!r}) accepted"
@@ -329,7 +415,14 @@ def test_bad_requests_match_action_rejects(bad: str) -> None:
 
 @pytest.mark.parametrize(
     "ok",
-    ["app.action/apps/Deployment/restart", "app.update/apps/Deployment/default/web", "app.delete//Pod/default/web-0", "app.action/argoproj.io/Rollout/resume"],
+    [
+        "app.action/apps/Deployment/restart",
+        "app.update/apps/Deployment/default/web",
+        "app.delete//Pod/default/web-0",
+        "app.action/argoproj.io/Rollout/resume",
+        "app.delete/rbac.authorization.k8s.io/ClusterRole//system:aggregate-to-edit",
+        "app.update/rbac.authorization.k8s.io/ClusterRoleBinding//system:controller:job-controller",
+    ],
 )
 def test_bad_requests_match_action_accepts(ok: str) -> None:
     # Go: TestBadRequests, third loop.
@@ -532,6 +625,38 @@ def test_action_app_override_allow(setup: Setup) -> None:
 
 def test_action_app_override_deny(setup: Setup) -> None:
     allow_deny(setup, "app.override", "applications:dev/web")
+
+
+def test_action_app_update_with_get_allow(setup: Setup) -> None:
+    allow_deny(setup, "app.update_with_get", "applications:dev/web")
+
+
+def test_action_app_update_with_get_deny(setup: Setup) -> None:
+    allow_deny(setup, "app.update_with_get", "applications:dev/web")
+
+
+def test_action_app_delete_with_get_allow(setup: Setup) -> None:
+    allow_deny(setup, "app.delete_with_get", "applications:dev/web")
+
+
+def test_action_app_delete_with_get_deny(setup: Setup) -> None:
+    allow_deny(setup, "app.delete_with_get", "applications:dev/web")
+
+
+def test_action_app_sync_with_get_allow(setup: Setup) -> None:
+    allow_deny(setup, "app.sync_with_get", "applications:dev/web")
+
+
+def test_action_app_sync_with_get_deny(setup: Setup) -> None:
+    allow_deny(setup, "app.sync_with_get", "applications:dev/web")
+
+
+def test_action_logs_get_with_app_get_allow(setup: Setup) -> None:
+    allow_deny(setup, "logs.get_with_app_get", "logs:dev/web")
+
+
+def test_action_logs_get_with_app_get_deny(setup: Setup) -> None:
+    allow_deny(setup, "logs.get_with_app_get", "logs:dev/web")
 
 
 def test_action_logs_get_allow(setup: Setup) -> None:

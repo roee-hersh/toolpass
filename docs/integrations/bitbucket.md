@@ -187,6 +187,28 @@ Marked `# UNVERIFIED:` in the code:
 - Data Center: repository creation in a project is taken to need `PROJECT_ADMIN`. If Bitbucket lets
   `PROJECT_WRITE` create repositories, users with write are denied `repo.create` although they could.
 
+## Observed requests
+
+For secured tools, the route table (`toolpass routes bitbucket`) maps requests to
+`api.bitbucket.org/2.0` (Cloud) or to the instance's `/rest/api/1.0`, `/rest/api/latest` and
+`/rest/branch-utils` (Data Center) to this integration's actions:
+
+- Cloud resources belong to the connection's workspace, so a request must name that workspace in its
+  path (`/2.0/repositories/<workspace>/...`, `/2.0/workspaces/<workspace>/...`); one naming another
+  workspace, or the same one by UUID or in other letter case, is refused.
+- Reads check `repo.read`, `project.read` or `workspace.member`; hooks, deploy keys, permissions and
+  pipeline variables check `repo.admin`, `project.admin` or `workspace.admin`.
+- `repo.push` and `pr.merge` evaluate branch restrictions only when the resource names the branch,
+  so a write that lands on a branch must name it: creating or deleting a branch, committing files
+  (`POST /src` with one `branch` field; Data Center `PUT /browse/...`). Merging a pull request does
+  not name its destination branch, so it is refused rather than checked on write access alone.
+- Opening a pull request, commenting and approving check `repo.read`; a pull request from another
+  repository (a fork) is refused. Editing or deleting a comment checks `repo.admin`.
+
+Forks (they land in a project named in the body), moving a repository to another project, Data
+Center tags (ref restrictions can cover them), Connect app properties and git over HTTPS are not
+routed.
+
 ## Test
 
 Unit tests run against fakes of both editions: the Cloud fake validates every request against the

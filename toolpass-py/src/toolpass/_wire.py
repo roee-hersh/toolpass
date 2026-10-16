@@ -122,7 +122,7 @@ class Connections:
     def resolve(self, request: Request) -> tuple[_Conn, str] | None:
         """The connection a request is addressed to and the path prefix to
         strip, or None. The longest matching prefix wins."""
-        keys = {host_key(request.host, request.port, request.scheme), request.host.lower()}
+        keys = {host_key(request.host, request.port, request.scheme), request.host.lower().rstrip(".")}
         best: tuple[_Conn, str] | None = None
         for c in self._conns:
             for host, prefix in c.endpoints:
@@ -178,11 +178,32 @@ def observe(request: Request) -> None:
         raise _refuse(ctx, key, obs, exc) from e
 
 
+def _other_host(request: Request) -> str | None:
+    """The Host header, when it names another host than the one the request
+    is sent to; None when it is absent or the same."""
+    given = (request.headers.get("host") or "").strip().lower()
+    if not given:
+        return None
+    host, port = request.host.lower().strip("[]").rstrip("."), request.port
+    same = {host, host_key(host, port, request.scheme)}
+    if port is not None:
+        same.add(f"{host}:{port}")
+    bare = given.rstrip(".")
+    if bare.startswith("["):  # an IPv6 literal, [::1] or [::1]:8443
+        inner, _, rest = bare[1:].partition("]")
+        bare = inner + rest
+    return None if bare in same else given
+
+
 def _check(ctx: CallContext, request: Request, key: str) -> None:
     tk, spec, session = ctx.toolkit, ctx.spec, ctx.session
     tool = spec.name
     ents: ToolEntitlements | None = ctx.entitlements
     obs = ObservedAction(request.method, request.host, request.path, effect_of_method(request.method))
+    named = _other_host(request)
+    if named is not None:
+        # The server routes by the Host header (an S3 bucket, a virtual host), not by where the connection goes.
+        raise _refuse(ctx, key, obs, ActionRefused(tool, "host_mismatch", f"{request.describe()}: its Host header names {named!r}, not {request.host}", obs))
     conns: Connections | None = tk._connections()
     hit = conns.resolve(request) if conns is not None else None
 
@@ -344,6 +365,11 @@ def _headers(h: Any) -> dict[str, str]:
     return out
 
 
+def _streamed(body: Any) -> bool:
+    """A body the hook does not read: a file or an iterator."""
+    return body is not None and _bytes(body) is None
+
+
 def _bytes(body: Any) -> bytes | None:
     if body is None:
         return None
@@ -396,7 +422,15 @@ def _patch_urllib3_module(mod: Any) -> None:
             return original(self, method, url, body, headers, *args, **kwargs)
         scheme, host, port, path, query = _split(url, self.scheme, self.host, self.port)
         req = Request(
-            scheme, host, port, method.upper(), path, query, _headers(headers if headers is not None else getattr(self, "headers", None)), _bytes(body)
+            scheme,
+            host,
+            port,
+            method.upper(),
+            path,
+            query,
+            _headers(headers if headers is not None else getattr(self, "headers", None)),
+            _bytes(body),
+            _streamed(body),
         )
         return _guarded(lambda: original(self, method, url, body, headers, *args, **kwargs), req)
 
@@ -428,7 +462,7 @@ def _patch_http_client() -> None:
         host = getattr(self, "_tunnel_host", None) or self.host
         port = getattr(self, "_tunnel_port", None) or self.port
         scheme, host, port, path, query = _split(url, scheme, host, port)
-        req = Request(scheme, host, port, method.upper(), path, query, _headers(hdrs), _bytes(body))
+        req = Request(scheme, host, port, method.upper(), path, query, _headers(hdrs), _bytes(body), _streamed(body))
         return _guarded(lambda: original(self, method, url, body, hdrs, **kwargs), req)
 
     request.__toolpass__ = True  # type: ignore[attr-defined]
@@ -439,11 +473,12 @@ def _httpx_request(r: Any) -> Request:
     url = r.url
     raw = url.raw_path.decode("ascii", "replace") if isinstance(url.raw_path, bytes) else str(url.raw_path)
     path, _, query = raw.partition("?")
+    streamed = False
     try:
         body = bytes(r.content)
     except Exception:  # noqa: BLE001 - a streamed body is not read
-        body = None
-    return Request(url.scheme, url.host, url.port, r.method.upper(), path or "/", query, _headers(r.headers), body)
+        body, streamed = None, True
+    return Request(url.scheme, url.host, url.port, r.method.upper(), path or "/", query, _headers(r.headers), body, streamed)
 
 
 def _patch_httpx() -> None:
@@ -489,6 +524,7 @@ def _patch_aiohttp() -> None:
             return await original(self, method, str_or_url, **kwargs)
         url = self._build_url(str_or_url) if hasattr(self, "_build_url") else str_or_url
         body: bytes | None
+        streamed = False
         headers = _headers(kwargs.get("headers"))
         if kwargs.get("json") is not None:
             body = json.dumps(kwargs["json"]).encode()
@@ -497,10 +533,11 @@ def _patch_aiohttp() -> None:
             data = kwargs.get("data")
             if isinstance(data, Mapping):
                 body = urllib.parse.urlencode({k: v for k, v in data.items() if isinstance(v, (str, int, float))}).encode()
+                streamed = any(not isinstance(v, (str, int, float)) for v in data.values())  # not encoded as aiohttp would
                 headers.setdefault("content-type", "application/x-www-form-urlencoded")
             else:
-                body = _bytes(data)
-        req = Request(str(url.scheme), str(url.host or ""), url.port, method.upper(), url.raw_path or "/", url.raw_query_string or "", headers, body)
+                body, streamed = _bytes(data), _streamed(data)
+        req = Request(str(url.scheme), str(url.host or ""), url.port, method.upper(), url.raw_path or "/", url.raw_query_string or "", headers, body, streamed)
         await asyncio.to_thread(_observe_inner, req)
         token = _inner.set(True)
         try:

@@ -52,6 +52,7 @@ from toolpass.core.integration import (
     credential_field,
     url_field,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.template import Template, email_domain, parse_email_domains, parse_template, validate_email_domains, validate_template
 from toolpass.integrations.gitlab.actions import (
     ACTIONS,
@@ -361,6 +362,11 @@ class GitLab(Integration):
 
     def actions(self) -> list[Action]:
         return catalog_actions()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.gitlab.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It does not touch the network."""

@@ -79,7 +79,7 @@ the record; membership of `admins` marks a workspace admin. Groups sent by the c
 | `pipeline:<id>` | a pipeline (`pipelines`) |
 | `warehouse:<id>` | a SQL warehouse (`warehouses`) |
 | `notebook:<object id>`, `directory:<object id>`, `repo:<id>` | workspace files (`notebooks`, `directories`, `repos`); the numeric object id, not the path |
-| `endpoint:<name>` | a model serving endpoint (`serving-endpoints`) |
+| `endpoint:<id>` | a model serving endpoint (`serving-endpoints`): the endpoint's `id`, not its name, as the Permissions API keys it |
 | `experiment:<id>`, `registered_model:<id>` | MLflow experiments and workspace model registry models |
 
 Each part of a Unity Catalog name must be a plain identifier (`[A-Za-z0-9_-]`, up to 255 characters);
@@ -95,11 +95,16 @@ names that need backtick quoting in SQL are not accepted. A workspace object id 
 | `table.read` | `SELECT` + `USE_SCHEMA` + `USE_CATALOG` | table |
 | `table.write` | `MODIFY` + `USE_SCHEMA` + `USE_CATALOG` | table |
 | `table.create` | `CREATE_TABLE` + `USE_SCHEMA` + `USE_CATALOG` | schema |
+| `volume.create` / `model.create` | `CREATE_VOLUME` / `CREATE_MODEL` + `USE_SCHEMA` + `USE_CATALOG` | schema |
 | `schema.create` | `CREATE_SCHEMA` + `USE_CATALOG` | catalog |
+| `schema.read` | `USE_SCHEMA` + `USE_CATALOG` | schema |
 | `catalog.use` | `USE_CATALOG` | catalog |
 | `volume.read` / `volume.write` | `READ_VOLUME` / `WRITE_VOLUME` + `USE_SCHEMA` + `USE_CATALOG` | volume |
 | `function.execute` | `EXECUTE` + `USE_SCHEMA` + `USE_CATALOG` | function |
+| `model.read` | `EXECUTE` + `USE_SCHEMA` + `USE_CATALOG` | model |
 | `uc.manage` | `MANAGE`, or ownership | any Unity Catalog resource |
+| `schema.manage` | `MANAGE` (or ownership) + `USE_CATALOG` | schema |
+| `table.manage` / `volume.manage` / `function.manage` / `model.manage` | `MANAGE` (or ownership) + `USE_SCHEMA` + `USE_CATALOG` | table / volume / function / model |
 | `cluster.attach` / `cluster.restart` / `cluster.manage` | `CAN_ATTACH_TO` / `CAN_RESTART` / `CAN_MANAGE` | cluster |
 | `job.view` / `job.run` / `job.manage` | `CAN_VIEW` / `CAN_MANAGE_RUN` / `CAN_MANAGE` | job |
 | `warehouse.use` / `warehouse.manage` | `CAN_USE` / `CAN_MANAGE` | warehouse |
@@ -162,6 +167,31 @@ Only `error_code` is read from an error body; messages are never copied into a d
 `toolpass probe` calls `GET /api/2.0/preview/scim/v2/Me`, names the principal and whether it is a
 workspace admin, and warns either way: a non-admin cannot read most ACLs, an admin can change the
 workspace.
+
+## Intercepted requests
+
+A secured tool's requests to the workspace REST API are mapped to these actions
+(`src/toolpass/integrations/databricks/routes.py`, `toolpass routes databricks`): jobs by `job_id`
+(get, runs of a job, run now, cancel all runs, delete), clusters by `cluster_id` (get, events, start,
+restart, terminate, resize, delete), SQL warehouses, pipelines and Git folders by id, ACLs through
+the Permissions API (`CAN_MANAGE` on the object; a body that grants `IS_OWNER` anywhere, or spells
+`access_control_list` another way, is refused), Unity Catalog catalogs, schemas, tables, volumes,
+functions and models by full name, and files under `/Volumes/<catalog>/<schema>/<volume>` as
+`volume.read` and `volume.write`. Unity Catalog requests carry the `USE_CATALOG` and `USE_SCHEMA`
+Databricks requires on the securable's parents: reads are `catalog.use`, `schema.read`,
+`table.read`, `volume.read`, `function.execute` and `model.read` (a model's versions too); updates,
+deletes, renames within the same parent and grants are `<type>.manage` (`uc.manage` on a catalog);
+creating schemas, managed volumes and models is `schema.create`, `volume.create` and `model.create`
+on the parent. Lists need no user check; the workspace filters them by the agent's own access.
+
+Refused: SQL statement execution, the command execution API and one-time job runs (they run as the
+agent), runs named only by `run_id`, edits Databricks checks against the caller (job and pipeline
+settings, cluster edits), creating jobs, clusters, warehouses, catalogs, tables, views and functions,
+the Workspace and DBFS APIs (they name objects by path), secrets, model serving endpoints addressed
+by name (reading, querying, updating or deleting one: the serving API takes the endpoint's name,
+while its permissions are kept under its id, which the request does not carry; an endpoint's ACL,
+`/api/2.0/permissions/serving-endpoints/<id>`, is routed), and any request that names its id twice
+or in a form toolpass does not read exactly.
 
 ## What it cannot see
 

@@ -56,6 +56,7 @@ from toolpass.core.integration import (
     url_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret, SecretError
 from toolpass.core.template import is_email
 from toolpass.integrations.snowflake.actions import KINDS, Target, catalog_actions, match_action, parse_target
@@ -139,6 +140,11 @@ class Snowflake(Integration):
     def match_action(self, name: str) -> Action | None:
         """Accept raw:<PRIVILEGE>."""
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.snowflake.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network."""

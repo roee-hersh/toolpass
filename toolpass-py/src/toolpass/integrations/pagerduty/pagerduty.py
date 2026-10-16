@@ -45,6 +45,7 @@ from toolpass.core.integration import (
     credential_field,
     url_field,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.core.template import is_email
 from toolpass.integrations.pagerduty.actions import (
@@ -91,6 +92,11 @@ class PagerDuty(Integration):
 
     def actions(self) -> list[Action]:
         return catalog_actions()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.pagerduty.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network."""

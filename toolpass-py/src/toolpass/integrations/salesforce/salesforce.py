@@ -65,6 +65,7 @@ from toolpass.core.integration import (
     validate_https_url,
 )
 from toolpass.core.log import Logger, discard
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.integrations.salesforce.actions import ACTION_LIST, ACTIONS, Kind, SFAction, Target, parse_target
 from toolpass.integrations.salesforce.soql import (
@@ -214,6 +215,11 @@ class Salesforce(Integration):
 
     def actions(self) -> list[Action]:
         return [Action(name=a.name, description=a.desc) for a in ACTION_LIST]
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.salesforce.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network; the credential is read

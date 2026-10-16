@@ -115,6 +115,37 @@ them answers `denied` and says which `USAGE` is missing.
 | `invalid_request` | a malformed identifier, the wrong number of name parts, a resource type the action does not take |
 | `upstream_*` | 5xx, 429, a statement that does not finish, other Snowflake errors (reported by code only; the message may echo identifiers) |
 
+## Intercepted requests
+
+A secured tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
+(`POST /queries/v1/query-request`) are read statement by statement
+(`src/toolpass/integrations/snowflake/routes.py`, `toolpass routes snowflake`). One statement on one
+table is checked: `SELECT ... FROM <table>` as `table.select`, `INSERT INTO <table> ... VALUES` as
+`table.insert`, `UPDATE` as `table.update`, `DELETE FROM` as `table.delete`, `TRUNCATE` as
+`table.truncate`, on `table:DB.SCHEMA.NAME`. On the SQL API an unqualified name takes the body's
+`database` and `schema` (upper-case names only); through the connector the name must be fully
+qualified, because the session's defaults are not in the request.
+
+Everything else is refused: several statements, comments, joins, subqueries and set operations,
+`IDENTIFIER()` and `TABLE()`, stages, variables, functions other than a list of built-ins (a
+user-defined function reads with its owner's rights), a non-reserved word before `(` outside the one
+place it is not a call (a type such as `NUMBER(10, 2)` only after `::` or after `AS` inside `CAST`
+/ `TRY_CAST`; `OVER (` after a built-in's arguments; `EXCLUDE (` / `RENAME (` after the select list's
+`*`), quoted names with lower-case letters, a backslash in a string, session parameters other than
+output formats and tags, and a connector request whose `describedJobId` is set (the query context the
+connector echoes between queries is accepted). A `SELECT` with no table needs no check. The warehouse a
+statement runs on is not checked.
+
+Results are read only from the response to the statement itself. Reading a statement's results or
+status by handle (`GET /api/v2/statements/{handle}`, the connector's `GET /queries/{id}/result` and
+`GET /monitoring/queries/{id}`) is refused: the agent's credential is shared, so a handle may name
+any statement run with it, and toolpass cannot tie it to one it checked. A statement must therefore
+finish within its own request: on the SQL API, without `async=true` and within the wait the API
+gives a synchronous call (a statement still running comes back `202` with a handle that cannot be
+read), and with its rows in the first partition (later partitions are read by handle; use `LIMIT`).
+Through the connector, use synchronous execution (`execute`, not `execute_async`) on queries that
+finish before the server tells the connector to poll. Cancelling by handle is not checked.
+
 ## What it cannot see
 
 - **Future grants** before an object exists, **masking and row access policies**, **secure

@@ -18,7 +18,7 @@ def test_routes_lists_every_integration():
     assert code == 0 and err == ""
     lines = dict(line.split(None, 1) for line in out.splitlines())
     assert lines["github"].startswith(("2", "3"))  # hundreds of routes
-    assert lines["zendesk"] == "no route(s)"
+    assert lines["fake"] == "no route(s)"
 
 
 def test_routes_for_one_integration():
@@ -34,7 +34,7 @@ def test_routes_for_one_integration():
 def test_routes_unknown_or_undescribed_integration():
     code, _, err = capture("routes", "nope")
     assert code == 1 and "unknown integration" in err
-    code, _, err = capture("routes", "zendesk")
+    code, _, err = capture("routes", "fake")
     assert code == 1 and "not described yet" in err
 
 

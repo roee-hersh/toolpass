@@ -20,6 +20,7 @@ from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported
 from toolpass.core.errors import go_quote, go_trim_space
+from toolpass.core.routes import RouteTable
 from toolpass.integrations import kubernetes
 from toolpass.net import httpx
 
@@ -38,6 +39,9 @@ def validate_name(v: str) -> None:
 
 # How long a loaded policy bundle is reused.
 POLICY_CACHE_TTL = 30.0
+
+# The resources whose objects carry an application namespace.
+_NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
 
 class Integration(integ.Integration):
@@ -62,7 +66,13 @@ class Integration(integ.Integration):
                 enum=("none", "email"),
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
+            integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
         ]
+
+    def routes(self) -> RouteTable | None:
+        from .routes import ROUTES
+
+        return ROUTES
 
     def actions(self) -> list[Action]:
         acts = [Action(name=a.name, description=a.desc) for a in ACTION_LIST]
@@ -268,6 +278,13 @@ class Connection(integ.Connection):
             req = build_request(r.action_name, r.resource)
         except ValueError as e:
             raise errorf(Code.INVALID_REQUEST, str(e)) from None
+        if req.res in _NAMESPACED:
+            # Argo CD names an application (or ApplicationSet) in its own
+            # namespace <project>/<name>, and <project>/<namespace>/<name>
+            # only in another namespace (security.RBACName).
+            parts = req.obj.split("/")
+            if len(parts) == 3 and parts[1] == self.namespace:
+                req.obj = parts[0] + "/" + parts[2]
         b = self.load(ctx)
         if req.act == ACT_ROLLBACK:
             req.act = b.rollback_act
@@ -289,19 +306,37 @@ class Connection(integ.Connection):
             # v2 behaviour: the top-level verb is checked first, then the
             # fine-grained one.
             acts = [req.top_act, req.act]
+        # Every check Argo CD makes on the request must allow: the ones it
+        # makes first (get, for a patch, delete, sync or logs), then the action.
+        checks = [(res, [act]) for res, act in req.first] + [(req.res, acts)]
+        results = [self._enforce(enf, b, subject, groups, res, check_acts, req.obj) for res, check_acts in checks]
+        for code in (Code.DENIED, Code.UNSUPPORTED):
+            for d, _ in results:
+                if d.code == code:
+                    return d
+        if len(results) == 1:
+            return results[0][0]
+        granted = " and ".join(f"{act} {res}" for (_, act), (res, _) in zip(results, checks, strict=True))
+        return allowed(f"Argo CD policy allows {granted} on {req.obj} for {who(subject, groups)}")
+
+    @staticmethod
+    def _enforce(enf: rbac.Enforcer, b: Bundle, subject: str, groups: list[str], res: str, acts: list[str], obj: str) -> tuple[Decision, str]:
+        """One of Argo CD's checks: allowed when one of ``acts`` is allowed
+        (with the act that was), denied or unknown otherwise."""
         for act in acts:
             try:
-                ok = enf.enforce_claims(subject, groups, req.res, act, req.obj)
+                ok = enf.enforce_claims(subject, groups, res, act, obj)
             except rbac.UnsupportedPattern as e:
                 # Skipping the rule could skip a deny.
-                return unsupported(f"Argo CD's policy has a rule toolpass cannot evaluate: {e}")
+                return unsupported(f"Argo CD's policy has a rule toolpass cannot evaluate: {e}"), ""
             if ok:
-                return allowed(f"Argo CD policy allows {act} {req.res} on {req.obj} for {who(subject, groups)}")
+                return allowed(f"Argo CD policy allows {act} {res} on {obj} for {who(subject, groups)}"), act
+        act = acts[-1]
         if subject == "" and b.user_level:
             return unsupported(
-                f"no group rule allows {req.act} {req.res} on {req.obj}, and the policy has user-level rules that cannot be evaluated with user_subject: none"
-            )
-        return denied(f"Argo CD policy has no rule allowing {req.act} {req.res} on {req.obj} for {who(subject, groups)}")
+                f"no group rule allows {act} {res} on {obj}, and the policy has user-level rules that cannot be evaluated with user_subject: none"
+            ), ""
+        return denied(f"Argo CD policy has no rule allowing {act} {res} on {obj} for {who(subject, groups)}"), ""
 
     def probe(self, ctx: Context) -> integ.ProbeResult:
         """Read the policy and report what was found."""
