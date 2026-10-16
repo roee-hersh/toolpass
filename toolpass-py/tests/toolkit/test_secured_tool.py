@@ -97,3 +97,10 @@ def test_as_tool_keeps_the_session_rule():
     assert e.value.code == "no_session"
     with Session("x@example.com").active():
         assert look() == "ok"
+
+
+def test_tool_is_the_name_and_secured_tool_the_earlier_one() -> None:
+    import toolpass
+
+    assert toolpass.tool is toolpass.secured_tool
+    assert toolpass.tool.__self__ is toolpass.default_toolkit()  # the default toolkit's own method

@@ -98,7 +98,7 @@ def main(say: Callable[[str], None] = print) -> list[tuple[str, str]]:
     events: list[AuditEvent] = []
     tools = Toolkit(permissions=StandInEngine(base), audit=events.append)
 
-    @tools.secured_tool()  # nothing declared: the actions are observed at the wire
+    @tools.tool()  # nothing declared: the actions are observed at the wire
     def propose_replicas(repo: str, replicas: int) -> str:
         """Open a pull request setting a deployment's replica count."""
         with as_agent():  # the agent may read the file on its own authority

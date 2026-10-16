@@ -33,7 +33,7 @@ agents in any language call.
   entitlements and holding it to them.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
-- [The dashboard](guides/dashboard.md): every run of your secured tools, from every agent and MCP
+- [The dashboard](guides/dashboard.md): every run of your toolpass tools, from every agent and MCP
   server that reports to your toolpass server, with each request it made and who it ran for; and
   the OpenTelemetry export.
 

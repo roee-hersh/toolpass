@@ -47,7 +47,7 @@ rules:
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
 | `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the caller's groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
-| `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-secured-tool-makes) maps requests to it to actions; toolpass itself never calls it |
+| `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
 
@@ -101,7 +101,7 @@ The `*_with_get` actions are what Argo CD checks for a patch, a delete, a sync a
 Both are answered for the user; the answer is deny when either denies, unknown when either is
 unknown and neither denies.
 
-## Requests a secured tool makes
+## Requests a toolpass tool makes
 
 With `url` set, the [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a
 tool's body sends to the Argo CD REST API to the action and object Argo CD's RBAC checks, and

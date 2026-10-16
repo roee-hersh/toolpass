@@ -1,25 +1,25 @@
 # Check what a tool does, not what it says
 
-A secured tool used to be safe to the extent its declaration was right: `effect="write"`,
+A toolpass tool used to be safe to the extent its declaration was right: `effect="write"`,
 `authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}")`. The declaration is a
 claim. If the body also deletes a branch, nothing notices; and writing it correctly means knowing
 GitHub's permission model.
 
 toolpass can instead watch the requests a tool's body makes. Every HTTP request that leaves the
-process while a secured tool runs is mapped to the integration action and resource the permission
+process while a toolpass tool runs is mapped to the integration action and resource the permission
 engine already answers for (`POST /repos/acme/x/pulls` is `pr.create` on `repo:acme/x`), checked,
 and refused before it is sent when the session's user may not do it. The tool declares nothing:
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent, secured_tool
+from toolpass import Session, Toolpass, as_agent
 from github import Github
 
 tp = Toolpass.from_config("toolpass.yaml")       # the github-acme connection, among others
 toolpass.configure(permissions=tp)
 
 
-@secured_tool()
+@toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     gh = Github(auth=token)
     with as_agent():                             # the agent may read on its own authority
@@ -73,7 +73,7 @@ Some of a body runs rightly on the agent's own authority: it reads a file the us
 opens a pull request the user must be allowed to open. `as_agent()` marks that block. Inside it the
 permission check against the session's user is skipped and nothing else: scope, limits, the
 untrusted-input and exfiltration checks and entitlements still apply, and each action is audited
-with `as_agent`. The block covers only requests made inside it, not a nested secured tool. Keep it
+with `as_agent`. The block covers only requests made inside it, not a nested toolpass tool. Keep it
 narrow; a whole body inside `as_agent()` is a tool that acts as the agent for everyone.
 
 ## Record what a tool does, then hold it to that

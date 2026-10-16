@@ -1,6 +1,6 @@
 # The dashboard
 
-The dashboard shows every run of your toolpass [secured tools](agent-tools.md), from every agent
+The dashboard shows every run of your toolpass [toolpass tools](agent-tools.md), from every agent
 and MCP server that reports to one toolpass server: who the tool ran for, each request it made to
 GitHub, Jira, Slack, Linear, Kubernetes and the other connected systems, and whether the system let
 that person make it. A refused request is never sent, and the dashboard says which system refused

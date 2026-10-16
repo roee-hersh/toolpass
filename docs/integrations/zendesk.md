@@ -120,7 +120,7 @@ unassigned tickets appear depends on views toolpass does not read.
 
 ## Route table
 
-What a secured tool's request to the account means (`toolpass routes zendesk` prints the table).
+What a toolpass tool's request to the account means (`toolpass routes zendesk` prints the table).
 Ids are plain decimal; a `.json` suffix on the path is read as Zendesk reads it.
 
 | Request | Action, resource |

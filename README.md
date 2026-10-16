@@ -8,7 +8,7 @@ checks each request they make against what that person may do, and shows you eve
 
 ## See what your agent's tools do
 
-When an MCP server or an agent is built with toolpass [secured tools](#check-what-your-own-tools-do),
+When an MCP server or an agent is built with toolpass [toolpass tools](#check-what-your-own-tools-do),
 it reports each run to your toolpass server: who it ran for, and every request the tool made to
 GitHub, Jira, Slack, Linear or Kubernetes, allowed or refused by the system itself, with the reason.
 The server's dashboard shows them, from every agent, live:
@@ -45,13 +45,13 @@ watches what it does.
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent, secured_tool
+from toolpass import Session, Toolpass, as_agent
 from github import Github                     # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # your GitHub, Slack, ... connections
 
 
-@secured_tool()
+@toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     gh = Github(auth=token)
     with as_agent():                          # the agent may read on its own authority
@@ -123,9 +123,9 @@ the lethal trifecta: access to private data, exposure to untrusted content, and 
 out. Your tools already say which they are:
 
 ```python
-@secured_tool(effect="read", reads_private=True)       # read customer records
-@secured_tool(effect="read", untrusted_output=True)    # read an email
-@secured_tool(effect="write", sends_out=True)          # post to Slack
+@toolpass.tool(effect="read", reads_private=True)       # read customer records
+@toolpass.tool(effect="read", untrusted_output=True)    # read an email
+@toolpass.tool(effect="write", sends_out=True)          # post to Slack
 ```
 
 After the first two have run in a session, the third is refused. It works from which tools
@@ -143,7 +143,7 @@ from toolpass import Toolpass, permission_check
 
 tp = Toolpass.from_config("toolpass.yaml")   # or Toolpass.remote(url, key) to keep lookup credentials out of the agent
 
-@secured_tool(effect="destructive", authorize=permission_check(tp, "jira-main", "DELETE_ISSUES", "issue:{key}"))
+@toolpass.tool(effect="destructive", authorize=permission_check(tp, "jira-main", "DELETE_ISSUES", "issue:{key}"))
 def delete_issue(key: str) -> str: ...
 ```
 

@@ -170,7 +170,7 @@ workspace.
 
 ## Intercepted requests
 
-A secured tool's requests to the workspace REST API are mapped to these actions
+A toolpass tool's requests to the workspace REST API are mapped to these actions
 (`src/toolpass/integrations/databricks/routes.py`, `toolpass routes databricks`): jobs by `job_id`
 (get, runs of a job, run now, cancel all runs, delete), clusters by `cluster_id` (get, events, start,
 restart, terminate, resize, delete), SQL warehouses, pipelines and Git folders by id, ACLs through

@@ -185,7 +185,7 @@ docstring has every option.
 |---|---|---|
 | Strands Agents | `toolpass.strands.ToolpassAuthorization` | [`strands_agent.py`](../../toolpass-py/examples/strands_agent.py) |
 | LangChain, LangGraph | `toolpass.langchain.ToolpassMiddleware` | [`langchain_agent.py`](../../toolpass-py/examples/langchain_agent.py) |
-| MCP servers, any host | `secured_tool` and `session_from_header`, no adapter | [`mcp_server.py`](../../toolpass-py/examples/mcp_server.py) |
+| MCP servers, any host | `toolpass.tool` and `session_from_header`, no adapter | [`mcp_server.py`](../../toolpass-py/examples/mcp_server.py) |
 | OpenAI Agents SDK | `toolpass.openai_agents.ToolpassGuardrails` | [`openai_agents_agent.py`](../../toolpass-py/examples/openai_agents_agent.py) |
 | Claude Agent SDK | `toolpass.claude_agent_sdk.ToolpassHooks` | [`claude_agent_sdk_agent.py`](../../toolpass-py/examples/claude_agent_sdk_agent.py) |
 | Google ADK | `toolpass.google_adk.ToolpassCallbacks` | [`google_adk_agent.py`](../../toolpass-py/examples/google_adk_agent.py) |
@@ -231,7 +231,7 @@ For a LangGraph graph you assemble yourself, `guard.tool_node(tools)` is a `Tool
 same check.
 
 **MCP servers** (the official `mcp` package or FastMCP; no extra). No adapter: the tools are
-plain functions under `secured_tool`, and the server only needs the user. The agent names the
+plain functions under `toolpass.tool`, and the server only needs the user. The agent names the
 user in the `X-Toolpass-User` header of every request, set once on its MCP client from the login
 the agent already did; `session_from_header` wraps the server's Streamable HTTP app and runs each
 request under a `Session` for that user (`X-Toolpass-Groups`, comma-separated, names the user's
@@ -239,17 +239,17 @@ groups). The requests of one conversation share one `Session`, so a tool's limit
 untrusted-input check and the exfiltration guard hold across its calls: the agent names the
 conversation in `X-Toolpass-Session` (its own chat or thread id), or else the MCP session is the
 conversation (a sessionless client has none, and then each request is a session of its own). A
-request without the user header runs under no session, so a secured tool refuses it. The SDK reports an exception
+request without the user header runs under no session, so a toolpass tool refuses it. The SDK reports an exception
 as only `Error executing tool`, so set `on_refuse=str` and the model reads the reason:
 
 ```python
 import toolpass
-from toolpass import secured_tool, session_from_header
+from toolpass import session_from_header
 
 toolpass.configure(permissions=tp, on_refuse=str)
 
 @mcp.tool()
-@secured_tool()
+@toolpass.tool()
 def delete_issue(key: str) -> str: ...
 
 app = session_from_header(mcp.streamable_http_app())   # FastMCP: mcp.http_app()
@@ -275,7 +275,7 @@ The user is the token's `email` claim (`user_claim="sub"` for its subject; a tok
 one token share one session. The header never speaks for such a caller: a request with both an
 `Authorization` header and `X-Toolpass-User` is refused with 400.
 
-Upgrading from `toolpass.mcp.guard` (0.10 and earlier): put `@secured_tool()` (with
+Upgrading from `toolpass.mcp.guard` (0.10 and earlier): put `@toolpass.tool()` (with
 `authorize=permission_check(...)` for the rule a tool had) under each `@mcp.tool()`, replace
 `guard(...)` with `token_session()` or `session_from_header`, and drop the `[mcp]` extra.
 

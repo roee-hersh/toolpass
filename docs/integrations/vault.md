@@ -90,7 +90,7 @@ but Vault does not have contributes nothing, as in Vault.
 |---|---|
 | `kv:<mount>/<key>` | a secret in a KV engine; the mount is the longest `sys/mounts` prefix (mounts may span several segments), its KV version decides the API path (`<mount>/data/<key>`, `metadata`, `destroy` on v2; the logical path on v1) |
 | `path:<api path>` | any API path, checked as written (`sys/seal`, `pki/issue/web`, `secret/data/x`) |
-| `path:<api path>?namespace=<ns>` | the API path of a request made in namespace `<ns>` (its `X-Vault-Namespace` header; empty for none), as the [route table](#requests-a-secured-tool-makes) writes it |
+| `path:<api path>?namespace=<ns>` | the API path of a request made in namespace `<ns>` (its `X-Vault-Namespace` header; empty for none), as the [route table](#requests-a-toolpass-tool-makes) writes it |
 
 Paths are plain segments (letters, digits, `_ . - @ : ~ =`); wildcards and dot-only segments are
 rejected. `LIST` questions are evaluated both with the trailing slash Vault adds and without it, as
@@ -145,7 +145,7 @@ Policies in HCL (including the deprecated `policy = "read|write|sudo|deny"` attr
 `path = { ... }` maps and nested `control_group` blocks, which are skipped) and in JSON (object and
 list forms) are parsed. Heredocs and other syntax answer `unsupported`.
 
-## Requests a secured tool makes
+## Requests a toolpass tool makes
 
 The [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a tool's body sends
 to `<url>/v1/...` to the capability Vault itself checks on the path, whatever engine is mounted
