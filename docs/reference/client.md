@@ -113,7 +113,6 @@ no rule).
 |---|---|---|---|
 | `toolpass.strands` (`strands`) | `ToolpassAuthorization`, an intervention handler | `invocation_state[user_key]` | `user_key="user_id"`, `groups_key=None` |
 | `toolpass.langchain` (`langchain`) | `ToolpassMiddleware`, agent middleware; `.tool_node(tools)` for LangGraph | the runtime context's `user_key`, else `user` | `user`, `groups`, `user_key="user_id"`, `groups_key=None` |
-| `toolpass.mcp` (`mcp`) | `guard(server, tp, rules, ...)`, server middleware | the access token's `user_claim`, else `user` | `user`, `groups`, `user_claim="email"`, `groups_claim=None` |
 | `toolpass.openai_agents` (`openai-agents`) | `ToolpassGuardrails`; `.apply(agent)`, `.protect(tools)` | the run context's `user_key`, unless `user` | `user_key="user_id"`, `groups_key=None`, `user`, `groups` |
 | `toolpass.claude_agent_sdk` (`claude-agent-sdk`) | `ToolpassHooks`; `.apply(options)`, `.hooks()`, `.can_use_tool` | `user` (required) | `groups`, `timeout=60` |
 | `toolpass.google_adk` (`google-adk`) | `ToolpassCallbacks`; `.apply(agent)`, `.plugin()` | the session's `user_id`, unless `user` | `user`, `groups` |

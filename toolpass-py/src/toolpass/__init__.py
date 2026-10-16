@@ -38,7 +38,7 @@ from toolpass._context import ObservedAction, as_agent, current_call
 from toolpass._default import configure, default_toolkit, secured_tool
 from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
 from toolpass._permissions import permission_check
-from toolpass._session import Session, current_session
+from toolpass._session import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, USER_HEADER, Session, current_session, session_from_header
 from toolpass._toolkit import (
     EFFECTS,
     AuthDecision,
@@ -63,7 +63,11 @@ __all__ = [
     "ALLOW",
     "DENY",
     "EFFECTS",
+    "GROUPS_HEADER",
+    "KEY_HEADER",
+    "SESSION_HEADER",
     "UNKNOWN",
+    "USER_HEADER",
     "ActionRecorder",
     "ActionRefused",
     "AuditEvent",
@@ -106,6 +110,7 @@ __all__ = [
     "log_audit",
     "permission_check",
     "secured_tool",
+    "session_from_header",
     "spec_of",
     "watch",
 ]
