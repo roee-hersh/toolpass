@@ -57,6 +57,9 @@ def test_every_route_names_a_known_action():
         ("GET", f"{V}/sobjects/ContentVersion/068xx000000kO7j/VersionData", None, "", "record.read", "record:068xx000000kO7j", "read"),
         ("PATCH", f"{V}/sobjects/Account/{A}", {"Name": "Acme", "NumberOfEmployees": 5}, "", "record.edit", f"record:{A}", "write"),
         ("PATCH", f"{V}/sobjects/Account/{A}", {"OwnerId": U}, "", "record.transfer", f"record:{A}", "write"),
+        # A standard field not named ...Id is text, whatever its value looks like.
+        ("PATCH", f"{V}/sobjects/Account/{A}", {"AccountNumber": "ACCT00012345678", "Site": "HQ2A0000000ABCDEFG"}, "", "record.edit", f"record:{A}", "write"),
+        ("POST", f"{V}/sobjects/Account", {"Name": "x", "AccountNumber": "ACCT00012345678", "ParentId": None}, "", "object.create", "object:Account", "write"),
         ("DELETE", f"{V}/sobjects/Account/{A}", None, "", "record.delete", f"record:{A}", "destructive"),
         ("POST", f"{V}/sobjects/Contact", {"LastName": "Doe", "Email": "d@example.com"}, "", "object.create", "object:Contact", "write"),
         ("POST", f"{V}/sobjects/Invoice__c", {"attributes": {"type": "Invoice__c"}, "Amount__c": 3}, "", "object.create", "object:Invoice__c", "write"),
@@ -115,6 +118,11 @@ def test_routing(method, path, body, query, action, resource, effect):
         ("PATCH", f"{V}/sobjects/Contact/{A}", {"AccountId": "001xx000003DGb3AAG"}, "", JSON, "another record"),
         ("POST", f"{V}/sobjects/Contact", {"LastName": "x", "AccountId": "001xx000003DGb3"}, "", JSON, "another record"),
         ("POST", f"{V}/sobjects/Contact", {"LastName": "x", "Account": {"Ext__c": "1"}}, "", JSON, "nested"),
+        # Lookups: any Id in an Id-named field (no digit needed, spaces trimmed), an Id-like value in a custom field.
+        ("PATCH", f"{V}/sobjects/Account/{A}", {"RecordTypeId": "012xx0000004ABCAAA"}, "", JSON, "another record"),
+        ("POST", f"{V}/sobjects/Account", {"Name": "x", "ParentId": " abcdefghijklmnopqr "}, "", JSON, "another record"),
+        ("POST", f"{V}/sobjects/Invoice__c", {"Manager__c": U}, "", JSON, "another record"),
+        ("PATCH", f"{V}/sobjects/Account/{A}", {"ns__Partner__c": "001xx000003DGb3"}, "", JSON, "another record"),
         ("POST", f"{V}/sobjects/Account", {"Name": "x", "OwnerId": U}, "", JSON, "owned by someone else"),
         ("PATCH", f"{V}/sobjects/Account/{A}", {"Id": "001xx000003DGb3AAG"}, "", JSON, "leave Id out"),
         ("PATCH", f"{V}/sobjects/Account/{A}", {"Name": "a", "name": "b"}, "", JSON, "more than once"),
@@ -153,7 +161,7 @@ def test_routing(method, path, body, query, action, resource, effect):
         ("POST", f"{V}/sobjects/Account", {"Name": "x"}, "_HttpMethod=DELETE", JSON, "override"),
         ("POST", f"{V}/sobjects/Account", {"Name": "x"}, "", JSON, "override-header"),
         ("GET", f"{V}/sobjects/Account/{A};x=1", None, "", JSON, "a ; in the path"),
-        ("GET", f"{V}/sobjects/Account/x/../{A}", None, "", JSON, "dot segment"),
+        ("GET", f"{V}/sobjects/Account/x/../{A}", None, "", JSON, "segment"),
         ("GET", f"{V}//sobjects/Account/{A}", None, "", JSON, "not routed"),
     ],
 )

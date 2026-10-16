@@ -145,10 +145,11 @@ microsoft365` prints it. The connection's `url` is the host (a national cloud's 
 
 | Request | Action and resource |
 |---|---|
-| `GET /drives/{drive-id}/items/{item-id}` (or `/root`), its content, versions, permissions, workbook | `file.read` on `drive:<drive id>/item/<item id>` |
+| `GET /drives/{drive-id}/items/{item-id}` (or `/root`), its content, versions, workbook, its list item's fields and versions | `file.read` on `drive:<drive id>/item/<item id>` |
 | change, upload, check in or out, restore, label, `POST .../children` | `file.edit` on the item (a new child: on its folder) |
 | `PUT .../items/{parent-id}:/{name}:/content` with `@microsoft.graph.conflictBehavior=fail` or `rename` | `file.edit` on the folder |
-| `createLink`, `invite`, the item's permissions | `file.share` on the item, sends out |
+| `createLink`, `invite`, changing the item's permissions | `file.share` on the item, sends out |
+| reading the item's permissions (they carry its sharing links) | `file.share` on the item |
 | `DELETE` the item, `permanentDelete` | `file.delete` on the item |
 | `GET /teams/{guid}`, its members, channel list, apps, tags; the General channel | `team.member` on `team:<guid>` |
 | change, archive or delete a team; its members, channels, apps, tags | `team.owner` on `team:<guid>` |
@@ -157,9 +158,9 @@ microsoft365` prints it. The connection's `url` is the host (a national cloud's 
 | change or delete a channel or someone's message; the channel's members, tabs, sharing | `channel.owner` |
 | `GET /groups/{guid}` and its members, owners, conversations, calendar, planner | `group.member` on `group:<guid>` (`/team`: `team.member`) |
 | `POST /users/{email or id}/sendMail`, a draft's `send`, `reply`, `replyAll`, `forward` | `mail.send_as_self` on `mailbox:<email or id>`, sends out |
-| anything else in that user's messages, folders, mailbox settings, calendar, events, contacts | `user.active` on `mailbox:<email or id>` (allowed for the user's own mailbox only); calendar changes, inbox rules and automatic replies send out |
+| anything else in that user's messages, folders, mailbox settings, calendar, events, contacts; `GET /users/{email or id}?$select=mailboxSettings` (or `$select=*`) | `user.active` on `mailbox:<email or id>` (allowed for the user's own mailbox only); calendar changes, inbox rules and automatic replies send out |
 | `GET /users/{id}/drive`, `/drives`, `/joinedTeams` | `user.active` on `user:<id>` |
-| `GET /me`, `/users`, `/users/{id}`, `/groups`, `/teams`, `/drives`, a drive's metadata | no check: the agent's own account, or directory data every member may read |
+| `GET /me`, `/users`, `/users/{id}` (without `mailboxSettings` in `$select`), `/groups`, `/teams`, `/drives`, a drive's metadata | no check: the agent's own account, or directory data every member may read |
 | reads outside the claimed areas listed below (`/organization`, `/reports`, ...) | no check |
 
 A message whose `from` or `sender` names another mailbox is checked as `mail.send_as` on that
@@ -172,6 +173,12 @@ to one checked resource:
 - `$batch`: each request is sent on its own so each is checked.
 - An item addressed by path (`/root:/a/b.txt`), through a site, group, user or sharing link, or by
   navigating to another item; address it as `/drives/{drive-id}/items/{item-id}`.
+- An item's or list item's `createdByUser` and `lastModifiedByUser` (another user's profile and
+  mailbox settings), and anything below the list item but its `fields` and `versions`.
+- `$select=mailboxSettings` (or `*`) on the user list, a manager or direct reports, which would read
+  other mailboxes' settings.
+- Deleted teams (`/teamwork/deletedTeams` and below, in any spelling): their channels, messages
+  and files belong to no team whose membership could be checked.
 - Folder listings (`children`, `delta`, `search`): a listing carries every child's metadata and
   download link, and a child may be narrower than its folder. A child is read by id
   (`/items/{folder}/children/{child-id}`).

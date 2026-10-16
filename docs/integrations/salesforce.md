@@ -219,9 +219,13 @@ subquery or semi-join, a relationship field (`Owner.Email`, also in `WHERE`), `T
 parameter beside one `q`. Most users hold no View All on an object, so a general query is usually
 refused; ask for one record by Id instead. Also refused:
 
-- a body that names another record (a value that is an Id, a nested record or reference by external
-  id, child records), `Id` in the body, `OwnerId` on create, records of several types, a body that
-  is not JSON or names a field twice;
+- a body that names another record (a lookup, a nested record or reference by external id, child
+  records), `Id` in the body, `OwnerId` on create, records of several types, a body that is not
+  JSON or names a field twice. A lookup is a 15- or 18-character Id in a field whose name ends in
+  `Id` (`AccountId`, `ParentId`, `RecordTypeId`: whether the user may use a record type has no
+  check), or an Id-like value (letters and digits, 15 or 18 long, with a digit) in a custom or
+  namespaced field (`Manager__c`), whose name does not show whether it is a lookup. Other standard
+  fields are text, so `"AccountNumber": "ACCT00012345678"` is routed;
 - a record by external id, a related list (`/sobjects/{Type}/{Id}/Contacts`), the object summary
   (`/sobjects/{Type}`, which lists recent records), `/query/{locator}` pages;
 - composite and batch requests that bundle several (`/composite`, `/composite/batch`,

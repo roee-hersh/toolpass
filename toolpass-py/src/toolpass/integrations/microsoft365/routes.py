@@ -4,7 +4,8 @@ The table claims the parts of Graph the integration can check:
 
 - drive items, addressed ``/drives/{drive-id}/items/{item-id}`` (or ``/root``):
   ``file.read``, ``file.edit``, ``file.share`` and ``file.delete`` on
-  ``drive:<drive id>/item/<item id>``;
+  ``drive:<drive id>/item/<item id>`` (reading the item's permissions is
+  ``file.share``: they carry its sharing links);
 - teams and channels: ``team.member`` and ``team.owner`` on ``team:<guid>``,
   ``channel.read``, ``channel.message.post`` and ``channel.owner`` on
   ``team:<guid>/channel/<channel id>``;
@@ -12,13 +13,16 @@ The table claims the parts of Graph the integration can check:
 - the mailbox, calendar and contacts of the user the path names
   (``/users/{email or id}/...``): ``mail.send_as_self`` to send, else
   ``user.active`` on ``mailbox:<email or id>``, which allows the session's
-  user their own mailbox only.
+  user their own mailbox only; a profile read that selects
+  ``mailboxSettings`` (or ``*``) is that mailbox too.
 
 It refuses what it cannot tie to one checked resource: ``/me`` (the token's
 own account, not necessarily the session's user), ``$batch``, items addressed
 by path or through a site, group, user or share, folder listings (a listing
 carries every child's download link, and a child may be narrower than its
-folder), moves and copies (a second item), a message whose ``from`` or
+folder), an item's ``createdByUser`` and ``lastModifiedByUser`` (another
+user's settings), deleted teams (``/teamwork/deletedTeams``), moves and
+copies (a second item), a message whose ``from`` or
 ``sender`` names another mailbox (routed as ``mail.send_as``, which Graph
 cannot answer), MIME bodies (they can name any sender), ``$expand`` (it
 reaches related resources the check did not cover), and Graph's other
@@ -213,11 +217,17 @@ def _item(var: str | None = "item_id") -> _Ex:
 
 # What a read below one item may ask for; each stays on that item.
 _ITEM_READS = frozenset({"content", "thumbnails", "versions", "permissions", "listItem", "workbook", "analytics", "activities"})
+# What a read below the item's SharePoint list item may ask for: its
+# fields and versions (createdByUser and lastModifiedByUser are other users).
+_LIST_ITEM_READS = frozenset({"fields", "versions"})
+_USER_NAVIGATION = frozenset({"createdbyuser", "lastmodifiedbyuser"})
 
 
 def _item_read(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """GET below an item: children/{id} moves to that child; a listing
-    (children, delta, search) and navigation to another item are refused."""
+    (children, delta, search) and navigation to another item or user are
+    refused. The item's permissions carry its sharing links, so reading
+    them is file.share."""
     _drive(vars_)
     item = vars_.get("item_id", "root")
     segs = vars_["rest"].split("/")
@@ -229,13 +239,25 @@ def _item_read(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
         )
     if any(s == "driveItem" or s.endswith(":") for s in segs):
         raise _Refused("a path that leads to another item is not routed; address it as /drives/{drive-id}/items/{item-id}")
-    return {"item": _item_id(item)}
+    if any(s.strip().lower().removeprefix("microsoft.graph.") in _USER_NAVIGATION for s in segs):
+        raise _Refused("createdByUser and lastModifiedByUser reach another user's profile and settings; they are not routed")
+    if len(segs) > 1 and segs[0] == "listItem" and segs[1] not in _LIST_ITEM_READS:
+        raise _Refused(f"{segs[1]!r} below a list item is not routed; its fields and versions are")
+    out = {"item": _item_id(item)}
+    if segs and segs[0] == "permissions":
+        out["_action"] = "file.share"
+    return out
+
+
+def _this_item(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    """The item the path names: /items/{item-id} or the drive's /root."""
+    return _item("item_id" if "item_id" in vars_ else None)(r, vars_)
 
 
 def _item_patch(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """PATCH an item: a rename is an edit; a move (parentReference) puts it
     in a folder the check did not cover."""
-    out = _item()(r, vars_)
+    out = _this_item(r, vars_)
     doc = _strict_json(r)
     if _member(doc, "parentReference") is not None:
         raise _Refused("moving an item is not routed: the destination folder is a second item")
@@ -246,7 +268,7 @@ def _item_patch(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
 def _item_create(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     """POST children: a new item in the folder, never one that replaces an
     existing child or links another drive's item."""
-    out = _item("item_id" if "item_id" in vars_ else None)(r, vars_)
+    out = _this_item(r, vars_)
     doc = _strict_json(r)
     for name in ("parentReference", "remoteItem"):
         if _member(doc, name) is not None:
@@ -256,7 +278,7 @@ def _item_create(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
 
 
 def _item_restore(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
-    out = _item()(r, vars_)
+    out = _this_item(r, vars_)
     doc = _strict_json(r, optional=True)
     if _member(doc, "parentReference") is not None:
         raise _Refused("restoring into another folder is not routed: the folder is a second item")
@@ -353,8 +375,16 @@ def _drive_routes() -> list[Route]:
             out.append(_route(method, base + "/workbook", ed, _ITEM, body=it, spec=var is not None))
         for method in ("POST", "PATCH", "PUT", "DELETE"):
             out.append(_route(method, base + "/workbook/{rest+}", ed, _ITEM, body=it, spec=False))
-            out.append(_route(method, base + "/listItem/{rest+}", ed, _ITEM, body=it, spec=False))
+            out.append(_route(method, base + "/listItem/{rest+}", ed, _ITEM, body=_list_item_write, spec=False))
     return out
+
+
+def _list_item_write(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    """A write below the item's list item: its fields and versions only."""
+    segs = vars_["rest"].split("/")
+    if segs[0] not in _LIST_ITEM_READS or any(s.strip().lower().removeprefix("microsoft.graph.") in _USER_NAVIGATION for s in segs):
+        raise _Refused(f"{'/'.join(segs)!r} below a list item is not routed; its fields and versions are")
+    return _this_item(r, vars_)
 
 
 # -- teams --------------------------------------------------------------------
@@ -598,18 +628,55 @@ def _user_read(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     if segs in (("drive",), ("drives",), ("joinedTeams",)):
         return {"resource": f"user:{user}"}
     if segs in _USER_NONE:
+        if segs[0] in ("manager", "directReports") and _selects_mailbox(r):
+            raise _Refused("selecting mailboxSettings reads other users' mailboxes; read each as /users/{id}/mailboxSettings")
         return {"resource": "", "_action": ""}
     raise _Refused(
         f"{'/'.join(segs)!r} below a user is not routed; the mailbox, calendar and contacts are, and files as /drives/{{drive-id}}/items/{{item-id}}"
     )
 
 
+# Properties of a user that $select returns from the mailbox rather than the
+# directory; /users/{id}/mailboxSettings checks them as the mailbox.
+_MAILBOX_PROPERTIES = ("mailboxsettings",)
+
+
+def _selects_mailbox(r: Request) -> bool:
+    """Whether $select (or select, in any case) names a mailbox property,
+    or every property (*)."""
+    for k, v in urllib.parse.parse_qsl(r.query, keep_blank_values=True):
+        if k.strip().lower().lstrip("$") == "select" and any(p in v.lower() for p in (*_MAILBOX_PROPERTIES, "*")):
+            return True
+    return False
+
+
+def _profile(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    """A directory profile needs no check; one that selects the mailbox's
+    settings is that mailbox, as /users/{id}/mailboxSettings is."""
+    if _selects_mailbox(r):
+        return {"_action": "user.active", "_resource": f"mailbox:{_user(vars_)}"}
+    return {}
+
+
+def _directory(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
+    if _selects_mailbox(r):
+        raise _Refused("selecting mailboxSettings on the user list reads every mailbox's settings; read one as /users/{id}/mailboxSettings")
+    return {}
+
+
 def _user_routes() -> list[Route]:
     act, send, own = "user.active", "mail.send_as_self", "user.active"
     u = "/users/{user}"
     out: list[Route] = [
-        _route("GET", "/users", None, "", description="the directory's users, as every member may list them"),
-        _route("GET", u, None, "", description="a directory profile, readable by every member"),
+        _route("GET", "/users", None, "", body=_directory, description="the directory's users, as every member may list them"),
+        _route(
+            "GET",
+            u,
+            None,
+            "",
+            body=_profile,
+            description="a directory profile, readable by every member; with $select=mailboxSettings user.active on the mailbox",
+        ),
         _route("GET", u + "/{rest+}", act, _ANY, body=_user_read, spec=False),
         _route("POST", u + "/sendMail", send, _MAILBOX, body=_sender("message"), sends_out=True),
         _route("GET", u + "/messages", own, _MAILBOX, body=_mailbox),
@@ -681,10 +748,20 @@ def _top_level(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
     if "" in segs:
         raise _Refused("an empty segment in the path is not routed")
     first = urllib.parse.unquote(segs[0])
-    token = re.split(r"[^a-z0-9.$]", first.strip().lower(), maxsplit=1)[0]
+    token = _token(first)
     if token in _CLAIMED:
         raise _Refused(f"{first!r} is not routed; write the path as Microsoft Graph v1.0 documents it")
+    if token == "teamwork" and len(segs) > 1 and _token(urllib.parse.unquote(segs[1])).startswith("deletedteams"):
+        raise _Refused(_DELETED_TEAMS)
     return {}
+
+
+def _token(seg: str) -> str:
+    """A segment's name, lowercased, without OData keys or parameters."""
+    return re.split(r"[^a-z0-9.$]", seg.strip().lower(), maxsplit=1)[0]
+
+
+_DELETED_TEAMS = "deleted teams have no check: their channels, messages and files are no team's members' any more"
 
 
 def _routes() -> list[Route]:
@@ -710,6 +787,8 @@ def _routes() -> list[Route]:
         ),
         _route("GET", "/chats", None, "", body=_refuse("chats have no check in the microsoft365 integration")),
         _route("GET", "/chats/{rest+}", None, "", body=_refuse("chats have no check in the microsoft365 integration"), spec=False),
+        _route("GET", "/teamwork/deletedTeams", None, "", body=_refuse(_DELETED_TEAMS), spec=False),
+        _route("GET", "/teamwork/deletedTeams/{rest+}", None, "", body=_refuse(_DELETED_TEAMS), spec=False),
     ]
     return out + _drive_routes() + _team_routes() + _group_routes() + _user_routes()
 
@@ -728,6 +807,7 @@ ROUTES = RouteTable(
         ("*", "/shares/**"): "an item by sharing link: address it by drive and item id",
         ("*", "/chats/**"): f"chats: {_NO_ACTION}",
         ("POST", "/chats"): f"chats: {_NO_ACTION}",
+        ("*", "/teamwork/deletedTeams/**"): _DELETED_TEAMS,
         ("POST", "/groups"): f"creating a group: {_NO_ACTION}",
         ("*", "/groups/**"): "group writes: group.member does not show the right to change a group or post to it, and there is no owner action",
         ("POST", "/teams"): f"creating a team: {_NO_ACTION}",

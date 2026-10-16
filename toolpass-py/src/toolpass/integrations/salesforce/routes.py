@@ -13,7 +13,9 @@ security is not checked separately.
 Refused: a query the parser cannot read exactly (a subquery or semi-join, a
 relationship field such as ``Owner.Email``, TYPEOF, FOR, WITH, USING), a body
 that names another record (a lookup or a nested record, which would need a
-second check), a record by external id, related lists, composite and batch
+second check: an Id in a field whose name ends in Id, RecordTypeId included,
+or an Id-like value in a custom field, which may be a lookup), a record by
+external id, related lists, composite and batch
 requests that bundle several, method overrides, and everything else the
 instance serves (Apex REST, UI API, Chatter, Tooling, Bulk, file downloads).
 """
@@ -135,11 +137,25 @@ def _strict_json(r: Request) -> Any:
         raise _Refused("the body is not JSON") from None
 
 
+def _names_record(k: str, v: str) -> bool:
+    """Whether the value of field ``k`` (lowercased) sets a lookup to
+    another record. Standard reference fields end in Id (AccountId,
+    ParentId, RecordTypeId): any 15- or 18-character Id there is a lookup.
+    A custom or namespaced field (Manager__c) may be a lookup too, which
+    its name does not show, so an Id-like value there is one. Other
+    standard fields are text, whatever their value looks like."""
+    v = v.strip()
+    if k.endswith("id"):
+        return bool(ID_RE.fullmatch(v))
+    return "__" in k and _looks_like_id(v)
+
+
 def _fields(rec: Any, typ: str, *, creating: bool) -> bool:
-    """Check one record's fields; True when it changes OwnerId. A value
-    that is an Id, a nested object or a list names another record (a
-    lookup, a parent by external id, child records), which one check
-    cannot cover."""
+    """Check one record's fields; True when it changes OwnerId. A lookup
+    (see _names_record), a nested object or a list names another record (a
+    parent by Id or external id, child records), which one check cannot
+    cover. RecordTypeId is such a lookup: whether the session's user may
+    use a record type has no check, so it is refused like the others."""
     if not isinstance(rec, dict):
         raise _Refused("a record must be a JSON object")
     owner = False
@@ -160,7 +176,7 @@ def _fields(rec: Any, typ: str, *, creating: bool) -> bool:
             continue
         if isinstance(v, (dict, list)):
             raise _Refused(f"{k} holds a nested record or a list; toolpass checks one record per request")
-        if isinstance(v, str) and _looks_like_id(v):
+        if isinstance(v, str) and _names_record(k, v):
             raise _Refused(f"{k} names another record ({v}); toolpass checks one record per request")
     return owner
 

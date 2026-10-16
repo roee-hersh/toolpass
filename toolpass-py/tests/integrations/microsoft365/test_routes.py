@@ -83,6 +83,17 @@ def test_every_route_names_a_known_action():
         ("POST", f"/drives/{D}/items/01A/invite", {"recipients": []}, "", "file.share", f"drive:{D}/item/01A", "write", True),
         ("DELETE", f"/drives/{D}/items/01A/permissions/p1", None, "", "file.share", f"drive:{D}/item/01A", "destructive", False),
         ("PATCH", f"/drives/{D}/items/01A/workbook/worksheets/S1", {"name": "x"}, "", "file.edit", f"drive:{D}/item/01A", "write", False),
+        # The item's permissions carry its sharing links: reading them is file.share.
+        ("GET", f"/drives/{D}/items/01A/permissions", None, "", "file.share", f"drive:{D}/item/01A", "read", False),
+        ("GET", f"/drives/{D}/root/permissions/p1", None, "", "file.share", f"drive:{D}/item/root", "read", False),
+        ("GET", f"/drives/{D}/items/01A/children/01B/permissions", None, "", "file.share", f"drive:{D}/item/01B", "read", False),
+        # The list item's fields and versions stay on the file.
+        ("GET", f"/drives/{D}/items/01A/listItem/fields", None, "", "file.read", f"drive:{D}/item/01A", "read", False),
+        ("GET", f"/drives/{D}/root/listItem/versions", None, "", "file.read", f"drive:{D}/item/root", "read", False),
+        ("PATCH", f"/drives/{D}/items/01A/listItem/fields", {"Title": "x"}, "", "file.edit", f"drive:{D}/item/01A", "write", False),
+        # The drive's root through the shared item extractors.
+        ("PATCH", f"/drives/{D}/root", {"description": "x"}, "", "file.edit", f"drive:{D}/item/root", "write", False),
+        ("POST", f"/drives/{D}/root/restore", {}, "", "file.edit", f"drive:{D}/item/root", "write", False),
         ("GET", f"/drives/{D}", None, "", None, "", "read", False),
         # Teams and channels.
         ("GET", f"/teams/{T}", None, "", "team.member", f"team:{T}", "read", False),
@@ -143,6 +154,12 @@ def test_every_route_names_a_known_action():
         ("GET", "/users/dana@example.com/drive", None, "", "user.active", "user:dana@example.com", "read", False),
         ("GET", "/users/dana@example.com/joinedTeams", None, "", "user.active", "user:dana@example.com", "read", False),
         ("GET", "/users/dana@example.com", None, "", None, "", "read", False),
+        ("GET", "/users/dana@example.com", None, "$select=displayName,mail", None, "", "read", False),
+        # Selecting the mailbox's settings on a profile is that mailbox.
+        ("GET", "/users/ceo@example.com", None, "$select=mailboxSettings", "user.active", "mailbox:ceo@example.com", "read", False),
+        ("GET", "/users/ceo@example.com", None, "%24SELECT=id,MailboxSettings", "user.active", "mailbox:ceo@example.com", "read", False),
+        ("GET", "/users/ceo@example.com", None, "select=mailboxSettings/timeZone", "user.active", "mailbox:ceo@example.com", "read", False),
+        ("GET", "/users/ceo@example.com", None, "$select=*", "user.active", "mailbox:ceo@example.com", "read", False),
         ("GET", "/users/dana@example.com/manager", None, "", None, "", "read", False),
         # The agent's own account and reads outside the claimed areas.
         ("GET", "/me", None, "", None, "", "read", False),
@@ -179,6 +196,15 @@ def test_a_from_or_sender_naming_another_mailbox_is_send_as():
         ("GET", f"/drives/{D}/root:/a/b.txt:/content", None, "", JSON, "drive-id"),
         ("GET", f"/drives/{D}/items/01A:/b.txt:/content", None, "", JSON, "item"),
         ("GET", f"/drives/{D}/items/01A/listItem/driveItem/content", None, "", JSON, "another item"),
+        # Another user's settings through the item or its list item.
+        ("GET", f"/drives/{D}/items/01A/listItem/createdByUser/mailboxSettings", None, "", JSON, "createdByUser"),
+        ("GET", f"/drives/{D}/items/01A/listItem/lastModifiedByUser/mailboxSettings", None, "", JSON, "createdByUser"),
+        ("GET", f"/drives/{D}/root/listItem/createdByUser/mailboxSettings", None, "", JSON, "createdByUser"),
+        ("GET", f"/drives/{D}/items/01A/listItem/versions/1.0/CreatedByUser", None, "", JSON, "createdByUser"),
+        ("GET", f"/drives/{D}/items/01A/children/01B/listItem/LastModifiedByUser", None, "", JSON, "createdByUser"),
+        ("GET", f"/drives/{D}/items/01A/listItem/activities", None, "", JSON, "list item"),
+        ("PATCH", f"/drives/{D}/items/01A/listItem/createdByUser/mailboxSettings", {}, "", JSON, "list item"),
+        ("POST", f"/drives/{D}/root/listItem/documentSetVersions", {}, "", JSON, "list item"),
         ("GET", f"/drives/{D}/items/01A", None, "$expand=children", JSON, "$expand"),
         ("GET", f"/drives/{D}/sharedWithMe", None, "", JSON, "drive-id"),
         ("PATCH", f"/drives/{D}/items/01A", {"parentReference": {"id": "02"}}, "", JSON, "moving"),
@@ -238,6 +264,18 @@ def test_a_from_or_sender_naming_another_mailbox_is_send_as():
         ("GET", "/users/dana@example.com/insights/shared", None, "", JSON, "not routed"),
         ("GET", "/users/dana@example.com/drive/root/children", None, "", JSON, "not routed"),
         ("GET", "/users/dana@example.com", None, "$expand=manager", JSON, "$expand"),
+        ("GET", "/users/not an address", None, "$select=mailboxSettings", JSON, "email address"),
+        ("GET", "/users", None, "$select=id,mailboxSettings", JSON, "mailboxSettings"),
+        ("GET", "/users/dana@example.com/manager", None, "$select=mailboxSettings", JSON, "mailboxSettings"),
+        ("GET", "/users/dana@example.com/directReports", None, "$Select=*", JSON, "mailboxSettings"),
+        # Deleted teams, in every spelling.
+        ("GET", "/teamwork/deletedTeams", None, "", JSON, "deleted teams"),
+        ("GET", "/teamwork/deletedTeams/getAllMessages()", None, "", JSON, "deleted teams"),
+        ("GET", f"/teamwork/deletedTeams/{T}/channels/{C}/messages", None, "", JSON, "deleted teams"),
+        ("GET", f"/teamwork/deletedTeams/{T}/channels/{C}/filesFolder/content", None, "", JSON, "deleted teams"),
+        ("GET", f"/Teamwork/DeletedTeams/{T}/channels", None, "", JSON, "deleted teams"),
+        ("GET", f"/teamwork/deletedTeams('{T}')/channels", None, "", JSON, "deleted teams"),
+        ("GET", f"/teamwork/%64eletedTeams/{T}/channels", None, "", JSON, "deleted teams"),
         # /me, $batch, other spellings, sites, shares, chats.
         ("GET", "/me/messages", None, "", JSON, "/me"),
         ("GET", "/me/drive/root/children", None, "", JSON, "/me"),
@@ -251,7 +289,7 @@ def test_a_from_or_sender_naming_another_mailbox_is_send_as():
         ("GET", "/chats/c1/messages", None, "", JSON, "chats"),
         # Method tunnelling and paths the server may read differently.
         ("POST", f"/drives/{D}/items/01A/checkin", {}, "", JSON, "override"),
-        ("GET", f"/drives/{D}/items/01A/content/../../01B/content", None, "", JSON, "dot segment"),
+        ("GET", f"/drives/{D}/items/01A/content/../../01B/content", None, "", JSON, "segment"),
         ("GET", f"/drives/{D}//items/01A/content", None, "", JSON, "empty segment"),
         ("GET", f"/drives/{D}/items/01A//content", None, "", JSON, "empty segment"),
     ],
@@ -293,6 +331,7 @@ def test_resources_parse_with_the_integrations_parser():
         ("POST", "/users/dana@example.com/sendMail", {"message": {"from": {"emailAddress": {"address": "ceo@example.com"}}}}),
         ("GET", "/users/" + G + "/messages", None),
         ("GET", "/users/dana@example.com/drive", None),
+        ("GET", f"/drives/{D}/items/01A/permissions", None),
     ):
         o = match(method, path, body)
         assert o.action is not None and o.resource is not None, path
@@ -310,8 +349,8 @@ def test_routed_requests_through_the_real_check(env: Env) -> None:
     _, f, c = env.setup()
     f.perms["direct"] = [perm(["read"], to_user(DANA_ID))]
 
-    def decide(user, method, path, body=None):
-        o = match(method, path, body)
+    def decide(user, method, path, body=None, query=""):
+        o = match(method, path, body, query)
         assert o.unresolved is None, o.unresolved
         return check(c, user, o.action, o.resource)
 
@@ -321,11 +360,15 @@ def test_routed_requests_through_the_real_check(env: Env) -> None:
     itest.expect_code(decide(dana, "GET", f"/groups/{GROUP_A}/members"), Code.ALLOWED)
     itest.expect_code(decide(dana, "GET", f"/drives/{DRIVE}/items/direct/content"), Code.ALLOWED)
     itest.expect_code(decide(dana, "PUT", f"/drives/{DRIVE}/items/direct/content", b"new"), Code.DENIED)
+    # Reading the item's sharing links is file.share, which a reader is not allowed.
+    itest.expect_code(decide(dana, "GET", f"/drives/{DRIVE}/items/direct/permissions"), Code.UNSUPPORTED)
     itest.expect_code(decide(dana, "POST", "/users/dana@example.com/sendMail", {"message": {}}), Code.ALLOWED)
     itest.expect_code(decide(dana, "GET", "/users/dana@example.com/messages"), Code.ALLOWED)
     # Another user's mailbox, or a message sent as someone else, is unknown.
     itest.expect_code(decide(bob, "POST", "/users/dana@example.com/sendMail", {"message": {}}), Code.UNSUPPORTED)
     itest.expect_code(decide(bob, "GET", "/users/dana@example.com/messages"), Code.UNSUPPORTED)
+    itest.expect_code(decide(bob, "GET", "/users/dana@example.com", None, "$select=mailboxSettings"), Code.UNSUPPORTED)
+    itest.expect_code(decide(dana, "GET", "/users/dana@example.com", None, "$select=mailboxSettings"), Code.ALLOWED)
     from_ceo = {"message": {"from": {"emailAddress": {"address": "ceo@example.com"}}}}
     itest.expect_code(decide(dana, "POST", "/users/dana@example.com/sendMail", from_ceo), Code.UNSUPPORTED)
 
