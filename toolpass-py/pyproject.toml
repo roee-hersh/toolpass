@@ -81,7 +81,7 @@ warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 # The framework adapters import their framework, an optional extra.
-module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*"]
+module = ["strands.*", "langchain.*", "langchain_core.*", "langgraph.*", "mcp.*", "agents.*", "claude_agent_sdk.*", "google.adk.*", "google.genai.*", "pydantic_ai.*", "crewai.*", "llama_index.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
