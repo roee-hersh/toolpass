@@ -49,3 +49,24 @@ def test_a_host_with_a_trailing_dot_is_the_same_connection() -> None:
     conns = Connections.from_mappings([{"id": "gh", "integration": "github", "url": "https://ghe.example"}])
     hit = conns.resolve(req("POST", "/api/v3/repos/acme/x/pulls", "ghe.example."))
     assert hit is not None and hit[0].id == "gh"
+
+
+@pytest.mark.parametrize(
+    ("headers", "query", "body"),
+    [
+        ({"x-http-method-override": "DELETE"}, "", b"{}"),
+        ({"x-http-method": "PUT"}, "", b"{}"),
+        ({}, "_method=DELETE", b"{}"),
+        ({"content-type": "application/x-www-form-urlencoded"}, "", b"_method=DELETE&title=x"),
+    ],
+)
+def test_a_method_override_is_unresolved(headers: dict[str, str], query: str, body: bytes) -> None:
+    h = {"content-type": "application/json", **headers}
+    o = GITHUB.match(Request("https", "ghe.example", 443, "POST", "/api/v3/repos/acme/x/pulls", query, h, body), "/api/v3")
+    assert o is not None and o.unresolved
+
+
+def test_a_body_the_hook_did_not_read_is_unresolved_where_the_route_reads_it() -> None:
+    r = Request("https", "slack.com", 443, "POST", "/api/chat.postMessage", "", {"content-type": "application/json"}, None, streamed=True)
+    o = SLACK.match(r)
+    assert o is not None and o.unresolved and "stream" in o.unresolved

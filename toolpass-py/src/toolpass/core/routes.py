@@ -110,7 +110,8 @@ class Request:
 
     ``path`` is percent-decoded per segment; ``raw_path`` is as sent.
     ``headers`` keys are lowercased. ``body`` is the request body when it
-    was bytes or text, else None (a stream or file is not read)."""
+    was bytes or text, else None; ``streamed`` is True when there was a body
+    the hook could not read (a stream, a file, a form it cannot encode)."""
 
     scheme: str
     host: str
@@ -120,6 +121,7 @@ class Request:
     query: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
     body: bytes | None = None
+    streamed: bool = False
 
     @property
     def path(self) -> str:
@@ -221,6 +223,10 @@ class Request:
     def describe(self) -> str:
         port = "" if self.port in (None, 80, 443) else f":{self.port}"
         return f"{self.method} {self.scheme}://{self.host}{port}{self.raw_path}"
+
+
+# Headers that make a server run another method than the request line's.
+_METHOD_OVERRIDES = ("x-http-method-override", "x-http-method", "x-method-override")
 
 
 def _decode_segment(s: str) -> str:
@@ -511,6 +517,9 @@ class RouteTable:
         method = request.method.upper()
         if self._encoded_prefix(request.raw_path, prefix):
             return Observed(None, None, effect_of_method(method), False, True, unresolved="the path spells its API prefix percent-encoded; it is not routed")
+        if any(h in request.headers for h in _METHOD_OVERRIDES) or "_method" in request.params() or "_method" in request.form():
+            # The server would run another method than the one this request is checked as.
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the request overrides its method; it is not routed")
         if any(_decode_segment(seg) in (".", "..") for seg in request.raw_path.split("/")):
             # A server that collapses /a/b/.. acts on /a, a route reading /a/b/{x} would check something else.
             return Observed(None, None, effect_of_method(method), False, True, unresolved="the path has a . or .. segment; it is not routed")
@@ -531,6 +540,10 @@ class RouteTable:
         action = route.action
         effect: str | None = None
         literal: str | None = None
+        if route.body is not None and request.streamed:
+            return Observed(
+                None, None, route.effect_for(method), route.sends_out, True, route=route, unresolved="the request body is a stream toolpass does not read"
+            )
         if route.body is not None:
             try:
                 extra = route.body(request, values)
