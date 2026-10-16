@@ -106,6 +106,35 @@ exists).
 
 Only the numeric error code is read from an error body; messages are never copied into a decision.
 
+## Routes
+
+The secure-tools toolkit maps a tool's requests to the API (`url`, by default `api.pagerduty.com`) to
+these actions; `toolpass routes pagerduty` prints the table.
+
+| Requests | Action and resource |
+|---|---|
+| `PUT /incidents/{id}` (or `PUT /incidents` with one incident) setting `status: acknowledged`, `status: resolved`, or `assignments` / `escalation_level` / `escalation_policy` | `incident.acknowledge`, `incident.resolve` or `incident.reassign` on the incident |
+| resolving an incident's alerts; snoozing; requesting or cancelling responders | `incident.resolve`, `incident.acknowledge`, `incident.reassign` |
+| changing or deleting a service, escalation policy or schedule (v1 and v3), and a service's integrations, rules and orchestration | `service.edit`, `escalation_policy.edit`, `schedule.edit` on it |
+| schedule overrides | `schedule.override` |
+| a maintenance window for one service | `service.maintenance` on it |
+| a new escalation policy or schedule for one team; a team's members and roles | `team.manage` on the team |
+| a new service | `escalation_policy.edit` on its escalation policy, which decides its teams |
+| a new escalation policy or schedule for no team; account configuration (users, webhooks, extensions, rulesets, event orchestrations, status pages, incident types and fields, templates, teams created or deleted) | `account.admin` |
+| analytics queries, schedule previews, template rendering (sent as `POST`) | no check; a read |
+
+`account.admin` is never weaker than PagerDuty's own rule (owners and global admins may do all of
+it), only stricter for roles that may do part of it.
+
+Refused: an incident update that does two of acknowledge, resolve and reassign, or changes anything
+else (title, priority, urgency, service, type); moving an alert to another incident; bodies that
+move objects between teams (a service's `escalation_policy`, an escalation policy's `services`, any
+`teams` on an update) or name several services or teams; creating incidents, notes, status updates,
+merges, incident field values and business service impact, for which the integration has no action;
+and the account's IP allow lists, session settings and OAuth delegations. Bodies are read as
+`application/json` only; a duplicated member or a compressed body is refused. Reads are allowed and
+marked untrusted: the integration has no read actions.
+
 ## What it cannot see
 
 - Object-level roles ("Additional Permissions" on a single service, escalation policy or schedule):
