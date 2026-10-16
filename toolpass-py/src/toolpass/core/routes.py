@@ -369,7 +369,7 @@ Locator = Callable[[Any], Sequence[tuple[str, str]]]
 
 def host_key(host: str, port: int | None, scheme: str = "https") -> str:
     """``host`` or ``host:port`` when the port is not the scheme's default."""
-    host = host.lower().strip("[]")  # an IPv6 literal, with or without the URL's brackets
+    host = host.lower().strip("[]").rstrip(".")  # an IPv6 literal, with or without the URL's brackets; a fully qualified name's dot
     if port is None or (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
         return host
     return f"{host}:{port}"

@@ -122,7 +122,7 @@ class Connections:
     def resolve(self, request: Request) -> tuple[_Conn, str] | None:
         """The connection a request is addressed to and the path prefix to
         strip, or None. The longest matching prefix wins."""
-        keys = {host_key(request.host, request.port, request.scheme), request.host.lower()}
+        keys = {host_key(request.host, request.port, request.scheme), request.host.lower().rstrip(".")}
         best: tuple[_Conn, str] | None = None
         for c in self._conns:
             for host, prefix in c.endpoints:
@@ -184,7 +184,7 @@ def _other_host(request: Request) -> str | None:
     given = (request.headers.get("host") or "").strip().lower()
     if not given:
         return None
-    host, port = request.host.lower().strip("[]"), request.port
+    host, port = request.host.lower().strip("[]").rstrip("."), request.port
     same = {host, host_key(host, port, request.scheme)}
     if port is not None:
         same.add(f"{host}:{port}")

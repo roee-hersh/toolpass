@@ -38,3 +38,14 @@ def test_a_table_prefix_spelled_encoded_is_unresolved() -> None:
 def test_plain_paths_still_route() -> None:
     o = GITHUB.match(req("POST", "/api/v3/repos/acme/x/pulls"), "/api/v3")
     assert o is not None and o.unresolved is None and o.action == "pr.create"
+
+
+def test_a_host_with_a_trailing_dot_is_the_same_connection() -> None:
+    # urllib3 connects to storage.googleapis.com. as storage.googleapis.com; so must attribution.
+    from toolpass._wire import Connections
+    from toolpass.core.routes import host_key
+
+    assert host_key("API.GitHub.com.", 443) == "api.github.com"
+    conns = Connections.from_mappings([{"id": "gh", "integration": "github", "url": "https://ghe.example"}])
+    hit = conns.resolve(req("POST", "/api/v3/repos/acme/x/pulls", "ghe.example."))
+    assert hit is not None and hit[0].id == "gh"
