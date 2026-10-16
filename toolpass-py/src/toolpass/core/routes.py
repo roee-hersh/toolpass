@@ -492,14 +492,29 @@ class RouteTable:
                 return path[len(p) :] or "/"
         return path
 
+    def _encoded_prefix(self, path: str, prefix: str) -> bool:
+        """True when the raw ``path`` reaches a prefix only once decoded
+        (``/%761/...``, ``/v1%2F...``): the server strips it, so the rest
+        would be checked as a different path than the one it serves."""
+        decoded = urllib.parse.unquote(path)
+        for p in (prefix.rstrip("/"), *self.prefixes):
+            if p and (decoded == p or decoded.startswith(p + "/")) and not (path == p or path.startswith(p + "/")):
+                return True
+        return False
+
     def match(self, request: Request, prefix: str = "") -> Observed | None:
         """The observed action for a request, or None when no route matches.
 
         Matching runs on the raw (still percent-encoded) path, so an encoded
         ``/`` inside one segment stays inside it, as the server reads it;
         the captured variables are decoded afterwards."""
-        path = self.strip(request.raw_path, prefix)
         method = request.method.upper()
+        if self._encoded_prefix(request.raw_path, prefix):
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the path spells its API prefix percent-encoded; it is not routed")
+        if any(_decode_segment(seg) in (".", "..") for seg in request.raw_path.split("/")):
+            # A server that collapses /a/b/.. acts on /a, a route reading /a/b/{x} would check something else.
+            return Observed(None, None, effect_of_method(method), False, True, unresolved="the path has a . or .. segment; it is not routed")
+        path = self.strip(request.raw_path, prefix)
         # The most specific template whose route takes this method: a GET on
         # /repos/{o}/{r}/contents/{path} falls through to /repos/{o}/{r}/{rest+}
         # when only PUT and DELETE are routed on the contents template.

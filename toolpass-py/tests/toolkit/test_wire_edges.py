@@ -118,3 +118,24 @@ def test_routes_cli_effects_match_the_hooks(capsys):
     [line] = [ln for ln in out.splitlines() if "/repos/{owner}/{repo}/git/refs/{ref+}" in ln and ln.strip().startswith("DELETE")]
     assert line.rstrip().endswith("destructive  (resource from the body)")
     assert json.dumps(out)  # printable
+
+
+def test_a_host_header_naming_another_host_is_refused(gh, engine, events):
+    # S3 and other virtual-hosted services act on the host the header names, not the one connected to.
+    import urllib.request
+
+    tools = Toolkit(audit=events, permissions=engine)
+
+    @tools.tool()
+    def write(host: str) -> Any:
+        r = urllib.request.Request(f"{gh.url}/api/v3/repos/acme/x/pulls", data=b"{}", method="POST", headers={"Host": host})
+        with urllib.request.urlopen(r) as resp:
+            return resp.status
+
+    with Session("admin@example.com").active(), pytest.raises(ActionRefused) as e:
+        write("victim.example")
+    assert e.value.code == "host_mismatch"
+    assert requests_seen(gh) == []
+    gh_host = gh.url.split("//", 1)[1]
+    with Session("admin@example.com").active():
+        assert write(gh_host) == 201  # the same host, as clients send it

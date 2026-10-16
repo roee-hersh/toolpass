@@ -178,11 +178,32 @@ def observe(request: Request) -> None:
         raise _refuse(ctx, key, obs, exc) from e
 
 
+def _other_host(request: Request) -> str | None:
+    """The Host header, when it names another host than the one the request
+    is sent to; None when it is absent or the same."""
+    given = (request.headers.get("host") or "").strip().lower()
+    if not given:
+        return None
+    host, port = request.host.lower().strip("[]"), request.port
+    same = {host, host_key(host, port, request.scheme)}
+    if port is not None:
+        same.add(f"{host}:{port}")
+    bare = given.rstrip(".")
+    if bare.startswith("["):  # an IPv6 literal, [::1] or [::1]:8443
+        inner, _, rest = bare[1:].partition("]")
+        bare = inner + rest
+    return None if bare in same else given
+
+
 def _check(ctx: CallContext, request: Request, key: str) -> None:
     tk, spec, session = ctx.toolkit, ctx.spec, ctx.session
     tool = spec.name
     ents: ToolEntitlements | None = ctx.entitlements
     obs = ObservedAction(request.method, request.host, request.path, effect_of_method(request.method))
+    named = _other_host(request)
+    if named is not None:
+        # The server routes by the Host header (an S3 bucket, a virtual host), not by where the connection goes.
+        raise _refuse(ctx, key, obs, ActionRefused(tool, "host_mismatch", f"{request.describe()}: its Host header names {named!r}, not {request.host}", obs))
     conns: Connections | None = tk._connections()
     hit = conns.resolve(request) if conns is not None else None
 
