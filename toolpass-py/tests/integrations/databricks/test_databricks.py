@@ -120,6 +120,18 @@ class FakeWorkspace:
                 Assignment("dana@example.com", [direct("EXECUTE"), inh("USE_SCHEMA", "SCHEMA", "main.sales"), inh("USE_CATALOG", "CATALOG", "main")]),
             ],
             "model/main.sales.churn": [Assignment("dana@example.com", [direct("EXECUTE")])],
+            # MANAGE with the parents' USE privileges, and a model dana may read.
+            "volume/main.sales.vm": [
+                Assignment("dana@example.com", [direct("MANAGE"), inh("USE_SCHEMA", "SCHEMA", "main.sales"), inh("USE_CATALOG", "CATALOG", "main")])
+            ],
+            "function/main.sales.fm": [
+                Assignment("dana@example.com", [direct("MANAGE"), inh("USE_SCHEMA", "SCHEMA", "main.sales"), inh("USE_CATALOG", "CATALOG", "main")])
+            ],
+            "model/main.sales.mm": [
+                Assignment(
+                    "dana@example.com", [direct("MANAGE"), direct("EXECUTE"), inh("USE_SCHEMA", "SCHEMA", "main.sales"), inh("USE_CATALOG", "CATALOG", "main")]
+                )
+            ],
             # ALL_PRIVILEGES on the catalog covers everything below it.
             "table/legacy.s.t": [Assignment("data-readers", [inh("ALL_PRIVILEGES", "CATALOG", "legacy")])],
             # The legacy USAGE stands for USE_CATALOG and USE_SCHEMA.
@@ -434,6 +446,78 @@ def test_action_function_execute_allow(env: Env) -> None:
 
 def test_action_function_execute_deny(env: Env) -> None:
     allow_deny(env, bob, "function.execute", "function:main.sales.fn", Code.DENIED, "")
+
+
+def test_action_volume_create_allow(env: Env) -> None:
+    allow_deny(env, dana, "volume.create", "schema:main.sales", Code.ALLOWED, "")
+
+
+def test_action_volume_create_deny(env: Env) -> None:
+    allow_deny(env, bob, "volume.create", "schema:main.sales", Code.DENIED, "lacks")
+
+
+def test_action_model_create_allow(env: Env) -> None:
+    allow_deny(env, dana, "model.create", "schema:main.sales", Code.ALLOWED, "")
+
+
+def test_action_model_create_deny(env: Env) -> None:
+    allow_deny(env, bob, "model.create", "schema:main.sales", Code.DENIED, "lacks")
+
+
+def test_action_schema_read_allow(env: Env) -> None:
+    allow_deny(env, dana, "schema.read", "schema:main.sales", Code.ALLOWED, "")
+
+
+def test_action_schema_read_deny(env: Env) -> None:
+    allow_deny(env, bob, "schema.read", "schema:main.sales", Code.DENIED, "lacks")
+
+
+def test_action_model_read_allow(env: Env) -> None:
+    allow_deny(env, dana, "model.read", "model:main.sales.mm", Code.ALLOWED, "")
+
+
+def test_action_model_read_deny(env: Env) -> None:
+    allow_deny(env, dana, "model.read", "model:main.sales.churn", Code.DENIED, "lacks")
+
+
+def test_action_schema_manage_allow(env: Env) -> None:
+    allow_deny(env, dana, "schema.manage", "schema:main.sales", Code.ALLOWED, "")
+
+
+def test_action_schema_manage_deny(env: Env) -> None:
+    allow_deny(env, bob, "schema.manage", "schema:main.sales", Code.DENIED, "lacks")
+
+
+def test_action_table_manage_allow(env: Env) -> None:
+    allow_deny(env, dana, "table.manage", "table:main.sales.orders", Code.ALLOWED, "")
+
+
+def test_action_table_manage_deny(env: Env) -> None:
+    allow_deny(env, dana, "table.manage", "table:legacy.s.t", Code.DENIED, "lacks")
+
+
+def test_action_volume_manage_allow(env: Env) -> None:
+    allow_deny(env, dana, "volume.manage", "volume:main.sales.vm", Code.ALLOWED, "")
+
+
+def test_action_volume_manage_deny(env: Env) -> None:
+    allow_deny(env, dana, "volume.manage", "volume:main.sales.files", Code.DENIED, "lacks")
+
+
+def test_action_function_manage_allow(env: Env) -> None:
+    allow_deny(env, dana, "function.manage", "function:main.sales.fm", Code.ALLOWED, "")
+
+
+def test_action_function_manage_deny(env: Env) -> None:
+    allow_deny(env, dana, "function.manage", "function:main.sales.fn", Code.DENIED, "lacks")
+
+
+def test_action_model_manage_allow(env: Env) -> None:
+    allow_deny(env, dana, "model.manage", "model:main.sales.mm", Code.ALLOWED, "")
+
+
+def test_action_model_manage_deny(env: Env) -> None:
+    allow_deny(env, dana, "model.manage", "model:main.sales.churn", Code.DENIED, "lacks")
 
 
 def test_action_uc_manage_allow(env: Env) -> None:
