@@ -3,12 +3,16 @@ its resources answered by the vault check itself."""
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from tests.harness.routes import check_routes_against_spec
-from tests.integrations.vault.test_vault import Env, check, dana, ops
+from tests.integrations.vault.test_vault import DEFAULT_POLICY, Env, bob, check, dana, ops
 from toolpass.core.catalog import parse_resource
 from toolpass.core.decision import Code, ToolpassError
 from toolpass.core.integration import Settings, find_action
@@ -65,15 +69,33 @@ def test_endpoint_is_the_url_and_v1():
         ("DELETE", "/secret/data/app", "", None, "raw:delete", "path:secret/data/app?namespace=", "destructive"),
         ("PUT", "/secret/destroy/app", "", None, "secret.write", "path:secret/destroy/app?namespace=", "destructive"),
         ("POST", "/secret/delete/app", "", None, "secret.write", "path:secret/delete/app?namespace=", "destructive"),
-        ("POST", "/auth/token/revoke-accessor", "", None, "secret.write", "path:auth/token/revoke-accessor?namespace=", "destructive"),
+        ("POST", "/auth/token/revoke-accessor", "", None, "raw:update", "path:auth/token/revoke-accessor?namespace=", "destructive"),
         ("POST", "/transit/encrypt/orders", "", None, "secret.write", "path:transit/encrypt/orders?namespace=", "write"),
         ("POST", "/pki/issue/web", "", None, "secret.write", "path:pki/issue/web?namespace=", "write"),
         ("GET", "/database/creds/readonly", "", None, "raw:read", "path:database/creds/readonly?namespace=", "read"),
-        ("PUT", "/sys/policies/acl/dev", "", None, "secret.write", "path:sys/policies/acl/dev?namespace=", "write"),
-        ("POST", "/sys/leases/lookup", "", None, "secret.write", "path:sys/leases/lookup?namespace=", "write"),
+        ("PUT", "/sys/policies/acl/dev", "", None, "raw:update", "path:sys/policies/acl/dev?namespace=", "write"),
+        ("POST", "/sys/leases/lookup", "", None, "raw:update", "path:sys/leases/lookup?namespace=", "write"),
         ("GET", "/sys/auth", "", None, "raw:read", "path:sys/auth?namespace=", "read"),
-        ("POST", "/sys/mounts/kv2", "", None, "secret.write", "path:sys/mounts/kv2?namespace=", "write"),
+        ("POST", "/sys/mounts/kv2", "", None, "raw:update", "path:sys/mounts/kv2?namespace=", "write"),
         ("POST", "/auth/approle/login", "", None, "secret.write", "path:auth/approle/login?namespace=", "write"),
+        # Endpoints of the fixed mounts without an existence check are updates (a mount
+        # or lease ID may span segments); those with one, and every path in a mount an
+        # operator named (it may be KV v1), are create or update.
+        ("POST", "/sys/wrapping/unwrap", "", None, "raw:update", "path:sys/wrapping/unwrap?namespace=", "write"),
+        ("PUT", "/sys/mounts/team/kv/tune", "", None, "raw:update", "path:sys/mounts/team/kv/tune?namespace=", "write"),
+        ("PUT", "/sys/leases/revoke/aws/creds/ro/abc", "", None, "raw:update", "path:sys/leases/revoke/aws/creds/ro/abc?namespace=", "destructive"),
+        ("POST", "/identity/entity", "", None, "raw:update", "path:identity/entity?namespace=", "write"),
+        ("POST", "/identity/oidc/key/k/rotate", "", None, "raw:update", "path:identity/oidc/key/k/rotate?namespace=", "write"),
+        ("POST", "/identity/oidc/key/k", "", None, "secret.write", "path:identity/oidc/key/k?namespace=", "write"),
+        ("POST", "/auth/token/roles/ci", "", None, "secret.write", "path:auth/token/roles/ci?namespace=", "write"),
+        ("POST", "/sys/managed-keys/pkcs11/hsm", "", None, "secret.write", "path:sys/managed-keys/pkcs11/hsm?namespace=", "write"),
+        ("POST", "/sys/policies/acl/a/b", "", None, "secret.write", "path:sys/policies/acl/a/b?namespace=", "write"),
+        ("POST", "/sys/no-such-endpoint", "", None, "secret.write", "path:sys/no-such-endpoint?namespace=", "write"),
+        ("POST", "/transit/decrypt/orders", "", None, "secret.write", "path:transit/decrypt/orders?namespace=", "write"),
+        ("POST", "/auth/userpass/login/dana", "", None, "secret.write", "path:auth/userpass/login/dana?namespace=", "write"),
+        # In the header the namespace is unambiguous; in the path its first segment may be a mount.
+        ("POST", "/sys/wrapping/unwrap", "", "team", "raw:update", "path:sys/wrapping/unwrap?namespace=team", "write"),
+        ("POST", "/team/sys/wrapping/unwrap", "", None, "secret.write", "path:team/sys/wrapping/unwrap?namespace=", "write"),
         # The namespace header, as Vault canonicalizes it, travels with the path.
         ("GET", "/secret/data/app", "", "team", "raw:read", "path:secret/data/app?namespace=team", "read"),
         ("GET", "/secret/data/app", "", "/team/child/", "raw:read", "path:secret/data/app?namespace=team/child", "read"),
@@ -167,8 +189,8 @@ def test_refused_paths(method, path, query, why):
         ("GET", "/secret/data/app/", "", None, "trailing slash"),
         ("POST", "/secret/data/app/", "", None, "trailing slash"),
         ("GET", "//secret/data/app", "", None, "empty segment"),
-        ("GET", "/secret/./data/app", "", None, "not a Vault path"),
-        ("GET", "/secret/%2e%2e/sys/raw", "", None, "not a Vault path"),
+        ("GET", "/secret/./data/app", "", None, "segment"),
+        ("GET", "/secret/%2e%2e/sys/raw", "", None, "segment"),
         ("GET", "/secret/data/a%20b", "", None, "not a Vault path"),
         ("GET", "/secret/data/*", "", None, "not a Vault path"),
         ("GET", "/secret/metadata/app", "list=yes", None, "boolean"),
@@ -281,3 +303,81 @@ def test_requests_into_a_namespaced_connection(env: Env):
         assert d.code == Code.UNSUPPORTED and "outside the connection's namespace team/" in d.text, args
     d = check(c, ops, *observed("GET", "/secret/data/app", ns="other"))
     assert d.code == Code.UNSUPPORTED
+
+
+# -- writes: create and update, or update alone ---------------------------------------
+
+
+def test_a_write_is_an_update_where_vault_has_no_existence_check(env: Env):
+    _, f, c = env.setup()
+    f.policies["default"] = DEFAULT_POLICY_WITH_UNWRAP
+    f.policies["dev"] += """
+path "transit/encrypt/app" { capabilities = ["update"] }
+path "transit/decrypt/app" { capabilities = ["update"] }
+path "kv1/upd/*" { capabilities = ["update"] }
+path "sys/policies/acl/dev-*" { capabilities = ["update"] }
+"""
+    # Vault checks update alone on endpoints of its fixed mounts without an existence check.
+    d = check(c, bob, *observed("POST", "/sys/wrapping/unwrap"))
+    assert d.code == Code.ALLOWED, d
+    assert check(c, dana, *observed("PUT", "/sys/policies/acl/dev-app")).code == Code.ALLOWED
+    # A KV write is a create when the secret is new: update alone is not enough, on v1 or v2.
+    for args in (("PUT", "/kv1/upd/x"), ("POST", "/secret/data/dev/half")):
+        d = check(c, dana, *observed(*args))
+        assert d.code == Code.UNSUPPORTED and "grants update but not create" in d.text, (args, d)
+    # transit/encrypt has an existence check (it creates a missing key), so it is a KV-like
+    # write; transit/decrypt has none, but toolpass cannot tell a transit mount from a KV v1
+    # mount named transit, so it needs both too.
+    for path in ("/transit/encrypt/app", "/transit/decrypt/app"):
+        d = check(c, dana, *observed("POST", path))
+        assert d.code == Code.UNSUPPORTED and "grants update but not create" in d.text, (path, d)
+
+
+def test_create_alone_does_not_cover_an_update(env: Env):
+    _, f, c = env.setup()
+    f.policies["default"] = DEFAULT_POLICY + 'path "sys/wrapping/unwrap" { capabilities = ["create"] }\n'
+    d = check(c, bob, *observed("POST", "/sys/wrapping/unwrap"))
+    assert d.code == Code.DENIED, d
+
+
+DEFAULT_POLICY_WITH_UNWRAP = DEFAULT_POLICY + 'path "sys/wrapping/unwrap" { capabilities = ["update"] }\n'
+
+
+def _spec_paths() -> dict[str, dict[str, object]]:
+    d = os.environ.get("TOOLPASS_SPECS_DIR", "")
+    p = Path(d) / "vault.spec"
+    if d == "" or not p.is_file():
+        pytest.skip("TOOLPASS_SPECS_DIR has no vault.spec")
+    paths = json.loads(p.read_text())["paths"]
+    assert isinstance(paths, dict)
+    return paths
+
+
+_FIXED = re.compile(r"/(sys|identity|auth/token)/")
+
+
+@pytest.mark.parametrize("sample", ["x", "a/b"])
+def test_update_alone_exactly_where_the_api_description_has_no_existence_check(sample: str):
+    """Every POST/PUT endpoint of Vault's API description, its parameters filled in
+    with one segment and with two: an endpoint with an existence check is never
+    routed as update alone, and with one-segment parameters every fixed-mount
+    endpoint without one is."""
+    checked = 0
+    for template, item in _spec_paths().items():
+        assert isinstance(item, dict)
+        for method in ("POST", "PUT"):
+            if method.lower() not in item:
+                continue
+            path = re.sub(r"\{[^}]+\}", sample, template)
+            o = match(method, path)
+            assert o is not None, (method, path)
+            if o.unresolved is not None or o.action is None:
+                continue  # refused, or the agent's own token
+            checked += 1
+            if item.get("x-vault-createSupported"):
+                assert o.action == "secret.write", (method, path, o.action)
+            elif _FIXED.match(template) and sample == "x":
+                assert o.action == "raw:update", (method, path, o.action)
+            elif not _FIXED.match(template):
+                assert o.action == "secret.write", (method, path, o.action)
+    assert checked > 300

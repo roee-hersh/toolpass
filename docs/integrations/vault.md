@@ -155,13 +155,25 @@ there, and checks it for the session's user (`toolpass routes vault` prints the 
 |---|---|---|
 | `GET`, `HEAD` | `raw:read`; with `?list=true`, `raw:list` | read |
 | `LIST` | `raw:list` | read |
-| `POST`, `PUT` | `secret.write`: `create` and `update`, since which one Vault checks depends on whether the path exists | write (destructive under a `delete`, `destroy` or `revoke…` segment) |
+| `POST`, `PUT` | `secret.write`: `create` and `update`, since which one Vault checks depends on whether the path exists; `raw:update` on an endpoint of `sys/`, `identity/` or `auth/token/` that has no existence check (see below) | write (destructive under a `delete`, `destroy` or `revoke…` segment) |
 | `PATCH` | `raw:patch` | write |
 | `DELETE` | `raw:delete` | destructive |
 
-The resource is `path:<request path>?namespace=<the X-Vault-Namespace header>`. A policy that grants
-only `update` (common for `transit/encrypt`, `pki/issue`) answers unknown for a `POST`: toolpass
-cannot tell whether Vault treats it as a create, so grant `create` too or make the call inside
+The resource is `path:<request path>?namespace=<the X-Vault-Namespace header>`.
+
+Vault treats a `POST` or `PUT` as a create only on an endpoint with an existence check (marked
+`x-vault-createSupported` in Vault's API description) whose target does not exist yet, and as an
+update everywhere else. Which endpoint a path reaches is certain only in the mounts Vault itself
+fixes, `sys/`, `identity/` and `auth/token/`, so there an endpoint the description lists without an
+existence check needs `update` alone: `sys/wrapping/unwrap`, `sys/policies/acl/<name>`,
+`sys/mounts/<path>`, `identity/entity`, `auth/token/revoke-accessor` and the like. The ones with an
+existence check (`auth/token/roles/<role>`, `identity/oidc/key/<name>` and the other OIDC objects,
+`sys/managed-keys/...`), endpoints the description does not list, and every path in a mount an
+operator named need both, since such a mount may be KV v1, where every path has an existence check.
+Name the namespace in the `X-Vault-Namespace` header rather than the path for this to apply inside
+one: `team/sys/...` may be a mount named `team`. A policy that grants only `update` on a path that
+needs both (a KV write, `transit/encrypt`, which creates a missing key, or `pki/issue`, whose mount
+toolpass cannot tell from a KV mount) answers unknown: grant `create` too or make the call inside
 `as_agent()`. `auth/token/lookup-self`, `sys/capabilities-self`, `sys/internal/ui/resultant-acl`
 (the agent's own token) and `sys/health`, `sys/seal-status`, `sys/leader` need no user permission.
 

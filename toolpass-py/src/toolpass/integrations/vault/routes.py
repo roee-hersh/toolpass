@@ -3,15 +3,17 @@ itself checks on the path.
 
 Vault authorizes a request by its path and operation alone, whatever the
 mount behind it, so one shape covers every engine and every mount name: the
-method decides the capability and the resource is ``path:<the request path>``
-with the request's namespace beside it (``?namespace=`` for the root, or the
-``X-Vault-Namespace`` header), which the check resolves against the
-connection's namespace.
+method decides the capability (for a write, with the path; see below) and the
+resource is ``path:<the request path>`` with the request's namespace beside it
+(``?namespace=`` for the root, or the ``X-Vault-Namespace`` header), which the
+check resolves against the connection's namespace.
 
     GET (with ?list=true: list), HEAD   raw:read or raw:list   read
     LIST                                raw:list               read
     POST, PUT                           secret.write           write (create and update: which one Vault
                                                                checks depends on whether the path exists)
+    POST, PUT on a fixed-mount endpoint raw:update             write
+      without an existence check
     PATCH                               raw:patch              write
     DELETE                              raw:delete             destructive
 
@@ -24,6 +26,16 @@ root-protected paths, a PKI root); operator operations Vault does not
 authorize by policy (unseal, rekey, root generation, replication, license).
 A path toolpass cannot check exactly (an empty, dot-only or unusual segment,
 a trailing slash on anything but a list, an unreadable query) is refused too.
+
+Vault checks create on a POST or PUT only where the endpoint has an existence
+check (``x-vault-createSupported`` in its API description) and the target does
+not exist yet, and update everywhere else. Which endpoint a path reaches is
+known only in the mounts Vault itself fixes, ``sys/``, ``identity/`` and
+``auth/token/`` (relative to the request's namespace, since a leading segment of
+the path may be a namespace or a mount): there the endpoints described without
+an existence check need update alone. Any other path may be in a mount an
+operator named, KV v1 among them, where every path has one, so it needs both
+(as ``transit/encrypt`` does in any case: it creates a missing key).
 
 The agent's own token (``lookup-self``, ``capabilities-self``, its resultant
 ACL) and the unauthenticated health endpoints need no user permission.
@@ -108,6 +120,111 @@ _REFUSED: tuple[tuple[str, frozenset[str] | None, str], ...] = (
 )
 
 
+# The POST and PUT endpoints of Vault's fixed mounts that Vault's API
+# description lists without an existence check (not x-vault-createSupported),
+# as globs on the path relative to its namespace: a write there is an update
+# whether or not its target exists. Refused paths are left out; a trailing "*"
+# stands for a parameter that may span segments (a mount, a lease ID).
+# Everything else needs create and update. Not here, since they have one:
+# auth/token/roles/+, identity/oidc/{assignment,client,key,provider,role,scope}/+,
+# sys/managed-keys/+/+ and its test/sign, sys/raw/*.
+_UPDATE_ONLY: tuple[str, ...] = (
+    "auth/token/lookup",
+    "auth/token/lookup-accessor",
+    "auth/token/lookup-self",
+    "auth/token/renew",
+    "auth/token/renew-accessor",
+    "auth/token/revoke",
+    "auth/token/revoke-accessor",
+    "auth/token/tidy",
+    "identity/alias",
+    "identity/alias/id/+",
+    "identity/entity",
+    "identity/entity/batch-delete",
+    "identity/entity/id/+",
+    "identity/entity/merge",
+    "identity/entity/name/+",
+    "identity/entity-alias",
+    "identity/entity-alias/id/+",
+    "identity/group",
+    "identity/group/id/+",
+    "identity/group/name/+",
+    "identity/group-alias",
+    "identity/group-alias/id/+",
+    "identity/lookup/entity",
+    "identity/lookup/group",
+    "identity/mfa/login-enforcement/+",
+    "identity/mfa/method/duo",
+    "identity/mfa/method/duo/+",
+    "identity/mfa/method/okta",
+    "identity/mfa/method/okta/+",
+    "identity/mfa/method/pingid",
+    "identity/mfa/method/pingid/+",
+    "identity/mfa/method/totp",
+    "identity/mfa/method/totp/+",
+    "identity/oidc/config",
+    "identity/oidc/introspect",
+    "identity/oidc/key/+/rotate",
+    "identity/oidc/provider/+/token",
+    "identity/oidc/provider/+/userinfo",
+    "identity/persona",
+    "identity/persona/id/+",
+    "sys/audit-hash/*",
+    "sys/capabilities",
+    "sys/capabilities-accessor",
+    "sys/capabilities-self",
+    "sys/config/control-group",
+    "sys/config/group-policy-application",
+    "sys/config/reload/+",
+    "sys/control-group/request",
+    "sys/decode-token",
+    "sys/internal/counters/config",
+    "sys/internal/specs/openapi",
+    "sys/leases/lookup",
+    "sys/leases/renew",
+    "sys/leases/renew/*",
+    "sys/leases/revoke",
+    "sys/leases/revoke/*",
+    "sys/leases/tidy",
+    "sys/locked-users/+/unlock/+",
+    "sys/loggers",
+    "sys/loggers/+",
+    "sys/mfa/method/duo/+",
+    "sys/mfa/method/okta/+",
+    "sys/mfa/method/pingid/+",
+    "sys/mfa/method/totp/+",
+    "sys/mfa/method/totp/+/admin-destroy",
+    "sys/mfa/method/totp/+/admin-generate",
+    "sys/mfa/validate",
+    "sys/mounts/*",
+    "sys/namespaces/*",
+    "sys/plugins/reload/backend",
+    "sys/policies/acl/+",
+    "sys/policies/egp/+",
+    "sys/policies/password/+",
+    "sys/policies/rgp/+",
+    "sys/policy/+",
+    "sys/quotas/config",
+    "sys/quotas/lease-count/+",
+    "sys/quotas/rate-limit/+",
+    "sys/renew",
+    "sys/renew/*",
+    "sys/revoke",
+    "sys/revoke/*",
+    "sys/rotate/config",
+    "sys/sealwrap/rewrap",
+    "sys/tools/hash",
+    "sys/tools/hash/+",
+    "sys/tools/random",
+    "sys/tools/random/+",
+    "sys/tools/random/+/+",
+    "sys/wrapping/lookup",
+    "sys/wrapping/rewrap",
+    "sys/wrapping/unwrap",
+    "sys/wrapping/wrap",
+)
+
+
 def _glob(pattern: str) -> re.Pattern[str]:
     tail = pattern.endswith("*")
     body = pattern[:-1] if tail else pattern
@@ -116,6 +233,7 @@ def _glob(pattern: str) -> re.Pattern[str]:
 
 
 _REFUSED_RE = tuple((_glob(p), methods, reason) for p, methods, reason in _REFUSED)
+_UPDATE_ONLY_RE = tuple(_glob(p) for p in _UPDATE_ONLY)
 
 # Go's strconv.ParseBool, which Vault applies to ?list=.
 _TRUE = frozenset({"1", "t", "T", "TRUE", "true", "True"})
@@ -199,6 +317,9 @@ def _capability(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
             "PATCH": ("raw:patch", "write"),
             "DELETE": ("raw:delete", "destructive"),
         }[method]
+        if action == "secret.write" and any(rx.fullmatch(path) for rx in _UPDATE_ONLY_RE):
+            # No existence check behind the path: Vault checks update alone.
+            action = "raw:update"
         if effect == "write" and any(s in ("delete", "destroy") or s.startswith("revoke") for s in path.split("/")):
             # KV v2's delete/ and destroy/, revocations: writes that remove something.
             effect = "destructive"
@@ -211,8 +332,24 @@ def _routes() -> list[Route]:
         Route("GET", "/{path+}", "raw:read", _PATH, body=cap, spec=False, description="read; ?list=true is list"),
         Route("HEAD", "/{path+}", "raw:read", _PATH, body=cap, spec=False),
         Route("LIST", "/{path+}", "raw:list", _PATH, effect="read", body=cap, spec=False),
-        Route("POST", "/{path+}", "secret.write", _PATH, body=cap, spec=False, description="create and update"),
-        Route("PUT", "/{path+}", "secret.write", _PATH, body=cap, spec=False, description="create and update"),
+        Route(
+            "POST",
+            "/{path+}",
+            "secret.write",
+            _PATH,
+            body=cap,
+            spec=False,
+            description="create and update; update alone on sys/, identity/, auth/token/ endpoints without an existence check",
+        ),
+        Route(
+            "PUT",
+            "/{path+}",
+            "secret.write",
+            _PATH,
+            body=cap,
+            spec=False,
+            description="create and update; update alone on sys/, identity/, auth/token/ endpoints without an existence check",
+        ),
         Route("PATCH", "/{path+}", "raw:patch", _PATH, body=cap, spec=False),
         Route("DELETE", "/{path+}", "raw:delete", _PATH, body=cap, spec=False),
         # The agent's own token, and health that needs no token at all.
