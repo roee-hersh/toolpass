@@ -103,7 +103,7 @@ An action on the wrong resource type is `invalid_request`.
 
 ## Route table
 
-What a secured tool's request to the site means (`toolpass routes confluence` prints the table):
+What a toolpass tool's request to the site means (`toolpass routes confluence` prints the table):
 
 | Request | Action, resource |
 |---|---|

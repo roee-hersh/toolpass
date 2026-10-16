@@ -1,19 +1,20 @@
 """toolpass: a pass for every tool call. Secure-by-default tools for AI agents.
 
     import toolpass
-    from toolpass import Session, Toolpass, permission_check, secured_tool
+    import toolpass
+    from toolpass import Session, Toolpass, permission_check
 
     tp = Toolpass.from_config("toolpass.yaml")            # permission checks, live
     toolpass.configure(credentials={"github-bot": token})
 
-    @secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot",
+    @toolpass.tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot",
                   authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"))
     def open_pr(repo: str, title: str, *, credential: str) -> str: ...
 
     with Session("dana@example.com").active():
         agent.run(prompt)
 
-``secured_tool`` declares a tool and runs the checks around every call;
+``tool`` declares a tool and runs the checks around every call;
 ``Toolkit`` holds a separate set of settings when one program needs two.
 ``Toolpass`` answers "may this user do this?" by asking the system that owns
 the resource, in-process or against a toolpass server; ``guarded`` and the
@@ -35,7 +36,7 @@ from toolpass._api import (
 from toolpass._audit import AuditEvent, AuditSink, log_audit
 from toolpass._checks import ScopeRule, Validator
 from toolpass._context import ObservedAction, as_agent, current_call
-from toolpass._default import configure, default_toolkit, secured_tool
+from toolpass._default import configure, default_toolkit, secured_tool, tool
 from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
 from toolpass._permissions import permission_check
 from toolpass._session import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, USER_HEADER, Session, current_session, session_from_header
@@ -112,5 +113,6 @@ __all__ = [
     "secured_tool",
     "session_from_header",
     "spec_of",
+    "tool",
     "watch",
 ]

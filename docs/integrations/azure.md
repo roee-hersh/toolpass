@@ -106,7 +106,7 @@ Wildcards are not accepted in `raw:` or `data:`; role definitions carry them.
 
 ## Requests a tool makes
 
-The route table (`toolpass routes azure`) maps a secured tool's requests to the connection's `url`
+The route table (`toolpass routes azure`) maps a toolpass tool's requests to the connection's `url`
 to the operation ARM authorizes them as, read from the path: `{ns}/{type}[/{type}...]/read` for GET
 and HEAD, `/write` for PUT and PATCH, `/delete` for DELETE, `/{action}/action` for a POST to
 `.../{name}/{action}`; a GET of a collection is the type's read on its parent. Paths without a

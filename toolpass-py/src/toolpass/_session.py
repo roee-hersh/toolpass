@@ -148,7 +148,7 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
     authenticated (an SSO session, the Slack user who wrote the message),
     once, on its MCP client; ``X-Toolpass-Groups``, comma-separated, names
     the user's groups for the systems that grant by group. Every
-    ``secured_tool`` the server runs then checks that user. The requests of
+    ``toolpass.tool`` the server runs then checks that user. The requests of
     one conversation share one ``Session``, so its limits, its
     untrusted-input check and its exfiltration guard hold across the tool
     calls of the conversation: the agent names the conversation in

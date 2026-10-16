@@ -194,7 +194,7 @@ Marked `# UNVERIFIED:` in the code:
 
 ## Observed requests
 
-For secured tools, the route table (`toolpass routes gitlab`) maps every request to the instance's
+For toolpass tools, the route table (`toolpass routes gitlab`) maps every request to the instance's
 host to an action of this integration, on the project or group in the path (`project:<id>` or
 `group:<id>`, the URL-encoded path or the numeric id):
 

@@ -2,10 +2,10 @@
 
     tools = Toolkit(credentials={"github-bot": token})
 
-    @tools.secured_tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot")
+    @tools.tool(effect="write", scope={"repo": "acme/gitops-*"}, credential="github-bot")
     def open_pr(repo: str, title: str, *, credential: str) -> str: ...
 
-(``toolpass.secured_tool`` is the same on a default toolkit set up by
+(``toolpass.tool`` is the same on a default toolkit set up by
 ``toolpass.configure``.) The decorated function is still an ordinary
 function with the original signature, minus the injected ``credential``, so
 any agent framework's own ``@tool`` can sit on top of it, or be applied
@@ -534,7 +534,7 @@ class Toolkit:
         name: str | None = None,
         as_tool: Callable[[Callable[..., Any]], Any] | None = None,
     ) -> Callable[[F], Any]:
-        """Declare a secured tool. ``secured_tool`` is the same method.
+        """Declare a tool. ``secured_tool`` is the same method, under its earlier name.
 
         ``effect`` is ``read``, ``write`` or ``destructive``; left out, the
         tool's actions are observed at the wire instead (every request its

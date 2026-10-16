@@ -189,7 +189,7 @@ Marked `# UNVERIFIED:` in the code:
 
 ## Observed requests
 
-For secured tools, the route table (`toolpass routes bitbucket`) maps requests to
+For toolpass tools, the route table (`toolpass routes bitbucket`) maps requests to
 `api.bitbucket.org/2.0` (Cloud) or to the instance's `/rest/api/1.0`, `/rest/api/latest` and
 `/rest/branch-utils` (Data Center) to this integration's actions:
 

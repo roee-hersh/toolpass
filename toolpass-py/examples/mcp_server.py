@@ -1,6 +1,6 @@
 """An MCP server (the official ``mcp`` SDK, v2) whose tools toolpass secures.
 
-The tools are plain functions under ``@secured_tool()``; the server needs no
+The tools are plain functions under ``@toolpass.tool()``; the server needs no
 adapter. What toolpass checks each call against is the user of the current
 ``Session``, which comes from the host or the agent, never from a tool
 argument: the model can make those up.
@@ -29,7 +29,7 @@ import sys
 from mcp.server.mcpserver import MCPServer
 
 import toolpass
-from toolpass import Session, Toolpass, permission_check, secured_tool, session_from_header
+from toolpass import Session, Toolpass, permission_check, session_from_header
 
 tp = Toolpass(connections=[{"id": "demo", "integration": "fake", "users": "dana@example.com", "admins": "admin@example.com"}])
 # The SDK reports an exception as only "Error executing tool", so hand the
@@ -40,7 +40,7 @@ mcp = MCPServer("toolpass-demo", instructions="write_thing is refused unless the
 
 
 @mcp.tool()
-@secured_tool(effect="write", authorize=permission_check(tp, "demo", "thing.write", "thing:{thing_id}", fresh=True))
+@toolpass.tool(effect="write", authorize=permission_check(tp, "demo", "thing.write", "thing:{thing_id}", fresh=True))
 def write_thing(thing_id: str, content: str) -> str:
     """Write content to a thing in the demo system. Requires thing.write."""
     # The action itself, run with the server's own credential. Replace with a
@@ -49,7 +49,7 @@ def write_thing(thing_id: str, content: str) -> str:
 
 
 @mcp.tool()
-@secured_tool(effect="read")
+@toolpass.tool(effect="read")
 def read_thing(thing_id: str) -> str:
     """Read a thing in the demo system. Anyone may read."""
     return f"thing:{thing_id} says hello"

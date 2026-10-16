@@ -75,7 +75,7 @@ that every connection works; `toolpass probe` checks connections.
 
 ## POST /runs
 
-The runs of secured tools an agent reports, for [the dashboard](../guides/dashboard.md). Send the
+The runs of toolpass tools an agent reports, for [the dashboard](../guides/dashboard.md). Send the
 `api_key` as a bearer token and a JSON body of at most 1 MiB: the reporting process's name and 1
 to 500 runs, each an audit event (`AuditEvent.to_dict()`: at least a string `tool` and `outcome`).
 A run larger than 64 KiB keeps its outcome and loses its `actions` and `arguments`.

@@ -117,7 +117,7 @@ them answers `denied` and says which `USAGE` is missing.
 
 ## Intercepted requests
 
-A secured tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
+A toolpass tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
 (`POST /queries/v1/query-request`) are read statement by statement
 (`src/toolpass/integrations/snowflake/routes.py`, `toolpass routes snowflake`). One statement on one
 table is checked: `SELECT ... FROM <table>` as `table.select`, `INSERT INTO <table> ... VALUES` as

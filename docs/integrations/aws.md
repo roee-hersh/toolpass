@@ -196,7 +196,7 @@ One check costs one `SimulatePrincipalPolicy` per candidate principal until one 
 
 ## Requests a tool makes
 
-The route table (`toolpass routes aws`) maps a secured tool's requests to `raw:<service>:<Action>` on
+The route table (`toolpass routes aws`) maps a toolpass tool's requests to `raw:<service>:<Action>` on
 the ARN the request acts on, so a boto3 call needs no declaration. The service comes from the host
 (every region of the connection's `partition`, S3's dualstack and dash-style regional hosts such as
 `s3-us-west-2.amazonaws.com`, and the global IAM, STS, S3 and S3 Transfer Acceleration hosts), the

@@ -3,7 +3,7 @@
 For a server people connect to directly (Claude Desktop, Claude Code, an IDE)
 and sign in to with their own account, the official ``mcp`` SDK verifies each
 request's token (``MCPServer(token_verifier=..., auth=...)``). ``token_session``
-makes the user in that token the user every ``secured_tool`` checks:
+makes the user in that token the user every ``toolpass.tool`` checks:
 
     import toolpass
     from toolpass.mcp import token_session

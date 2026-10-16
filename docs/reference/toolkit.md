@@ -17,7 +17,9 @@ fits together.
 | `strict` | bool | Refuse requests to unknown hosts, and tools without entitlements when a file is given. |
 | `intercept` | bool, default True | Turn the hook off for this toolkit. |
 
-## `secured_tool(...)`
+## `toolpass.tool(...)`
+
+`secured_tool` is the same decorator under its earlier name (toolpass 0.11 and before); it stays for two releases.
 
 - `effect` is now optional. Without it, the tool's effect is the strongest recorded one (with
   entitlements), else unknown: its requests are classified one by one and `limits` count each.
@@ -37,7 +39,7 @@ the user in its `X-Toolpass-User` header, which the agent sets from the login it
 the groups of `X-Toolpass-Groups` (comma-separated) when sent. The requests of one conversation
 share one `Session`: the one the agent names in `X-Toolpass-Session`, else the MCP session
 (`Mcp-Session-Id`, kept until its DELETE), else the request alone; the wrapper remembers 4096. No
-user header: no session, even when the process made one current, and a secured tool refuses the
+user header: no session, even when the process made one current, and a toolpass tool refuses the
 call. An empty or doubled header is refused with 400. With `key`, a request must carry the same
 secret in `X-Toolpass-Key` or is refused with 403; use it when others than the agent can reach the
 server; without it, a request from another machine is refused with 403. A request with an
@@ -50,7 +52,7 @@ A session source (`Toolkit(session=...)`, `toolpass.configure(session=...)`) for
 callers sign in with their own token, verified by the `mcp` SDK's auth: each call runs under a
 `Session` for the token's user (its `email` claim, or `sub`; a token with `email_verified` false
 names no one), with the groups of `groups_claim`. The calls made with one token share one
-`Session`. A request without a verified token has no session, so a secured tool refuses it.
+`Session`. A request without a verified token has no session, so a toolpass tool refuses it.
 `toolpass.USER_HEADER`, `toolpass.GROUPS_HEADER`, `toolpass.SESSION_HEADER` and
 `toolpass.KEY_HEADER` are the header names.
 

@@ -147,9 +147,9 @@ is enabled and the policies under `scope` are readable; `UNKNOWN_INFO` warns tha
 `roles/iam.securityReviewer` is missing there. Without `googleworkspace_connection` it warns that an
 unknown email is answered as deny rather than `user_not_found`.
 
-## Requests a secured tool makes
+## Requests a toolpass tool makes
 
-The integration's route table (`toolpass routes googlecloud`) maps the REST requests a secured tool
+The integration's route table (`toolpass routes googlecloud`) maps the REST requests a toolpass tool
 sends to Google Cloud to the IAM permission each needs on the resource in its path, so the toolkit
 asks the troubleshooter about the session's user before the request leaves. A request uses the
 named action when one asks exactly that permission (`storage.read`, `secret.read`, `compute.start`,

@@ -149,9 +149,9 @@ warns, naming the scope, for each one the token endpoint refuses. It warns that
 `enable_gmail_settings` grants a write-capable scope when on, and always reminds that domain-wide
 delegation is a broad grant. The summary names the service account and the admin.
 
-## Requests a secured tool makes
+## Requests a toolpass tool makes
 
-The integration's route table (`toolpass routes googleworkspace`) maps the requests a secured tool
+The integration's route table (`toolpass routes googleworkspace`) maps the requests a toolpass tool
 sends to Google's APIs to an action and a resource, so the toolkit checks the session's user before
 each request leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
 `admin`, `docs`, `sheets` and `slides` hosts under `googleapis.com`, and `api_url` when it names

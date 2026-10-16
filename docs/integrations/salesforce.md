@@ -196,7 +196,7 @@ error" and the message is never copied.
 
 ## Observed actions
 
-A secured tool's Salesforce REST requests ([observed actions](../guides/intercepted-actions.md))
+A toolpass tool's Salesforce REST requests ([observed actions](../guides/intercepted-actions.md))
 are mapped by the route table in `toolpass/integrations/salesforce/routes.py`; `toolpass routes
 salesforce` prints it. The connection's `url` (the My Domain URL) is the host the table claims, all
 of it.
