@@ -527,6 +527,8 @@ def _routes() -> list[Route]:
         _p("POST", "/pipeline_schedules/{pipeline_schedule_id}/variables", _VAR),
         _p("PUT", "/pipeline_schedules/{pipeline_schedule_id}/variables/{key}", _VAR),
         _p("DELETE", "/pipeline_schedules/{pipeline_schedule_id}/variables/{key}", _VAR),
+        # A schedule's own page lists its variables with their values: read as the variables are.
+        _p("GET", "/pipeline_schedules/{pipeline_schedule_id}", _VAR),
     ]
     # Settings, credentials and integrations: Maintainer, reads included where they hold secrets.
     for sub in ("/hooks", "/integrations", "/services", "/remote_mirrors"):

@@ -182,3 +182,11 @@ def test_an_encoded_slash_stays_inside_the_project_segment():
     # An unencoded path is a different (and non-existent) project to GitLab, and to toolpass.
     o = ROUTES.match(req("POST", "/api/v4/projects/acme/webapp/issues", {"title": "x"}))
     assert o is None or o.resource != "project:acme/webapp"
+
+
+def test_a_pipeline_schedule_is_read_as_its_variables_are():
+    # Its page lists the schedule's variables with their values.
+    sched = ROUTES.match(req("GET", "/api/v4/projects/42/pipeline_schedules/7"))
+    variables = ROUTES.match(req("GET", "/api/v4/projects/42/variables"))
+    assert sched is not None and variables is not None and sched.unresolved is None
+    assert sched.action == variables.action
