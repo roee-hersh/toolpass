@@ -373,13 +373,18 @@ agent.invoke({"messages": [...]}, context=Context(user_id=user.email))
 # a graph you build yourself: guard.tool_node(tools) is a checked ToolNode
 ```
 
-**MCP servers** (the `mcp` SDK v2): server middleware; the user from the access token's `email`
-claim, or `user=` for stdio.
+**MCP servers** (any SDK): no adapter. `secured_tool` on the tool, and the user from the
+`X-Toolpass-User` header the agent sends, which `session_from_header` reads on the server's
+Streamable HTTP app; for stdio, a `Session` around `run()` for the user the host names.
 
 ```python
-from toolpass.mcp import Rule, guard
+from toolpass import secured_tool, session_from_header
 
-guard(mcp, tp, {"delete_issue": Rule("jira-main", "DELETE_ISSUES", "issue:{key}")})
+@mcp.tool()
+@secured_tool()
+def delete_issue(key: str) -> str: ...
+
+app = session_from_header(mcp.streamable_http_app())   # key=... on a network others reach
 ```
 
 **OpenAI Agents SDK**: tool guardrails; the user from the run context's `user_id`.
@@ -449,7 +454,6 @@ groups, `strict`, and what each framework does with a refusal.
 | `toolpass[crypto]` | `cryptography`, for the integrations that sign with a private key: GitHub App, Google service accounts, Snowflake key pair, Salesforce JWT, Microsoft 365 certificates |
 | `toolpass[strands]` | `strands-agents`, for `toolpass.strands` |
 | `toolpass[langchain]` | `langchain` and `langgraph`, for `toolpass.langchain` |
-| `toolpass[mcp]` | `mcp`, for `toolpass.mcp` |
 | `toolpass[openai-agents]` | `openai-agents`, for `toolpass.openai_agents` |
 | `toolpass[claude-agent-sdk]` | `claude-agent-sdk`, for `toolpass.claude_agent_sdk` |
 | `toolpass[google-adk]` | `google-adk`, for `toolpass.google_adk` |

@@ -160,7 +160,7 @@ agent, and a working example:
 |---|---|---|
 | Strands Agents | `toolpass.strands.ToolpassAuthorization` | [`strands_agent.py`](../toolpass-py/examples/strands_agent.py) |
 | LangChain, LangGraph | `toolpass.langchain.ToolpassMiddleware` | [`langchain_agent.py`](../toolpass-py/examples/langchain_agent.py) |
-| MCP servers (`mcp` SDK), for any host | `toolpass.mcp.guard` | [`mcp_server.py`](../toolpass-py/examples/mcp_server.py) |
+| MCP servers, for any host | `secured_tool` and `session_from_header`, no adapter | [`mcp_server.py`](../toolpass-py/examples/mcp_server.py) |
 | OpenAI Agents SDK | `toolpass.openai_agents.ToolpassGuardrails` | [`openai_agents_agent.py`](../toolpass-py/examples/openai_agents_agent.py) |
 | Claude Agent SDK | `toolpass.claude_agent_sdk.ToolpassHooks` | [`claude_agent_sdk_agent.py`](../toolpass-py/examples/claude_agent_sdk_agent.py) |
 | Google ADK | `toolpass.google_adk.ToolpassCallbacks` | [`google_adk_agent.py`](../toolpass-py/examples/google_adk_agent.py) |
