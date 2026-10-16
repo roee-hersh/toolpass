@@ -13,10 +13,6 @@
     <span class="name">toolpass</span>
     <span id="live" class="live off"><i></i><span id="live-text">connecting</span></span>
   </div>
-  <nav id="tabs" class="tabs" hidden>
-    <button type="button" id="tab-activity" class="tab on">Activity</button>
-    <button type="button" id="tab-servers" class="tab">Servers <span id="server-count" class="count"></span></button>
-  </nav>
 </header>
 
 <main>
@@ -31,7 +27,7 @@
     <section class="panel" id="map-panel" hidden>
       <div class="panel-head">
         <h2>Where the calls went</h2>
-        <p class="sub" id="map-sub">MCP server, then tool, then the systems each tool reached</p>
+        <p class="sub" id="map-sub">Tool, then the systems it reached</p>
       </div>
       <div id="map" class="map"></div>
     </section>
@@ -52,14 +48,6 @@
       <p class="empty-text" id="empty-text">Calls show up here as soon as a tool runs.</p>
     </div>
     <button type="button" id="more" class="more" hidden>Show more</button>
-  </section>
-
-  <section id="servers-view" hidden>
-    <div id="servers" class="servers"></div>
-    <div id="no-servers" class="empty" hidden>
-      <p class="empty-title">No MCP servers found</p>
-      <p class="empty-text">toolpass looks in the Claude Desktop and Claude Code config files. Run <code>toolpass gateway on</code>.</p>
-    </div>
   </section>
 </main>
 <script src="watch.js"></script>

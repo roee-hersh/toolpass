@@ -40,7 +40,7 @@ from toolpass._audit import AuditEvent, AuditSink
 from toolpass._default import default_toolkit
 from toolpass._toolkit import Toolkit
 
-__all__ = ["Watch", "open_in_browser", "watch"]  # _Page is shared with the gateway's dashboard
+__all__ = ["Watch", "open_in_browser", "watch"]  # _Page is shared with the dashboard
 
 log = logging.getLogger("toolpass.watch")
 
@@ -83,8 +83,8 @@ def open_in_browser(url: str) -> str:
 
 class _Page:
     """A read-only page on the loopback interface, behind a random token.
-    Subclasses say what it shows: ``events(since)``, and ``servers()`` for
-    the gateway's dashboard. ``url`` is its address; ``close()`` stops it.
+    Subclasses say what it shows: ``events(since)``. ``url`` is its address;
+    ``close()`` stops it.
     Usable as a context manager."""
 
     kind = "toolkit"
@@ -109,10 +109,6 @@ class _Page:
     def events(self, since: int = 0) -> tuple[list[dict[str, Any]], int]:
         """Rows added or changed after ``since``, and the number to pass next time."""
         raise NotImplementedError
-
-    def servers(self) -> list[dict[str, Any]] | None:
-        """The servers tab, or None when the page has none."""
-        return None
 
     def _detach(self) -> None:
         pass
@@ -215,10 +211,6 @@ class _Page:
             events, nxt = self.events(since)
             payload = {"kind": self.kind, "title": self.title, "events": events, "next": nxt}
             return 200, "application/json", json.dumps(payload, default=repr, ensure_ascii=False).encode()
-        if method == "GET" and rest == ["servers"]:
-            servers = self.servers()
-            if servers is not None:
-                return 200, "application/json", json.dumps({"servers": servers}, default=repr, ensure_ascii=False).encode()
         return 404, "text/plain; charset=utf-8", b"not found\n"
 
 

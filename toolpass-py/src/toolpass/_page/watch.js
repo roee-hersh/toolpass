@@ -144,25 +144,12 @@ function shortReason(r) {
 // -- the data ------------------------------------------------------------------
 
 function normalize(raw) {
-  // One shape for a gateway call (with the tool runs inside it) and a toolkit event.
-  if (state.kind === 'gateway') {
-    const inside = raw.inside || [];
-    const steps = inside.flatMap((e) => e.actions || []);
-    const refusedRun = inside.find((e) => e.outcome === 'refused');
-    let outcome = raw.outcome === 'ok' ? 'ok' : raw.outcome === 'running' ? 'running' : raw.outcome === 'no response' ? 'noresp' : 'error';
-    if (refusedRun) outcome = 'refused';
-    return {
-      key: 'c' + raw.id, time: raw.time, server: raw.server, client: raw.client, tool: raw.tool,
-      user: (inside.find((e) => e.user) || {}).user || '', arguments: raw.arguments, result: raw.result,
-      duration: raw.duration_ms, outcome, steps, reason: refusedRun ? (refusedRun.reason || '') : '',
-      code: refusedRun ? refusedRun.code : '', secured: inside.length > 0,
-    };
-  }
+  // One run of a toolpass tool: the live page of one toolkit, or the dashboard over every server's runs.
   const outcome = raw.outcome === 'ran' ? 'ok' : raw.outcome === 'refused' ? 'refused' : 'error';
   return {
-    key: 's' + raw.seq, time: raw.time, server: '', client: '', tool: raw.tool, user: raw.user || '',
+    key: 's' + raw.seq, time: raw.time, server: raw.server || '', tool: raw.tool, user: raw.user || '',
     arguments: raw.arguments, result: '', duration: raw.duration_ms, outcome, steps: raw.actions || [],
-    reason: raw.reason || '', code: raw.code || '', secured: true,
+    reason: raw.reason || '', code: raw.code || '',
   };
 }
 
@@ -177,7 +164,7 @@ function matches(c) {
     if (f.col === 2 && !c.steps.some((s) => (s.integration || '') === f.id)) return false;
   }
   if (state.query) {
-    const hay = [c.tool, c.server, c.client, c.user, JSON.stringify(c.arguments || {}), c.reason,
+    const hay = [c.tool, c.server, c.user, JSON.stringify(c.arguments || {}), c.reason,
       ...c.steps.map((s) => [s.action, s.resource, s.integration, systemName(s.integration), s.path].join(' '))].join(' ').toLowerCase();
     if (!hay.includes(state.query)) return false;
   }
@@ -196,7 +183,7 @@ function renderStats(all) {
   for (const c of all) for (const s of c.steps) { requests++; if (s.integration) systems.set(s.integration, (systems.get(s.integration) || 0) + 1); }
   const people = new Set(all.map((c) => c.user).filter(Boolean));
   $('n-calls').textContent = all.length;
-  $('h-calls').textContent = people.size ? 'by ' + plural(people.size, 'person', 'people') : (all.length ? 'from ' + plural(new Set(all.map((c) => c.client)).size, 'client') : ' ');
+  $('h-calls').textContent = people.size ? 'by ' + plural(people.size, 'person', 'people') : ' ';
   $('n-ok').textContent = ok;
   $('h-ok').textContent = requests ? plural(requests, 'request') + ' checked' : ' ';
   $('n-refused').textContent = refused.length;
@@ -225,10 +212,11 @@ function renderMap(visible) {
     l.count++; if (refused) l.refused++;
     links.set(k, l);
   };
-  const gateway = state.kind === 'gateway';
+  const servers = new Set(visible.map((c) => c.server).filter(Boolean));
+  const byServer = servers.size > 0;
   for (const c of visible) {
     const toolId = c.server + '\u0000' + c.tool;
-    if (gateway) { bump(cols[0], c.server, c.server, c.outcome === 'refused'); link('0:' + c.server, '1:' + toolId, c.outcome === 'refused'); }
+    if (byServer) { bump(cols[0], c.server, c.server, c.outcome === 'refused'); link('0:' + c.server, '1:' + toolId, c.outcome === 'refused'); }
     bump(cols[1], toolId, c.tool, c.outcome === 'refused');
     for (const s of c.steps) {
       if (!s.integration) continue;
@@ -237,11 +225,11 @@ function renderMap(visible) {
       link('1:' + toolId, '2:' + s.integration, bad);
     }
   }
-  panel.hidden = cols[2].size === 0 && !(gateway && cols[0].size);
+  panel.hidden = cols[2].size === 0 && !(byServer && cols[0].size);
   if (panel.hidden) return;
-  $('map-sub').textContent = gateway ? 'MCP server, then tool, then the systems each tool reached' : 'Tool, then the systems it reached';
+  $('map-sub').textContent = byServer ? 'Server, then tool, then the systems each tool reached' : 'Tool, then the systems it reached';
 
-  const shown = gateway ? [0, 1, 2] : [1, 2];
+  const shown = byServer ? [0, 1, 2] : [1, 2];
   const width = Math.max(box.clientWidth, 640);
   const nodeW = Math.min(230, Math.floor((width - 40) / (shown.length * 1.6)));
   const rowH = 46, top = 28;
@@ -250,7 +238,7 @@ function renderMap(visible) {
   const gap = (width - nodeW * shown.length) / (shown.length - 1);
   const xOf = (i) => shown.indexOf(i) * (nodeW + gap);
   const pos = new Map();
-  const titles = ['MCP servers', 'Tools', 'Systems'];
+  const titles = ['Servers', 'Tools', 'Systems'];
   const root = svg('svg', {width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Where the calls went'});
   const linkLayer = svg('g'), nodeLayer = svg('g');
   root.appendChild(linkLayer); root.appendChild(nodeLayer);
@@ -349,13 +337,13 @@ function renderCall(c) {
   const row = el('button', 'row');
   row.type = 'button';
   row.setAttribute('aria-expanded', String(state.open.has(c.key)));
-  row.appendChild(c.user ? avatar(c.user) : avatar(c.client || '?'));
+  row.appendChild(avatar(c.user || '?'));
   const what = el('div', 'what');
   const title = el('div', 'title');
-  title.appendChild(el('b', null, c.user ? personName(c.user) : (c.client || 'An agent')));
+  title.appendChild(el('b', null, c.user ? personName(c.user) : 'An agent'));
   title.appendChild(document.createTextNode('ran'));
   title.appendChild(el('span', 'tool', c.tool));
-  if (c.server) title.appendChild(el('span', 'srv', 'on ' + c.server + (c.client && c.user ? ' · ' + c.client : '')));
+  if (c.server) title.appendChild(el('span', 'srv', 'on ' + c.server));
   what.appendChild(title);
   const s = summary(c);
   what.appendChild(el('div', 'line2' + (s.bad ? ' bad' : ''), s.text));
@@ -414,8 +402,6 @@ function renderDetail(c) {
     if (c.steps.some((x) => x.outcome === 'refused')) d.appendChild(el('p', 'stopped', 'The refused request was never sent. The tool stopped there.'));
   } else if (c.outcome === 'refused' && c.reason) {
     d.appendChild(el('div', 'why', shortReason(c.reason)));
-  } else if (state.kind === 'gateway' && !c.secured) {
-    d.appendChild(el('p', 'stopped', 'This server’s tools are not toolpass secured tools, so only the call itself is recorded.'));
   }
   const kv = el('dl', 'kv');
   const args = Object.entries(c.arguments || {});
@@ -465,8 +451,8 @@ function render() {
   empty.hidden = visible.length > 0;
   if (all.length === 0) {
     empty.querySelector('.empty-title').textContent = 'Waiting for the first call';
-    $('empty-text').textContent = state.kind === 'gateway'
-      ? 'Run toolpass gateway on, restart Claude Desktop or Claude Code, and use a tool.'
+    $('empty-text').textContent = state.kind === 'dashboard'
+      ? 'Start your MCP server or agent with TOOLPASS_DASHBOARD=1 and use one of its tools.'
       : 'Calls show up here as soon as a tool runs.';
   } else if (visible.length === 0) {
     empty.querySelector('.empty-title').textContent = 'No calls match';
@@ -475,56 +461,8 @@ function render() {
   state.dirty = false;
 }
 
-// -- servers ---------------------------------------------------------------------
-
-async function loadServers() {
-  try {
-    const r = await fetch('servers', {cache: 'no-store'});
-    if (!r.ok) return;
-    const d = await r.json();
-    const box = $('servers');
-    box.replaceChildren();
-    $('no-servers').hidden = d.servers.length > 0;
-    $('server-count').textContent = d.servers.length ? String(d.servers.length) : '';
-    for (const s of d.servers) {
-      const card = el('div', 'server');
-      const head = el('div', 'server-head');
-      head.appendChild(el('span', 'sname', s.name));
-      const state_ = s.wrapped ? ['ok', 'recording'] : ['noresp', 'not wrapped'];
-      head.appendChild(el('span', 'pill ' + state_[0], state_[1]));
-      card.appendChild(head);
-      card.appendChild(el('div', 'where', s.client + ' · ' + s.transport + (s.config ? ' · ' + s.config : '')));
-      card.appendChild(el('div', 'cmd', s.target));
-      card.appendChild(el('div', 'numbers', plural(s.calls || 0, 'call') + (s.last_call ? ' · last ' + ago(s.last_call) : '') +
-        (s.transport === 'http' && !s.wrapped ? ' · not recorded: it signs in with OAuth, or did not answer when toolpass looked (`toolpass gateway status` says which)' : '')));
-      if (s.tools && s.tools.length) {
-        const tools = el('div', 'tools');
-        for (const t of s.tools) {
-          const a = t.annotations || {};
-          const cls = a.destructiveHint === true ? 't destructive' : a.readOnlyHint === true ? 't ro' : 't';
-          const chip = el('span', cls, t.name);
-          chip.title = a.destructiveHint === true ? 'destructive' : a.readOnlyHint === true ? 'read-only' : '';
-          tools.appendChild(chip);
-        }
-        card.appendChild(tools);
-      }
-      box.appendChild(card);
-    }
-  } catch (err) { /* the next visit tries again */ }
-}
-
-function show(which) {
-  $('activity-view').hidden = which !== 'activity';
-  $('servers-view').hidden = which !== 'servers';
-  $('tab-activity').classList.toggle('on', which === 'activity');
-  $('tab-servers').classList.toggle('on', which === 'servers');
-  if (which === 'servers') loadServers();
-}
-
 // -- wiring ----------------------------------------------------------------------
 
-$('tab-activity').addEventListener('click', () => show('activity'));
-$('tab-servers').addEventListener('click', () => show('servers'));
 for (const b of document.querySelectorAll('.seg button, .stat[data-outcome]')) {
   b.addEventListener('click', () => {
     const o = b.dataset.outcome;
@@ -549,7 +487,6 @@ async function poll() {
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
     if (d.kind !== state.kind) { state.kind = d.kind; state.dirty = true; }
-    if (state.kind === 'gateway' && $('tabs').hidden) { $('tabs').hidden = false; loadServers(); }
     for (const raw of d.events) { const c = normalize(raw); state.calls.set(c.key, c); state.dirty = true; }
     if (state.calls.size > KEEP) {
       for (const c of sorted().slice(KEEP)) state.calls.delete(c.key);

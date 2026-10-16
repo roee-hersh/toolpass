@@ -5,11 +5,10 @@
 > The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
-The package also ships the MCP gateway: `toolpass gateway on` puts toolpass in front of every MCP
-server Claude Desktop and Claude Code already use, and `toolpass dashboard` shows every tool call
-they make, and, for secured tools, every request each call made inside GitHub, Jira, Slack and
-the other systems. See [the gateway guide](../docs/guides/gateway.md); `python examples/demo/run.py` shows it with five systems. The rest of this page is about
-securing the tools you write yourself.
+`toolpass dashboard` shows every run of your secured tools: who it ran for, and every request
+each run made inside GitHub, Jira, Slack and the other systems, allowed or refused. Start the
+server or agent with `TOOLPASS_DASHBOARD=1`; see [the dashboard guide](../docs/guides/dashboard.md),
+and `python examples/demo/run.py` for five systems at once.
 
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
 scale a deployment, read customer records, post to Slack. Those tools usually run with one service
