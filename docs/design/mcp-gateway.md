@@ -45,7 +45,7 @@ names, so nothing about how you use the client changes.
 Claude Desktop / Cursor / Claude Code
         |
         |  stdio: toolpass mcp -- <the original command>
-        |  HTTP:  http://127.0.0.1:<port>/mcp/<server>   (upstream: the original URL)
+        |  HTTP:  toolpass mcp -url <the original URL>   (the entry's headers in its env)
         v
    toolpass  -- tool calls and their results: recorded --> local store
         |
@@ -55,9 +55,10 @@ Claude Desktop / Cursor / Claude Code
 
 - **A stdio server** becomes `toolpass mcp -- <original command>`. toolpass starts the real server
   as a child, forwards every message unchanged, and looks at `tools/call` and its result.
-- **An HTTP server** gets its URL replaced by the gateway's local address, with the original as the
-  upstream. Everything is forwarded, including the OAuth discovery endpoints and the bearer token,
-  so signing in to a hosted server works as before. toolpass only looks at the tool calls.
+- **An HTTP server** becomes a stdio entry, `toolpass mcp -url <original URL>`, which posts each
+  message to the server with the entry's own headers and writes the answers back. A server that
+  signs in with OAuth in the client is left unwrapped: carrying the sign-in through a local proxy
+  would change the address the token is issued for. toolpass only looks at the tool calls.
 - **The gateway daemon** is `toolpass serve` on localhost, started by the first wrapper that needs
   it. It holds the store and the page, so every session from every client lands
   in one place. A stdio wrapper that cannot reach it keeps working on its own and hands over what it
@@ -105,7 +106,7 @@ reaches the store. The file is the user's own: nothing is sent anywhere.
 1. **Stdio and the store.** `toolpass mcp`, the daemon with the SQLite store and the page, and
    `gateway on|off|status` for Claude Desktop and Claude Code. The first real demo: your own Claude
    Desktop, your own GitHub server, and every call it makes on the page as it happens.
-2. **HTTP.** Hosted servers with OAuth passthrough, and the other clients in the table.
+2. **HTTP.** Hosted servers given a token (built); OAuth sign-in, and the other clients in the table.
 3. **The history.** Search and filters on the page, by server, tool, client and day.
 
 Each step is one pull request, with its tests and its documentation.

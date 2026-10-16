@@ -2,11 +2,13 @@
 toolpass in front of each, with nothing to register.
 
 Each client keeps its servers in a config file at a known place. ``on()``
-rewrites every stdio server entry in those files to run through
-``toolpass mcp``, keeping the original command in the same entry under a
-``"toolpass"`` key; ``off()`` puts every entry back. Nothing else in the files
-changes, and each file is backed up once, beside itself, before the first
-change. HTTP servers are found and listed, not wrapped yet.
+rewrites every server entry in those files to run through ``toolpass mcp``,
+keeping the original in the same entry under a ``"toolpass"`` key; ``off()``
+puts every entry back. A stdio server runs as toolpass's child; an HTTP server
+(Streamable HTTP) is reached by ``toolpass mcp -url`` with the entry's own
+headers, once a probe shows it answers to them (a server that signs in with
+OAuth is left as it is). Nothing else in the files changes, and each file is
+backed up once, beside itself, before the first change.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
 
+from toolpass import _mcp_http
 from toolpass._store import Store
 
 __all__ = ["ClientFile", "Found", "client_files", "off", "on", "scan"]
@@ -51,6 +54,7 @@ class Found:
     target: str  # the command line, or the URL
     wrapped: bool
     broken: str | None = None  # why a wrapped entry cannot start, when it cannot
+    why: str | None = None  # why an entry is not wrapped, when toolpass chose not to
 
 
 def client_files(home: Path | None = None) -> list[ClientFile]:
@@ -86,7 +90,10 @@ def _transport(entry: Any) -> str | None:
     if not isinstance(entry, MutableMapping):
         return None
     kind = entry.get("type")
-    if isinstance(entry.get(_KEY), MutableMapping) or (isinstance(entry.get("command"), str) and kind in (None, "stdio")):
+    saved = entry.get(_KEY)
+    if isinstance(saved, MutableMapping):
+        return "http" if isinstance(saved.get("url"), str) else "stdio"
+    if isinstance(entry.get("command"), str) and kind in (None, "stdio"):
         return "stdio"
     if isinstance(entry.get("url"), str) or kind in ("http", "sse", "streamable-http"):
         return "http"
@@ -181,8 +188,7 @@ def _visit_file(cf: ClientFile, change: str | None) -> list[Found]:
             if transport is None or not isinstance(entry, MutableMapping):
                 continue
             if transport == "http":
-                target = str(entry.get("url", ""))
-                found.append(Found(cf.client, where, str(name), "http", target, False))
+                found.append(_visit_http(cf, where, str(name), entry, change, launcher))
                 continue
             command, args = _original(entry)
             wrapped = isinstance(entry.get(_KEY), MutableMapping)
@@ -208,13 +214,64 @@ def _visit_file(cf: ClientFile, change: str | None) -> list[Found]:
     return found
 
 
+_WRAPPABLE = (None, "http", "streamable-http")  # "sse" is the older transport, not carried
+
+
+def _visit_http(cf: ClientFile, where: str, name: str, entry: MutableMapping[str, Any], change: str | None, launcher: list[str]) -> Found:
+    saved = entry.get(_KEY)
+    wrapped = isinstance(saved, MutableMapping)
+    original: dict[str, Any] = dict(saved if isinstance(saved, MutableMapping) else entry)  # a copy: entry is rewritten below
+    url = str(original.get("url", ""))
+    why = None
+    if change == "on" and not wrapped:
+        raw = original.get("headers")
+        headers = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, MutableMapping) else {}
+        if original.get("type") not in _WRAPPABLE:
+            why = f"{original.get('type')} transport, not recorded"
+        elif not url.startswith(("https://", "http://")):
+            why = "not an http(s) URL"
+        else:
+            state = _mcp_http.probe(_mcp_http.expand(url), {k: _mcp_http.expand(v) for k, v in headers.items()})
+            if state == "sign-in":
+                why = "signs in with OAuth, which toolpass does not carry; not recorded"
+            elif state == "unreachable":
+                why = "did not answer when toolpass looked; `toolpass gateway on` tries again"
+            else:
+                keep = {k: v for k, v in entry.items() if k not in ("type", "url", "headers")}
+                entry.clear()
+                entry.update(keep)
+                entry[_KEY] = {k: v for k, v in original.items() if k in ("type", "url", "headers")}
+                entry["type"] = "stdio"
+                entry["command"] = launcher[0]
+                entry["args"] = [*launcher[1:], "mcp", "-server", name, "-client", cf.client, "-config", where, "-url", url]
+                if headers:
+                    env = entry.get("env")
+                    entry["env"] = {**(env if isinstance(env, MutableMapping) else {}), _mcp_http.HEADERS_ENV: json.dumps(headers)}
+                wrapped = True
+    elif change == "off" and wrapped:
+        restore = dict(entry.pop(_KEY))
+        for k in ("type", "command", "args"):
+            entry.pop(k, None)
+        env = entry.get("env")
+        if isinstance(env, MutableMapping):
+            env.pop(_mcp_http.HEADERS_ENV, None)
+            if not env:
+                entry.pop("env")
+        entry.update(restore)
+        wrapped = False
+    broken = None
+    if wrapped and not Path(str(entry.get("command", ""))).is_file():
+        broken = f"the Python that wrapped it is gone ({entry.get('command')}); run `toolpass gateway off`, then `on`, from a working install"
+    return Found(cf.client, where, name, "http", url, wrapped, broken, why)
+
+
 def scan(files: list[ClientFile] | None = None, store: Store | None = None) -> list[Found]:
     """The servers in the clients' files, changing nothing."""
     return _visit(client_files() if files is None else files, None, store)
 
 
 def on(files: list[ClientFile] | None = None, store: Store | None = None) -> list[Found]:
-    """Wrap every stdio server not wrapped yet; returns every server found."""
+    """Wrap every server not wrapped yet; returns every server found."""
     return _visit(client_files() if files is None else files, "on", store)
 
 

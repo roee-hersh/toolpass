@@ -14,12 +14,14 @@ toolpass gateway on
 If `toolpass` is not found after installing (pip's scripts folder is not on PATH, common on
 Windows), use `python -m toolpass gateway on`, or `py -m toolpass gateway on` on Windows.
 
-`gateway on` finds the clients' config files, rewrites each stdio server entry to start through
+`gateway on` finds the clients' config files, rewrites each server entry to start through
 toolpass, and prints what it found:
 
 ```text
-claude-desktop  github                   recording                        ~/Library/Application Support/Claude/claude_desktop_config.json
-claude-desktop  linear                   found (HTTP, not recorded yet)   ~/Library/Application Support/Claude/claude_desktop_config.json
+claude-desktop  filesystem               recording                        ~/Library/Application Support/Claude/claude_desktop_config.json
+claude-code     github                   recording (HTTP)                 ~/.claude.json
+claude-code     linear                   not wrapped (HTTP)               ~/.claude.json
+                signs in with OAuth, which toolpass does not carry; not recorded
 claude-code     sentry                   recording                        ~/.claude.json
 ```
 
@@ -38,6 +40,25 @@ the server's `env` is untouched. Because the entry names that installation, remo
 toolpass was installed in stops the wrapped servers from starting; `toolpass gateway status` then
 reports them as `BROKEN`, and `toolpass gateway off` run from any install puts them back. The first change to a file leaves a copy of the original beside it,
 named `<file>.toolpass-backup`. A file that is not valid JSON is left alone.
+
+### HTTP servers
+
+An HTTP server (`"type": "http"`, the Streamable HTTP transport) is wrapped the same way: the entry
+becomes a stdio entry that starts `toolpass mcp -url <the original URL>`, and toolpass posts each of
+the client's messages to that URL and writes the server's answers back, as they came. The entry's
+`headers` (a token, `Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}` for GitHub's server) move to the
+entry's `env` as `TOOLPASS_MCP_HEADERS`, still with their `${VAR}` references, so the token is read
+where it was read before. Before wrapping, `gateway on` sends the server one `initialize` with those
+headers:
+
+- it answers, or refuses a token the entry does carry: wrapped (a wrong token stays wrong, nothing
+  more);
+- it asks for credentials the entry does not carry: the server signs in with OAuth in the client,
+  which toolpass cannot carry, so the entry is left as it is and listed as not recorded;
+- it does not answer: left as it is this time; `gateway on`, or the next dashboard start, tries again.
+
+A server that redirects is not followed, so the token is never sent to another address. Servers on
+the older SSE transport (`"type": "sse"`) are listed, not recorded.
 
 ## The dashboard
 
@@ -132,7 +153,12 @@ deleted when the dashboard starts. Nothing is sent anywhere.
 
 ## What it cannot see
 
-- **HTTP servers.** Servers reached over HTTP are listed, not recorded yet.
+- **HTTP servers that sign in with OAuth.** A hosted server you sign in to from the client (the
+  browser opens) is listed, not recorded; one given a token in its `headers` is recorded. Servers
+  on the older SSE transport are listed only.
+- **Messages a server sends on its own.** An HTTP server's messages reach the client inside the
+  answers to the client's requests; the separate stream a server can open for messages outside any
+  request is not carried.
 - **Servers started elsewhere.** A server you start by hand, or a client whose config file is not in
   the table above, is not wrapped.
 - **A client that rewrites its file from memory.** toolpass checks a file has not changed just before

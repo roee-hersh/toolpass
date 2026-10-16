@@ -10,6 +10,7 @@
     toolpass gateway  on|off|status
     toolpass dashboard [-open] [-listen ADDR]
     toolpass mcp      -server NAME -client CLIENT -- COMMAND [ARGS...]
+    toolpass mcp      -server NAME -client CLIENT -url URL
 
 Flags keep the single-dash form the command has always taken (``-config
 FILE``, ``--config=FILE`` works too), so scripts and the Helm chart do not
@@ -66,6 +67,7 @@ Usage:
   toolpass gateway  on|off|status
   toolpass dashboard [-open] [-listen ADDR] [-no-wrap]
   toolpass mcp      -server NAME -client CLIENT [-config LABEL] -- COMMAND [ARGS...]
+  toolpass mcp      -server NAME -client CLIENT [-config LABEL] -url URL
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -626,10 +628,13 @@ def _print_found(found: list[Any], stdout: IO[str]) -> None:
         stdout.write("no MCP servers found in Claude Desktop or Claude Code\n")
         return
     for f in found:
-        state = "found (HTTP, not recorded yet)" if f.transport == "http" else ("BROKEN" if f.broken else "recording" if f.wrapped else "not wrapped")
+        state = "BROKEN" if f.broken else "recording" if f.wrapped else "not wrapped"
+        if f.transport == "http":
+            state += " (HTTP)"
         stdout.write(f"{f.client:<15} {f.name:<24} {state:<32} {f.config}\n")
-        if f.broken:
-            stdout.write(f"{'':<15} {f.broken}\n")
+        for note in (f.broken, f.why):
+            if note:
+                stdout.write(f"{'':<15} {note}\n")
 
 
 def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
@@ -699,19 +704,25 @@ def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading
 
 def mcp(args: list[str], stderr: IO[str]) -> int:
     """Run an MCP server behind toolpass: forward its stdio unchanged and
-    record every tool call. Clients start this; `toolpass gateway on` writes it."""
+    record every tool call; or, with -url, reach an HTTP server for the client.
+    Clients start this; `toolpass gateway on` writes it."""
     fs = _FlagSet("mcp", stderr)
     fs.add("server", "str", "", "the server's name in the client's config")
     fs.add("client", "str", "", "the client that starts it (claude-desktop, claude-code)")
     fs.add("config", "str", "", "the config file (and project) the entry is in")
+    fs.add("url", "str", "", "an HTTP server's URL, reached with the headers in TOOLPASS_MCP_HEADERS")
     try:
         fs.parse(args)
     except _FlagError:
         return EXIT_ERROR
-    if not fs.args:
-        stderr.write("mcp: missing the server command after --\n")
+    url = fs.values["url"]
+    if url and fs.args:
+        stderr.write("mcp: give either -url URL or the server command after --, not both\n")
         return EXIT_ERROR
-    from toolpass import _mcp_proxy
+    if not url and not fs.args:
+        stderr.write("mcp: missing the server command after -- (or -url URL)\n")
+        return EXIT_ERROR
+    from toolpass import _mcp_http, _mcp_proxy
     from toolpass._store import Store
 
     try:
@@ -719,10 +730,11 @@ def mcp(args: list[str], stderr: IO[str]) -> int:
     except Exception as e:  # noqa: BLE001 - no record is better than no server
         stderr.write(f"toolpass: cannot open the record ({type(e).__name__}: {e}); the server runs unrecorded\n")
         store = None
+    client = fs.values["client"] or "unknown"
     try:
-        return _mcp_proxy.run(
-            fs.args, server=fs.values["server"] or fs.args[0], client=fs.values["client"] or "unknown", config=fs.values["config"], store=store
-        )
+        if url:
+            return _mcp_http.run(_mcp_http.expand(url), server=fs.values["server"] or url, client=client, config=fs.values["config"], store=store)
+        return _mcp_proxy.run(fs.args, server=fs.values["server"] or fs.args[0], client=client, config=fs.values["config"], store=store)
     finally:
         if store is not None:
             store.close()

@@ -37,7 +37,8 @@ git clone https://github.com/roee-hersh/toolpass && cd toolpass/toolpass-py
 pip install -e . && python examples/demo/run.py -open
 ```
 
-Servers started over stdio are recorded today; HTTP servers are listed and come next. The
+Servers started over stdio and HTTP servers given a token are recorded; HTTP servers that sign in
+with OAuth are listed. The
 [gateway guide](docs/guides/gateway.md) has the details.
 
 ## Check what your own tools do

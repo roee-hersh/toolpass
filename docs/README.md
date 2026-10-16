@@ -56,7 +56,7 @@ agents in any language call.
 ## Design
 
 - [The MCP gateway](design/mcp-gateway.md): the design. Step 1 (stdio servers, the record, the
-  dashboard) is built; HTTP servers and other clients come next.
+  dashboard) and HTTP servers given a token are built; OAuth sign-in and other clients come next.
 
 ## Development
 

@@ -490,13 +490,13 @@ async function loadServers() {
       const card = el('div', 'server');
       const head = el('div', 'server-head');
       head.appendChild(el('span', 'sname', s.name));
-      const state_ = s.transport === 'http' ? ['noresp', 'listed'] : s.wrapped ? ['ok', 'recording'] : ['noresp', 'not wrapped'];
+      const state_ = s.wrapped ? ['ok', 'recording'] : ['noresp', 'not wrapped'];
       head.appendChild(el('span', 'pill ' + state_[0], state_[1]));
       card.appendChild(head);
       card.appendChild(el('div', 'where', s.client + ' · ' + s.transport + (s.config ? ' · ' + s.config : '')));
       card.appendChild(el('div', 'cmd', s.target));
       card.appendChild(el('div', 'numbers', plural(s.calls || 0, 'call') + (s.last_call ? ' · last ' + ago(s.last_call) : '') +
-        (s.transport === 'http' ? ' · HTTP servers are listed, not recorded yet' : '')));
+        (s.transport === 'http' && !s.wrapped ? ' · not recorded: it signs in with OAuth, or did not answer when toolpass looked (`toolpass gateway status` says which)' : '')));
       if (s.tools && s.tools.length) {
         const tools = el('div', 'tools');
         for (const t of s.tools) {
