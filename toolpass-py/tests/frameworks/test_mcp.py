@@ -36,6 +36,7 @@ from mcp_types import CallToolResult
 from tests import harness
 from tests.frameworks.wire_scenario import ADMIN, DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
 from toolpass import Session, Toolkit, session_from_header
+from toolpass.mcp import token_session
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
 KEY = "agent-key-1"
@@ -248,3 +249,87 @@ def test_http_key(wire_gh: harness.Server) -> None:
             assert body == "toolpass: this server needs the X-Toolpass-Key header, and this request's is missing or wrong"
         [opened] = call_http(url, {"X-Toolpass-User": ADMIN, "X-Toolpass-Key": KEY}, [("propose_fix", {"repo": REPO})])
         assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+
+
+# -- Streamable HTTP with the SDK's token auth: the user from the verified access token -------
+
+
+class Tokens:
+    """A token verifier: each bearer token names one user, in its claims."""
+
+    def __init__(self, tokens: dict[str, dict[str, Any]]) -> None:
+        self.tokens = tokens
+
+    async def verify_token(self, token: str) -> Any:
+        from mcp.server.auth.provider import AccessToken
+
+        claims = self.tokens.get(token)
+        if claims is None:
+            return None
+        return AccessToken(token=token, client_id="fw-mcp-client", scopes=[], subject=claims.get("sub"), claims=claims)
+
+
+def test_http_user_from_access_token(wire_gh: harness.Server) -> None:
+    """A server people sign in to: each call is checked as its own token's
+    user, a token whose email is unverified or missing names no one, and the
+    calls made with one token share one session."""
+    from mcp.server.auth.settings import AuthSettings
+
+    gh = wire_gh
+    engine = wire_engine(gh)
+    tools = Toolkit(audit=None, permissions=engine, on_refuse=str, session=token_session(groups_claim="groups"))
+    tokens = Tokens(
+        {
+            "admin-token": {"sub": "u-admin", "email": ADMIN, "groups": ["platform-team"]},
+            "dana-token": {"sub": "u-dana", "email": DANA, "groups": ["platform-team"]},
+            "no-email-token": {"sub": "u-nobody", "groups": []},
+            "unverified-token": {"sub": "u-mallory", "email": ADMIN, "email_verified": False, "groups": ["platform-team"]},
+        }
+    )
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    url = f"http://127.0.0.1:{port}/mcp"
+    server: MCPServer[Any] = MCPServer(
+        "fw-mcp-token",
+        token_verifier=tokens,
+        auth=AuthSettings(issuer_url="https://auth.example.com", resource_server_url=url, validate_token_resource=False),  # type: ignore[arg-type]
+    )
+
+    @server.tool()
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    @server.tool()
+    @tools.tool(effect="write", limit=1)
+    def bump(n: int) -> str:
+        """Bump a counter."""
+        return f"bumped {n}"
+
+    uvicorn = pytest.importorskip("uvicorn")
+    srv = uvicorn.Server(uvicorn.Config(server.streamable_http_app(), host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=srv.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10
+    while not srv.started:
+        assert time.monotonic() < deadline, "uvicorn did not start"
+        time.sleep(0.02)
+    try:
+        bearer = lambda t: {"Authorization": "Bearer " + t}  # noqa: E731
+        [refused] = call_http(url, bearer("dana-token"), [("propose_fix", {"repo": REPO})])
+        for word in REFUSAL_WORDS:
+            assert word in text(refused), text(refused)
+        [opened] = call_http(url, bearer("admin-token"), [("propose_fix", {"repo": REPO})])
+        assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "repo.read"), (DANA, "pr.create"), (ADMIN, "repo.read"), (ADMIN, "pr.create")]
+        for nobody in ("no-email-token", "unverified-token"):
+            [res] = call_http(url, bearer(nobody), [("propose_fix", {"repo": REPO})])
+            assert "no_session" in text(res), (nobody, text(res))
+        first, second = call_http(url, bearer("dana-token"), [("bump", {"n": 1}), ("bump", {"n": 2})])
+        assert (first.is_error, text(first)) == (False, "bumped 1")
+        assert "limit_reached" in text(second), "one token, one session"
+    finally:
+        srv.should_exit = True
+        t.join(5)

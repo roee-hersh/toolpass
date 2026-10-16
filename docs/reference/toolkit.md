@@ -40,7 +40,17 @@ share one `Session`: the one the agent names in `X-Toolpass-Session`, else the M
 user header: no session, even when the process made one current, and a secured tool refuses the
 call. An empty or doubled header is refused with 400. With `key`, a request must carry the same
 secret in `X-Toolpass-Key` or is refused with 403; use it when others than the agent can reach the
-server. A websocket connection is held to the same headers (close codes 4403 and 4400).
+server; without it, a request from another machine is refused with 403. A request with an
+`Authorization` header is refused with 400 when it also names a user. A websocket connection is
+held to the same rules (close codes 4403 and 4400).
+
+## `toolpass.mcp.token_session(user_claim="email", groups_claim=None)`
+
+A session source (`Toolkit(session=...)`, `toolpass.configure(session=...)`) for an MCP server whose
+callers sign in with their own token, verified by the `mcp` SDK's auth: each call runs under a
+`Session` for the token's user (its `email` claim, or `sub`; a token with `email_verified` false
+names no one), with the groups of `groups_claim`. The calls made with one token share one
+`Session`. A request without a verified token has no session, so a secured tool refuses it.
 `toolpass.USER_HEADER`, `toolpass.GROUPS_HEADER`, `toolpass.SESSION_HEADER` and
 `toolpass.KEY_HEADER` are the header names.
 

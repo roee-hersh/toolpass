@@ -375,7 +375,9 @@ agent.invoke({"messages": [...]}, context=Context(user_id=user.email))
 
 **MCP servers** (any SDK): no adapter. `secured_tool` on the tool, and the user from the
 `X-Toolpass-User` header the agent sends, which `session_from_header` reads on the server's
-Streamable HTTP app; for stdio, a `Session` around `run()` for the user the host names.
+Streamable HTTP app (this machine only, unless given `key=`); for stdio, a `Session` around `run()`
+for the user the host names. A server people sign in to with their own token takes the user from
+that token: `toolpass.configure(session=toolpass.mcp.token_session())`.
 
 ```python
 from toolpass import secured_tool, session_from_header
@@ -384,7 +386,7 @@ from toolpass import secured_tool, session_from_header
 @secured_tool()
 def delete_issue(key: str) -> str: ...
 
-app = session_from_header(mcp.streamable_http_app())   # key=... on a network others reach
+app = session_from_header(mcp.streamable_http_app())   # key=... when the agent runs elsewhere
 ```
 
 **OpenAI Agents SDK**: tool guardrails; the user from the run context's `user_id`.

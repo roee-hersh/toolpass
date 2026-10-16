@@ -256,17 +256,28 @@ app = session_from_header(mcp.streamable_http_app())   # FastMCP: mcp.http_app()
 uvicorn.run(app, host="127.0.0.1", port=8000)
 ```
 
-Whoever can reach the server can set the header. On a private network (localhost, the agent's own
-pod, a network only the agent reaches) that is the agent, and nothing more is needed. On a network
-others reach, pass `key=`, a secret the agent sends in `X-Toolpass-Key` on every request; a request
-without it is refused with 403 before anything runs. Either way the user logs in only to your app,
-never to the server. A server whose callers authenticate themselves (the SDK's token auth) takes
-the user from that instead and does not use this wrapper: here the header would win.
+Whoever can reach the server can set the header, so the header is for a server only your agent
+reaches, and the agent sets it from the user it authenticated: the Claude Agent SDK with
+`mcp_servers={"ops": {"type": "http", "url": url, "headers": {"X-Toolpass-User": user}}}`, the `mcp`
+client through the headers of the `httpx` client it is given. Without `key=` the wrapper takes
+requests from the same machine only (loopback or a Unix socket) and refuses others with 403. When
+the agent runs elsewhere, or a proxy on the same machine forwards other callers (its requests look
+local), pass `key=`, a secret the agent sends in `X-Toolpass-Key` on every
+request; a request without it is refused before anything runs. The user logs in only to your app,
+never to the server. Never hand the key to the people using the agent: whoever holds it can name
+any user.
 
-On the agent's side, set the header once on the MCP client: Claude Code with
-`claude mcp add --transport http ops http://host:8000/mcp --header "X-Toolpass-User: dana@example.com"`,
-the Claude Agent SDK with `mcp_servers={"ops": {"type": "http", "url": url, "headers": {"X-Toolpass-User": user}}}`,
-the `mcp` client through the headers of the `httpx` client it is given.
+A server people connect to directly from their own client (Claude Desktop, Claude Code, an IDE),
+each signing in with their own account, takes the user from the access token the SDK verified
+instead: `toolpass.configure(session=token_session())` with `from toolpass.mcp import token_session`.
+The user is the token's `email` claim (`user_claim="sub"` for its subject; a token whose
+`email_verified` is false names no one), `groups_claim=` reads the groups, and the calls made with
+one token share one session. The header never speaks for such a caller: a request with both an
+`Authorization` header and `X-Toolpass-User` is refused with 400.
+
+Upgrading from `toolpass.mcp.guard` (0.10 and earlier): put `@secured_tool()` (with
+`authorize=permission_check(...)` for the rule a tool had) under each `@mcp.tool()`, replace
+`guard(...)` with `token_session()` or `session_from_header`, and drop the `[mcp]` extra.
 
 A stdio server serves one user, whom the host names when it starts the server: open one `Session`
 around `run()`. The example does both:

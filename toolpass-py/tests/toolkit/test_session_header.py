@@ -166,3 +166,39 @@ def test_other_scopes_pass_through() -> None:
 
 def test_header_names() -> None:
     assert (USER_HEADER, GROUPS_HEADER, SESSION_HEADER, KEY_HEADER) == ("X-Toolpass-User", "X-Toolpass-Groups", "X-Toolpass-Session", "X-Toolpass-Key")
+
+
+def call_from(wrapped: Any, client: Any, headers: list[tuple[bytes, bytes]]) -> tuple[int, str]:
+    SEEN.clear()
+    SENT.clear()
+    asyncio.run(wrapped({"type": "http", "method": "POST", "headers": headers, "client": client}, receive, send))
+    start = next(m for m in SENT if m["type"] == "http.response.start")
+    return start["status"], b"".join(m.get("body", b"") for m in SENT if m["type"] == "http.response.body").decode()
+
+
+def test_without_a_key_only_this_machine_gets_in() -> None:
+    """Anyone who reaches the server can set the header, so without key= it serves this machine only."""
+    wrapped = session_from_header(app)
+    user = [(b"x-toolpass-user", b"dana@example.com")]
+    for local in (("127.0.0.1", 5000), ("::1", 5000), ("::ffff:127.0.0.1", 5000), None):
+        assert call_from(wrapped, local, user) == (200, "ok"), local
+    for remote in (("10.0.0.7", 5000), ("192.168.1.2", 5000), ("1270.0.0.1", 1)):
+        assert call_from(wrapped, remote, user) == (
+            403,
+            "toolpass: this server takes requests from this machine only; give it key= to serve agents elsewhere",
+        ), remote
+        assert SEEN == [], "refused before the app runs"
+    keyed = session_from_header(app, key="k")
+    assert call_from(keyed, ("10.0.0.7", 5000), [*user, (b"x-toolpass-key", b"k")]) == (200, "ok")
+    assert users() == ["dana@example.com"]
+
+
+def test_the_header_never_speaks_for_an_authenticated_caller() -> None:
+    wrapped = session_from_header(app)
+    assert call(wrapped, [(b"authorization", b"Bearer t"), (b"x-toolpass-user", b"admin@example.com")]) == (
+        400,
+        "toolpass: a request that authenticates with its own token cannot also name its user in X-Toolpass-User",
+    )
+    assert SEEN == []
+    assert call(wrapped, [(b"authorization", b"Bearer t")]) == (200, "ok"), "a token alone goes to the server's own auth"
+    assert users() == [None]
