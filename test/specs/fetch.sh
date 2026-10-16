@@ -46,6 +46,7 @@ fetch google-calendar   https://www.googleapis.com/discovery/v1/apis/calendar/v3
 fetch google-gmail      'https://gmail.googleapis.com/$discovery/rest?version=v1'
 fetch snowflake-sqlapi  https://raw.githubusercontent.com/snowflakedb/snowflake-rest-api-specs/main/specifications/sqlapi.yaml
 fetch vault             https://raw.githubusercontent.com/hashicorp/vault-client-go/main/openapi.json
+fetch argocd            https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
 AZ=https://raw.githubusercontent.com/Azure/azure-rest-api-specs/master/specification/authorization/resource-manager/Microsoft.Authorization/stable/2022-04-01
 fetch azure-RoleAssignmentsCalls  $AZ/authorization-RoleAssignmentsCalls.json
 fetch azure-RoleDefinitionsCalls  $AZ/authorization-RoleDefinitionsCalls.json

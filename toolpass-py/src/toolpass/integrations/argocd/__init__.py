@@ -20,6 +20,7 @@ from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported
 from toolpass.core.errors import go_quote, go_trim_space
+from toolpass.core.routes import RouteTable
 from toolpass.integrations import kubernetes
 from toolpass.net import httpx
 
@@ -38,6 +39,9 @@ def validate_name(v: str) -> None:
 
 # How long a loaded policy bundle is reused.
 POLICY_CACHE_TTL = 30.0
+
+# The resources whose objects carry an application namespace.
+_NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
 
 class Integration(integ.Integration):
@@ -62,7 +66,13 @@ class Integration(integ.Integration):
                 enum=("none", "email"),
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
+            integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
         ]
+
+    def routes(self) -> RouteTable | None:
+        from .routes import ROUTES
+
+        return ROUTES
 
     def actions(self) -> list[Action]:
         acts = [Action(name=a.name, description=a.desc) for a in ACTION_LIST]
@@ -268,6 +278,13 @@ class Connection(integ.Connection):
             req = build_request(r.action_name, r.resource)
         except ValueError as e:
             raise errorf(Code.INVALID_REQUEST, str(e)) from None
+        if req.res in _NAMESPACED:
+            # Argo CD names an application (or ApplicationSet) in its own
+            # namespace <project>/<name>, and <project>/<namespace>/<name>
+            # only in another namespace (security.RBACName).
+            parts = req.obj.split("/")
+            if len(parts) == 3 and parts[1] == self.namespace:
+                req.obj = parts[0] + "/" + parts[2]
         b = self.load(ctx)
         if req.act == ACT_ROLLBACK:
             req.act = b.rollback_act

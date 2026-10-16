@@ -39,6 +39,7 @@ connections:
   #   kubernetes_connection: k8s-prod-eu
   #   namespace: argocd
   #   user_subject: none                              # or email, when the IdP subject is the email
+  #   url: https://argocd.example.com                 # optional: the API server, for observed actions
 
   # - id: gitlab-main
   #   integration: gitlab
