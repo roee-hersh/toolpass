@@ -127,9 +127,11 @@ class _Sender:
             method="POST",
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json", "Accept": "application/json"},
         )
-        for attempt in (1, 2):
+        # One try while the process exits, so a dead server costs the exit at most the timeout.
+        attempts, timeout = ((1,), 1.5) if self.closing else ((1, 2), _TIMEOUT)
+        for attempt in attempts:
             try:
-                with self.opener.open(req, timeout=_TIMEOUT) as resp:
+                with self.opener.open(req, timeout=timeout) as resp:
                     resp.read(1024)
                 return
             except urllib.error.HTTPError as e:
@@ -141,7 +143,7 @@ class _Sender:
                     return
             except (OSError, ValueError):
                 pass
-            if attempt == 1:
+            if attempt == 1 and not self.closing:
                 time.sleep(0.5)
         _warn("unreachable", f"the toolpass server at {self.url} did not take a batch of tool runs; they are not reported")
 

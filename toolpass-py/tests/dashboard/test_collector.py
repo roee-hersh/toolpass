@@ -205,6 +205,8 @@ def test_an_unreachable_server_never_delays_a_tool() -> None:
         "    for i in range(20):\n"
         "        lookup(key=str(i))\n"
         "print(time.perf_counter() - t0)\n"
+        "from toolpass import _record\n"
+        "_record._sender.close()  # drain now, so what it said is on stderr before the process ends\n"
     )
     env = {**os.environ, "TOOLPASS_URL": "http://127.0.0.1:9", "TOOLPASS_API_KEY": "k"}
     env.pop(_record.ENV, None)
