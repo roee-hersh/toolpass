@@ -136,6 +136,59 @@ File rules, in order:
 
 Graph error messages are never copied into a decision text; only the error code is used.
 
+## Observed actions
+
+A secured tool's Microsoft Graph requests ([observed actions](../guides/intercepted-actions.md))
+are mapped by the route table in `toolpass/integrations/microsoft365/routes.py`; `toolpass routes
+microsoft365` prints it. The connection's `url` is the host (a national cloud's Graph too) and
+`/v1.0` is the API version the table reads.
+
+| Request | Action and resource |
+|---|---|
+| `GET /drives/{drive-id}/items/{item-id}` (or `/root`), its content, versions, permissions, workbook | `file.read` on `drive:<drive id>/item/<item id>` |
+| change, upload, check in or out, restore, label, `POST .../children` | `file.edit` on the item (a new child: on its folder) |
+| `PUT .../items/{parent-id}:/{name}:/content` with `@microsoft.graph.conflictBehavior=fail` or `rename` | `file.edit` on the folder |
+| `createLink`, `invite`, the item's permissions | `file.share` on the item, sends out |
+| `DELETE` the item, `permanentDelete` | `file.delete` on the item |
+| `GET /teams/{guid}`, its members, channel list, apps, tags; the General channel | `team.member` on `team:<guid>` |
+| change, archive or delete a team; its members, channels, apps, tags | `team.owner` on `team:<guid>` |
+| `GET /teams/{guid}/channels/{channel-id}` and its messages, members, tabs | `channel.read` on `team:<guid>/channel/<channel id>` |
+| post a message or a reply, react | `channel.message.post`, sends out |
+| change or delete a channel or someone's message; the channel's members, tabs, sharing | `channel.owner` |
+| `GET /groups/{guid}` and its members, owners, conversations, calendar, planner | `group.member` on `group:<guid>` (`/team`: `team.member`) |
+| `POST /users/{email or id}/sendMail`, a draft's `send`, `reply`, `replyAll`, `forward` | `mail.send_as_self` on `mailbox:<email or id>`, sends out |
+| anything else in that user's messages, folders, mailbox settings, calendar, events, contacts | `user.active` on `mailbox:<email or id>` (allowed for the user's own mailbox only); calendar changes, inbox rules and automatic replies send out |
+| `GET /users/{id}/drive`, `/drives`, `/joinedTeams` | `user.active` on `user:<id>` |
+| `GET /me`, `/users`, `/users/{id}`, `/groups`, `/teams`, `/drives`, a drive's metadata | no check: the agent's own account, or directory data every member may read |
+| reads outside the claimed areas listed below (`/organization`, `/reports`, ...) | no check |
+
+A message whose `from` or `sender` names another mailbox is checked as `mail.send_as` on that
+mailbox, which is always unknown, so it is refused. The table claims `/drives`, `/teams`,
+`/groups`, `/users`, `/me`, `/sites`, `/shares` and `/chats`, and refuses there what it cannot tie
+to one checked resource:
+
+- `/me/...`: the token's own account, which need not be the session's user; name the user in
+  `/users/{email}/...` instead.
+- `$batch`: each request is sent on its own so each is checked.
+- An item addressed by path (`/root:/a/b.txt`), through a site, group, user or sharing link, or by
+  navigating to another item; address it as `/drives/{drive-id}/items/{item-id}`.
+- Folder listings (`children`, `delta`, `search`): a listing carries every child's metadata and
+  download link, and a child may be narrower than its folder. A child is read by id
+  (`/items/{folder}/children/{child-id}`).
+- Moves and copies (a destination folder is a second item), a new item that would replace an
+  existing one (`@microsoft.graph.conflictBehavior=replace`, or a path upload without `fail` or
+  `rename`).
+- MIME message content, which can name any sender; a body that is not JSON, names a member twice,
+  or that the hook could not read (a stream).
+- `$expand` (except `replies` on channel messages), method override headers, encoded slashes, dot
+  segments, and other spellings of the claimed paths: another case (`/Drives`), OData key syntax
+  (`/users('x')`), `/beta`.
+- Writes to groups (there is no owner action, and membership does not show the right to post),
+  SharePoint sites, chats, Shifts, calendars by id (they may be another mailbox's, shared), and
+  directory administration: listed as left out on purpose.
+
+`GET /teams/{guid}/channels` lists every channel to a team member, private ones included.
+
 ## Probe
 
 `toolpass probe` fetches a token, reads `GET /organization` and reports the tenant, then reads the
@@ -201,4 +254,7 @@ every action allow and deny, `checkMemberGroups` batching, missing and hidden-me
 members collection that ignores the `userId` filter, a channel without a `membershipType`, the
 file permission rules (guest and organization links, custom role strings, unmodelled link scopes,
 a 404 on the drive-owner lookup), private and shared channels, the probe warnings and the injected
-failure modes.
+failure modes. `tests/integrations/microsoft365/test_routes.py` holds the route table to the Graph
+description (`TOOLPASS_SPECS_DIR`), routes the main reads and writes, checks every refusal above,
+parses each resource with the integration's own parser and runs routed requests through the check
+against the fake Graph.

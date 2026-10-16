@@ -52,6 +52,7 @@ from toolpass.core.integration import (
     credential_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.integrations.microsoft365.actions import EMAIL_RE, GUID_RE, Ref, catalog_actions, parse_ref
 from toolpass.net import httpx
@@ -173,6 +174,11 @@ class Microsoft365(Integration):
 
     def actions(self) -> list[Action]:
         return catalog_actions()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.microsoft365.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network."""

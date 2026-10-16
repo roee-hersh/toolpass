@@ -39,6 +39,13 @@ def _whole_segments(path: str) -> str:
     return re.sub(r"\{([A-Za-z0-9_-]+)\}[^/{}]+(?=/|$)", r"{\1}", path)
 
 
+def _literal_inner(path: str) -> str:
+    """A variable inside a segment (an OData function's parameter,
+    ``f(x='{x}')`` in Microsoft Graph) as literal text, since a route
+    variable must be a whole segment."""
+    return "/".join(s if re.fullmatch(r"\{[^{}]+\}", s) else re.sub(r"\{([^{}]*)\}", r"\1", s) for s in path.split("/"))
+
+
 def spec_operations(name: str) -> list[tuple[str, str]] | None:
     """(METHOD, template) for every operation of a loaded OpenAPI/Swagger
     description, or None when the description is not at hand."""
@@ -48,7 +55,7 @@ def spec_operations(name: str) -> list[tuple[str, str]] | None:
     ops: dict[str, dict[str, Any]] | None = getattr(spec, "ops", None)
     if ops is None:
         raise TypeError(f"{name}: not an OpenAPI description")
-    return [(method, _whole_segments(path)) for path, by_method in ops.items() for method in by_method]
+    return [(method, _literal_inner(_whole_segments(path))) for path, by_method in ops.items() for method in by_method]
 
 
 def check_routes_against_spec(table: RouteTable, name: str, *, host: str) -> list[str]:
