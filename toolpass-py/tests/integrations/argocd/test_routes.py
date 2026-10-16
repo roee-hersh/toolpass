@@ -50,6 +50,21 @@ def test_endpoint_is_the_url_setting():
 
 
 A = "/api/v1/applications/web"
+PATCHED = ("app.update_with_get", "applications:shop/web", "write")
+PROJECT_WORDS_JSON = json.dumps(
+    [
+        {"op": "replace", "path": "/spec/source/repoURL", "value": "https://gitlab.com/acme/project-web.git"},
+        {"op": "replace", "path": "/spec/source/path", "value": "deploy/metadata-service"},
+        {"op": "add", "path": "/spec/info/-", "value": {"name": "project", "value": "metadata"}},
+    ]
+)
+PROJECT_WORDS_MERGE = json.dumps(
+    {
+        "spec": {
+            "source": {"repoURL": "https://gitlab.com/acme/project-web.git", "path": "deploy/metadata-service", "helm": {"parameters": [{"name": "project"}]}}
+        }
+    }
+)
 
 
 @pytest.mark.parametrize(
@@ -64,8 +79,8 @@ A = "/api/v1/applications/web"
         ("GET", A + "/revisions/abc/metadata", "project=shop", None, "app.get", "applications:shop/web", "read"),
         ("GET", A + "/links", "project=shop&namespace=team", None, "app.get", "applications:shop/team/web", "read"),
         ("GET", "/api/v1/stream/applications/web/resource-tree", "project=shop", None, "app.get", "applications:shop/web", "read"),
-        ("GET", A + "/logs", "project=shop&podName=web-1&namespace=shop", None, "logs.get", "logs:shop/web", "read"),
-        ("GET", A + "/pods/web-1/logs", "project=shop", None, "logs.get", "logs:shop/web", "read"),
+        ("GET", A + "/logs", "project=shop&podName=web-1&namespace=shop", None, "logs.get_with_app_get", "logs:shop/web", "read"),
+        ("GET", A + "/pods/web-1/logs", "project=shop", None, "logs.get_with_app_get", "logs:shop/web", "read"),
         ("POST", "/api/v1/applications", "", {"metadata": {"name": "web"}, "spec": {"project": "shop"}}, "app.create", "applications:shop/web", "write"),
         (
             "POST",
@@ -78,10 +93,19 @@ A = "/api/v1/applications/web"
         ),
         ("PUT", A, "project=shop", {"metadata": {"name": "web"}, "spec": {"project": "shop"}}, "app.update", "applications:shop/web", "write"),
         ("PUT", A + "/spec", "project=shop", {"project": "shop", "source": {}}, "app.update", "applications:shop/web", "write"),
-        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"source":{"targetRevision":"v2"}}}'}, "app.update", "applications:shop/web", "write"),
-        ("DELETE", A, "project=shop&cascade=true", None, "app.delete", "applications:shop/web", "destructive"),
-        ("POST", A + "/sync", "", {"project": "shop", "prune": True, "dryRun": False}, "app.sync", "applications:shop/web", "write"),
-        ("POST", A + "/sync", "", {"project": "shop", "appNamespace": "team", "revision": ""}, "app.sync", "applications:shop/team/web", "write"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/spec/source/targetRevision","value":"v2"}]'}, *PATCHED),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"source":{"targetRevision":"v2"}}}'}, *PATCHED),
+        # Values that mention the project or the metadata are not the project or the metadata.
+        ("PATCH", A, "", {"project": "shop", "patch": PROJECT_WORDS_JSON}, *PATCHED),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": PROJECT_WORDS_MERGE}, *PATCHED),
+        # Keeping the project, testing it, or reading from elsewhere into the spec changes neither.
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"project":"shop","source":{}}}'}, *PATCHED),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"test","path":"/spec/project","value":"shop"}]'}, *PATCHED),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"copy","from":"/spec/source","path":"/spec/sources/0"}]'}, *PATCHED),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"add","path":"/spec~1project","value":"x"}]'}, *PATCHED),
+        ("DELETE", A, "project=shop&cascade=true", None, "app.delete_with_get", "applications:shop/web", "destructive"),
+        ("POST", A + "/sync", "", {"project": "shop", "prune": True, "dryRun": False}, "app.sync_with_get", "applications:shop/web", "write"),
+        ("POST", A + "/sync", "", {"project": "shop", "appNamespace": "team", "revision": ""}, "app.sync_with_get", "applications:shop/team/web", "write"),
         ("POST", A + "/rollback", "", {"project": "shop", "id": 3}, "app.rollback", "applications:shop/web", "write"),
         ("DELETE", A + "/operation", "project=shop", None, "app.sync", "applications:shop/web", "write"),
         ("POST", A + "/resource", FINE, b'"{}"', "app.update/apps/Deployment/shop/web", "applications:shop/web", "write"),
@@ -92,6 +116,15 @@ A = "/api/v1/applications/web"
             "project=shop&kind=ConfigMap&namespace=shop&resourceName=cfg",
             None,
             "app.delete//ConfigMap/shop/cfg",
+            "applications:shop/web",
+            "destructive",
+        ),
+        (
+            "DELETE",
+            A + "/resource",
+            "project=shop&group=rbac.authorization.k8s.io&kind=ClusterRole&resourceName=system:aggregate-to-edit",
+            None,
+            "app.delete/rbac.authorization.k8s.io/ClusterRole//system:aggregate-to-edit",
             "applications:shop/web",
             "destructive",
         ),
@@ -184,15 +217,39 @@ def test_the_agents_own_identity_and_public_settings_check_nothing(method, path)
         ("PUT", A, "project=shop", {"spec": {"project": "ops"}}, "both projects"),
         ("PUT", A, "", {"spec": {"project": "shop"}}, "both projects"),
         ("PUT", A + "/spec", "project=shop", {"project": "ops"}, "both projects"),
-        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"project":"ops"}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"project":"ops"}}'}, "project"),
         ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/spec/project","value":"ops"}]'}, "project"),
-        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"Project":"ops"}}'}, "project"),
-        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"pro\\u006aect":"ops"}}'}, "project"),
-        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"project":"ops"},"spec":{"source":{}}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"Project":"ops"}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"pro\\u006aect":"ops"}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"project":"ops"},"spec":{"source":{}}}'}, "project"),
         # Argo CD updates the application the patched metadata names: another one.
-        ("PATCH", A, "", {"project": "shop", "patch": '{"metadata":{"name":"billing"}}'}, "metadata"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"metadata":{"name":"billing"}}'}, "metadata"),
         ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/metadata/namespace","value":"team"}]'}, "metadata"),
         ("PATCH", A, "", {"project": "shop", "patch": "not json"}, "not JSON"),
+        # Replacing or removing the whole spec leaves spec.project empty, which Argo CD reads as default.
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/spec","value":{"source":{}}}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"copy","from":"/status/sync/comparedTo","path":"/spec"}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"remove","path":"/spec"}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"remove","path":"/spec/project"}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"move","from":"/spec/project","path":"/spec/x"}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"move","from":"/metadata/name","path":"/spec/x"}]'}, "metadata"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"","value":{}}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"add","path":"/Spec","value":{"project":"ops"}}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"add","path":"/\u017fpec/project","value":"ops"}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"add","path":"x/spec","value":{}}]'}, "project"),  # json-patch ignores x
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/Metadata","value":{}}]'}, "metadata"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":7,"value":{}}]'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patch": '[{"op":"frobnicate","path":"/spec/source"}]'}, "op add"),
+        ("PATCH", A, "", {"project": "shop", "patch": '{"spec":{"source":{}}}'}, "list of operations"),  # a JSON patch by default
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":null}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":[]}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"project":null}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"spec":{"project":""}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"Spec":{"project":"ops"}}'}, "project"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '{"metadata":{"labels":{"a":"b"}}}'}, "metadata"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": '[{"op":"remove","path":"/spec"}]'}, "JSON object"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "merge", "patch": "null"}, "JSON object"),
+        ("PATCH", A, "", {"project": "shop", "patchType": "strategic", "patch": '{"spec":{}}'}, "json or merge"),
         # Bodies read the way Go's decoder reads them, or refused.
         ("POST", A + "/sync", "", {"Project": "shop"}, "write it 'project'"),
         ("POST", A + "/sync", "", b'{"project": "dev", "project": "shop"}', "more than once"),
@@ -271,6 +328,7 @@ def connect() -> Iterator[Callable[[], Connection]]:
         cl = default_cluster()
         assert cl.rbac_cm is not None
         cl.rbac_cm["policy.csv"] += "\np, role:viewer, applications, get, shop/web, allow\ng, viewers, role:viewer\n"
+        cl.rbac_cm["policy.csv"] += "".join(f"p, role:writer, {res}, {act}, shop/web, allow\n" for res, act in WRITER) + "g, writers, role:writer\n"
         cl.install(srv)
         deps, _ = itest.deps(srv, now=Clock())
         ks = itest.settings("k8s", "kubernetes", {"url": srv.url, "username_template": "{email}"}, {"credential": itest.literal("k8s")})
@@ -320,6 +378,33 @@ def test_routed_requests_are_checked_by_the_argocd_check(connect: Callable[[], C
         action, resource = observed(*args)
         d = check(c, user, action, resource)
         assert d.code == code, (user.email, args, action, resource, d)
+
+
+WRITER = [("applications", "update"), ("applications", "delete"), ("applications", "sync"), ("logs", "get")]
+
+
+@pytest.mark.parametrize(
+    ("args", "needs_get"),
+    [
+        (("PATCH", A, "", {"project": "shop", "patch": '[{"op":"replace","path":"/spec/source/targetRevision","value":"v2"}]'}), True),
+        (("DELETE", A, "project=shop"), True),
+        (("POST", A + "/sync", "", {"project": "shop"}), True),
+        (("GET", A + "/logs", "project=shop"), True),
+        (("GET", A + "/pods/web-1/logs", "project=shop"), True),
+        # These Argo CD checks with the one action.
+        (("DELETE", A + "/operation", "project=shop"), False),
+        (("PUT", A, "project=shop", {"metadata": {"name": "web"}, "spec": {"project": "shop"}}), False),
+        (("PUT", A + "/spec", "project=shop", {"project": "shop"}), False),
+    ],
+)
+def test_requests_argocd_checks_get_for_need_get_too(connect: Callable[[], Connection], args: tuple[Any, ...], needs_get: bool):
+    # A user with update, delete, sync and logs get but not the application's get.
+    c = connect()
+    writer = User(email="w@example.com", groups=("writers",))
+    both = User(email="wv@example.com", groups=("writers", "viewers"))
+    action, resource = observed(*args)
+    assert check(c, writer, action, resource).code == (Code.DENIED if needs_get else Code.ALLOWED), (action, resource)
+    assert check(c, both, action, resource).code == Code.ALLOWED, (action, resource)
 
 
 def test_an_application_in_argocds_own_namespace_is_project_and_name(connect: Callable[[], Connection]):

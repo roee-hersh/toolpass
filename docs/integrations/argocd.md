@@ -89,11 +89,17 @@ An application or ApplicationSet in Argo CD's own `namespace` is `<project>/<nam
 ## Actions
 
 `app.get/create/update/delete/sync/rollback/override`, `app.action/<group>/<kind>/<action>`,
-`app.update/<group>/<kind>/<namespace>/<name>`, `app.delete/<group>/<kind>/<namespace>/<name>`,
-`logs.get`, `exec.create`, `appset.get/create/update/delete`, `project.get/create/update/delete`,
+`app.update/<group>/<kind>/<namespace>/<name>`, `app.delete/<group>/<kind>/<namespace>/<name>`
+(the resource's name may contain `:`, as in `system:aggregate-to-edit`),
+`app.update_with_get`, `app.delete_with_get`, `app.sync_with_get`, `logs.get`, `logs.get_with_app_get`, `exec.create`, `appset.get/create/update/delete`, `project.get/create/update/delete`,
 `cluster.get/create/update/delete`, `repo.get/create/update/delete`,
 `writerepo.get/create/update/delete`, `certificate.get/create/update/delete`,
 `account.get/update`, `gpgkey.get/create/delete`, `extension.invoke`.
+
+The `*_with_get` actions are what Argo CD checks for a patch, a delete, a sync and a pod log read:
+`get` on the application first, then the action (`get` on the logs for `logs.get_with_app_get`).
+Both are answered for the user; the answer is deny when either denies, unknown when either is
+unknown and neither denies.
 
 ## Requests a secured tool makes
 
@@ -111,9 +117,10 @@ is refused.
 | Request | Action, resource |
 |---|---|
 | `GET /api/v1/applications/<name>` and its reads (`resource-tree`, `manifests`, `events`, `resource`, `revisions/...`, ...) | `app.get`, `applications:<project>/<name>` (`<project>/<namespace>/<name>` with `appNamespace`) |
-| `.../logs`, `.../pods/<pod>/logs` | `logs.get`, `logs:<project>/<name>` (Argo CD also checks `app.get`; the response is log lines only) |
-| `POST /api/v1/applications`, `PUT .../<name>`, `PUT .../spec`, `PATCH`, `DELETE` | `app.create`, `app.update`, `app.delete` |
-| `POST .../sync`, `DELETE .../operation`, `POST .../rollback` | `app.sync`, `app.sync`, `app.rollback` |
+| `.../logs`, `.../pods/<pod>/logs` | `logs.get_with_app_get`, `logs:<project>/<name>` (the application's `get`, then its logs' `get`) |
+| `POST /api/v1/applications`, `PUT .../<name>`, `PUT .../spec` | `app.create`, `app.update`, `app.update` |
+| `PATCH .../<name>`, `DELETE .../<name>` | `app.update_with_get`, `app.delete_with_get` |
+| `POST .../sync`, `DELETE .../operation`, `POST .../rollback` | `app.sync_with_get`, `app.sync`, `app.rollback` |
 | `POST`/`DELETE .../resource` | `app.update/<group>/<kind>/<namespace>/<name>`, `app.delete/...` |
 | `POST .../resource/actions`, `.../resource/actions/v2` | `app.action/<group>/<kind>/<action>` |
 | `POST /api/v1/applicationsets` | `appset.create`, `applicationsets:<template's project>/<name>` |
@@ -129,8 +136,14 @@ Refused:
 
 - **A second action**: a sync with `manifests`, `revision` or `revisions` (also `override`); an
   update whose body moves the application to another project (also the new project); a patch that
-  touches the project or the metadata (Argo CD updates the application the patched metadata names,
-  under the project it names); a create with `upsert` (may update instead).
+  may change the project or the metadata (Argo CD updates the application the patched metadata
+  names, under the project it names, and reads an empty project as `default`); a create with
+  `upsert` (may update instead). A JSON patch (`patchType` `json` or empty) is refused when an
+  operation other than `test` writes to or moves from `/metadata...`, `/spec`, `/spec/project` or
+  the whole document; a merge patch (`patchType` `merge`) when it is not an object, names
+  `metadata`, sets `spec` to anything but an object, or sets `spec.project` to another value. Names
+  are compared in any case, as Go's decoder reads them. Values are not looked at: a `repoURL` that
+  mentions `project` is fine. Other patch types are refused.
 - **Listings** (`GET /api/v1/applications`, `/projects`, `/clusters`, ...): Argo CD filters them by
   the agent's own access, not the user's. Get one object by name.
 - **Objects whose project Argo CD looks up**: ApplicationSets, clusters and repositories by name.
@@ -150,6 +163,7 @@ Refused:
 | A rule allows and none denies | allow |
 | No rule allows, or a rule denies | deny |
 | `user_subject: none` and the policy has user-level rules toolpass cannot reach through groups | unknown (`unsupported`) rather than deny |
+| A `*_with_get` action (two checks) | deny when either denies, else unknown when either is unknown |
 | The policy is invalid (Argo CD would refuse it too) | unknown (`unsupported`) |
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
 | The ServiceAccount may not read the config maps or projects | unknown (`credential_rejected`) |

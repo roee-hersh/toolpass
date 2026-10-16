@@ -11,11 +11,14 @@ change lands in. A request without it is refused.
 
 Resource changes inside an application map to the fine-grained actions
 (``app.update/<group>/<kind>/<namespace>/<name>``, ``app.delete/...``,
-``app.action/<group>/<kind>/<action>``). A sync with local manifests or
-another revision also needs ``override``, an update that changes the project
-also needs the new project, a patch that touches the project or the metadata
-may update another application, and a create with ``upsert`` may update
-instead: one request is checked for one action, so these are refused.
+``app.action/<group>/<kind>/<action>``). A patch, a delete, a sync and a log
+read map to the actions that also check the application's get, as Argo CD
+does (``app.update_with_get``, ``app.delete_with_get``, ``app.sync_with_get``,
+``logs.get_with_app_get``). A sync with local manifests or another revision
+also needs ``override``, an update that changes the project also needs the
+new project, a patch that replaces or removes the project, the spec or the
+metadata may update another application, and a create with ``upsert`` may
+update instead: one request is checked for one action, so these are refused.
 
 Refused as well: listings, which Argo CD filters by the agent's own access;
 ApplicationSets, clusters and repositories by name, whose project Argo CD
@@ -100,6 +103,7 @@ class _Obj(dict[str, Any]):
 
     def __init__(self, pairs: list[tuple[str, Any]]) -> None:
         super().__init__(pairs)
+        self.pairs = pairs
         seen: set[str] = set()
         self.ambiguous: set[str] = set()
         for k, _ in pairs:
@@ -252,49 +256,77 @@ def _app_body(*refused: str) -> Extract:
     return extract
 
 
-# What a patch must not mention: Argo CD applies it, then updates the
-# application the result names (metadata.name, metadata.namespace) under the
-# project it names (spec.project).
-_RETARGET = ("project", "metadata")
+# Argo CD applies a patch to the application, then updates the application
+# the result names (metadata.name, metadata.namespace) under the project it
+# names (spec.project, "default" when empty). Go's decoder reads the patched
+# document's member names in any case, so they are compared case-folded.
+_RETARGETS = "a patch that changes the project or the metadata may change which application or project is updated; change those with their own request"
+_JSON_PATCH_OPS = ("add", "remove", "replace", "move", "copy", "test")
 
 
-def _retargets(text: str) -> bool:
-    """Whether a JSON or merge patch mentions a member that would point the
-    update at another application or project, in any member name or string
-    (a JSON patch's path), duplicates included, in any case."""
-    hit = False
-
-    def mentions(s: str) -> bool:
-        return any(w in s.casefold() for w in _RETARGET)
-
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        nonlocal hit
-        hit = hit or any(mentions(k) or (isinstance(x, str) and mentions(x)) for k, x in items)
-        return dict(items)
-
-    def strings(x: Any) -> bool:
-        if isinstance(x, list):
-            return any(strings(y) for y in x)
-        if isinstance(x, dict):
-            return any(strings(y) for y in x.values())
-        return isinstance(x, str) and mentions(x)
-
+def _patch_doc(text: str) -> Any:
     try:
-        doc = json.loads(text, object_pairs_hook=pairs)
+        return json.loads(text, object_pairs_hook=_Obj)
     except ValueError:
         raise _Refused("the patch is not JSON toolpass can read") from None
-    return hit or strings(doc)
+
+
+def _retargeting_pointer(pointer: Any) -> bool:
+    """Whether a JSON patch path may replace or remove the metadata, the spec
+    or the spec's project. evanphx/json-patch ignores what comes before the
+    first "/", so a path must start with one."""
+    if not isinstance(pointer, str) or not pointer.startswith("/"):
+        return True
+    keys = [k.replace("~1", "/").replace("~0", "~").casefold() for k in pointer[1:].split("/")]
+    return keys[0] == "metadata" or (keys[0] == "spec" and (len(keys) == 1 or keys[1] == "project"))
+
+
+def _check_json_patch(patch: Any) -> None:
+    """A JSON patch (RFC 6902) whose operations leave the metadata, the spec
+    and the spec's project in place; a test changes nothing."""
+    if not isinstance(patch, list):
+        raise _Refused("a JSON patch must be a list of operations")
+    for op in patch:
+        if not isinstance(op, dict) or op.get("op") not in _JSON_PATCH_OPS:
+            raise _Refused("a JSON patch operation must be an object with op add, remove, replace, move, copy or test")
+        if op["op"] == "test":
+            continue
+        if _retargeting_pointer(op.get("path")) or (op["op"] in ("move", "copy") and _retargeting_pointer(op.get("from"))):
+            raise _Refused(_RETARGETS)
+
+
+def _check_merge_patch(patch: Any, project: str) -> None:
+    """A merge patch (RFC 7386) without metadata, whose spec, when present,
+    is an object that keeps the project; every member is read, duplicates
+    included."""
+    if not isinstance(patch, _Obj):
+        raise _Refused("a merge patch must be a JSON object")
+    for key, value in patch.pairs:
+        if key.casefold() == "metadata":
+            raise _Refused(_RETARGETS)
+        if key.casefold() != "spec":
+            continue
+        if not isinstance(value, _Obj):
+            raise _Refused(_RETARGETS)
+        for k, v in value.pairs:
+            if k.casefold() == "project" and v != project:
+                raise _Refused(_RETARGETS)
 
 
 @_guard
 def _patch(r: Request, v: Mapping[str, str]) -> dict[str, str]:
-    """Patch: the project from the body; a patch that touches the project or the metadata is refused."""
+    """Patch: the project from the body; a patch that changes the project or the metadata is refused."""
     doc = _body(r)
-    obj = _app(v["name"], _str(doc, "project"), _str(doc, "appNamespace"))
-    if _retargets(_str(doc, "patch")):
-        raise _Refused(
-            "a patch that touches the project or the metadata may change which application or project is updated; change those with their own request"
-        )
+    project = _str(doc, "project")
+    obj = _app(v["name"], project, _str(doc, "appNamespace"))
+    kind = _str(doc, "patchType")
+    patch = _patch_doc(_str(doc, "patch"))
+    if kind in ("json", ""):
+        _check_json_patch(patch)
+    elif kind == "merge":
+        _check_merge_patch(patch, project)
+    else:
+        raise _Refused("patchType must be json or merge, the patches Argo CD applies")
     return {"_resource": f"applications:{obj}"}
 
 
@@ -403,10 +435,11 @@ def _routes() -> list[Route]:
         Route("POST", f"{_V1}/applications", "app.create", _APP, body=_create("applications", ("spec", "project"))),
         Route("GET", a, "app.get", _APP, body=_app_query(projects=True)),
         Route("PUT", f"{_V1}/applications/{{name}}", "app.update", _APP, body=_update),
-        Route("PATCH", a, "app.update", _APP, body=_patch),
-        Route("DELETE", a, "app.delete", _APP, body=get),
+        # Argo CD checks get on the application before a patch, delete or sync.
+        Route("PATCH", a, "app.update_with_get", _APP, body=_patch),
+        Route("DELETE", a, "app.delete_with_get", _APP, body=get),
         Route("PUT", f"{a}/spec", "app.update", _APP, body=_update_spec),
-        Route("POST", f"{a}/sync", "app.sync", _APP, body=_app_body("manifests", "revision", "revisions")),
+        Route("POST", f"{a}/sync", "app.sync_with_get", _APP, body=_app_body("manifests", "revision", "revisions")),
         Route("POST", f"{a}/rollback", "app.rollback", _APP, body=_app_body()),
         Route("DELETE", f"{a}/operation", "app.sync", _APP, effect="write", body=get, description="terminate the running sync"),
         Route("POST", f"{a}/resource", "app.update", _APP, body=_resource_query("update"), description="app.update/<group>/<kind>/<namespace>/<name>"),
@@ -414,8 +447,8 @@ def _routes() -> list[Route]:
         # The action comes from the request: app.action/<group>/<kind>/<action>, or the request is refused.
         Route("POST", f"{a}/resource/actions", None, _APP, body=_action_query, description="app.action/<group>/<kind>/<action>"),
         Route("POST", f"{a}/resource/actions/v2", None, _APP, body=_action_body, description="app.action/<group>/<kind>/<action>"),
-        Route("GET", f"{a}/logs", "logs.get", "logs:{project}/{name}", body=_app_query("logs")),
-        Route("GET", f"{a}/pods/{{podName}}/logs", "logs.get", "logs:{project}/{name}", body=_app_query("logs")),
+        Route("GET", f"{a}/logs", "logs.get_with_app_get", "logs:{project}/{name}", body=_app_query("logs")),
+        Route("GET", f"{a}/pods/{{podName}}/logs", "logs.get_with_app_get", "logs:{project}/{name}", body=_app_query("logs")),
         Route("GET", f"{a}/links", "app.get", _APP, body=_app_query(ns_param="namespace")),
         Route("GET", f"{_V1}/applications/{{name}}/managed-resources", "app.get", _APP, body=get),
         Route("GET", f"{_V1}/applications/{{name}}/resource-tree", "app.get", _APP, body=get),

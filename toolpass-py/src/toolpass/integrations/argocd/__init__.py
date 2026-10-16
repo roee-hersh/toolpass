@@ -306,19 +306,37 @@ class Connection(integ.Connection):
             # v2 behaviour: the top-level verb is checked first, then the
             # fine-grained one.
             acts = [req.top_act, req.act]
+        # Every check Argo CD makes on the request must allow: the ones it
+        # makes first (get, for a patch, delete, sync or logs), then the action.
+        checks = [(res, [act]) for res, act in req.first] + [(req.res, acts)]
+        results = [self._enforce(enf, b, subject, groups, res, check_acts, req.obj) for res, check_acts in checks]
+        for code in (Code.DENIED, Code.UNSUPPORTED):
+            for d, _ in results:
+                if d.code == code:
+                    return d
+        if len(results) == 1:
+            return results[0][0]
+        granted = " and ".join(f"{act} {res}" for (_, act), (res, _) in zip(results, checks, strict=True))
+        return allowed(f"Argo CD policy allows {granted} on {req.obj} for {who(subject, groups)}")
+
+    @staticmethod
+    def _enforce(enf: rbac.Enforcer, b: Bundle, subject: str, groups: list[str], res: str, acts: list[str], obj: str) -> tuple[Decision, str]:
+        """One of Argo CD's checks: allowed when one of ``acts`` is allowed
+        (with the act that was), denied or unknown otherwise."""
         for act in acts:
             try:
-                ok = enf.enforce_claims(subject, groups, req.res, act, req.obj)
+                ok = enf.enforce_claims(subject, groups, res, act, obj)
             except rbac.UnsupportedPattern as e:
                 # Skipping the rule could skip a deny.
-                return unsupported(f"Argo CD's policy has a rule toolpass cannot evaluate: {e}")
+                return unsupported(f"Argo CD's policy has a rule toolpass cannot evaluate: {e}"), ""
             if ok:
-                return allowed(f"Argo CD policy allows {act} {req.res} on {req.obj} for {who(subject, groups)}")
+                return allowed(f"Argo CD policy allows {act} {res} on {obj} for {who(subject, groups)}"), act
+        act = acts[-1]
         if subject == "" and b.user_level:
             return unsupported(
-                f"no group rule allows {req.act} {req.res} on {req.obj}, and the policy has user-level rules that cannot be evaluated with user_subject: none"
-            )
-        return denied(f"Argo CD policy has no rule allowing {req.act} {req.res} on {req.obj} for {who(subject, groups)}")
+                f"no group rule allows {act} {res} on {obj}, and the policy has user-level rules that cannot be evaluated with user_subject: none"
+            ), ""
+        return denied(f"Argo CD policy has no rule allowing {act} {res} on {obj} for {who(subject, groups)}"), ""
 
     def probe(self, ctx: Context) -> integ.ProbeResult:
         """Read the policy and report what was found."""
