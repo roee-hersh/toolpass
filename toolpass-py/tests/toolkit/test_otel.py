@@ -19,6 +19,12 @@ from toolpass._audit import AuditEvent
 from toolpass.otel import audit_sink
 
 
+@pytest.fixture(autouse=True)
+def _sdk_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Another test module (crewai's) disables the SDK for its telemetry; this one needs it on.
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+
+
 def _tracer() -> tuple[Any, InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
