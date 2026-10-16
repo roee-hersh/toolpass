@@ -465,6 +465,112 @@ def test_test_iam_permissions_checks_nothing():
     assert o is not None and (o.action, o.unresolved, o.effect) == (None, None, "read")
 
 
+def test_the_media_download_service_reads_the_object():
+    # The client's downloads and an object's mediaLink.
+    o = ROUTES.match(req("GET", GCS, "/download/storage/v1/b/acme-data/o/reports%2Fq1.csv", "generation=1&alt=media"))
+    assert o is not None and o.unresolved is None, o
+    assert (o.action, o.resource, o.effect) == ("storage.read", "object:acme-data/reports/q1.csv", "read")
+    # Another service's host does not serve it.
+    o = ROUTES.match(req("GET", SM, "/download/storage/v1/b/acme-data/o/a.txt", "alt=media"))
+    assert o is not None and o.unresolved
+
+
+def test_storage_aliases_under_the_shared_hosts_are_claimed_and_refused():
+    eps = ROUTES.endpoints(Settings("gcp", "googlecloud", {"scope": "project:my-proj"}))
+    for shared in ("www.googleapis.com", "content.googleapis.com"):
+        for alias in ("/download/storage/v1", "/batch/storage/v1", "/resumable/upload/storage/v1", "/upload/bigquery/v2"):
+            assert (shared, alias) in eps
+    o = ROUTES.match(req("GET", "www.googleapis.com", "/download/storage/v1/b/acme-data/o/a.txt", "alt=media"), "/download/storage/v1")
+    assert o is not None and o.unresolved and "storage.googleapis.com" in o.unresolved
+    o = ROUTES.match(req("POST", "www.googleapis.com", "/resumable/upload/storage/v1/b/acme-data/o", "uploadType=resumable"), "/resumable/upload/storage/v1")
+    assert o is None or o.unresolved
+
+
+def test_resumable_upload_path_and_batch():
+    o = ROUTES.match(
+        req("POST", GCS, "/resumable/upload/storage/v1/b/acme-data/o", "uploadType=resumable&name=a.txt&ifGenerationMatch=0", {"contentType": "text/plain"})
+    )
+    assert o is not None and o.unresolved is None, o
+    assert (o.action, o.resource) == ("storage.write", "object:acme-data/a.txt")
+    o = ROUTES.match(req("PUT", GCS, "/resumable/upload/storage/v1/b/acme-data/o", "uploadType=resumable&upload_id=x", b"data", ct="text/plain"))
+    assert o is not None and (o.action, o.resource, o.unresolved) == ("storage.write", "bucket:acme-data", None)
+    o = ROUTES.match(req("POST", GCS, "/batch/storage/v1", "", b"--b\r\n", ct="multipart/mixed; boundary=b"))
+    assert o is not None and o.unresolved and "batch" in o.unresolved
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "query", "body"),
+    [
+        ("DELETE", "/bigquery/v2/projects/my-proj/datasets/sales", "delete_contents=true", None),
+        ("DELETE", "/bigquery/v2/projects/my-proj/datasets/sales", "deleteContents=false&delete_contents=true", None),
+        ("PATCH", "/storage/v1/b/acme-data", "predefined_acl=publicRead", {"labels": {}}),
+        ("PATCH", "/storage/v1/b/acme-data/o/a.txt", "predefined_acl=publicRead", {"metadata": {}}),
+        ("POST", "/upload/storage/v1/b/acme-data/o", "uploadType=media&name=a.txt&if_generation_match=7", b"x"),
+        ("POST", "/upload/storage/v1/b/acme-data/o", "uploadType=media&name=a.txt&ifGenerationMatch=0&predefined_acl=publicRead", b"x"),
+        ("POST", "/upload/storage/v1/b/acme-data/o", "uploadType=media&name=a.txt&ifGenerationMatch=0&if_generation_match=7", b"x"),
+        ("GET", "/v3/projects/my-proj", "use_admin_access=true", None),
+    ],
+)
+def test_snake_case_query_parameters_are_the_same_parameters(method, path, query, body):
+    host = BQ if path.startswith("/bigquery") else CRM if path.startswith("/v3") else GCS
+    ct = "text/plain" if isinstance(body, bytes) else "application/json"
+    o = ROUTES.match(req(method, host, path, query, body, ct=ct))
+    assert o is not None and o.unresolved, o
+
+
+def test_snake_case_names_a_routed_upload_too():
+    o = ROUTES.match(req("POST", GCS, "/upload/storage/v1/b/acme-data/o", "upload_type=media&name=a.txt&if_generation_match=0", b"x", ct="text/plain"))
+    assert o is not None and (o.action, o.resource, o.unresolved) == ("storage.write", "object:acme-data/a.txt", None)
+
+
+@pytest.mark.parametrize(
+    ("query", "headers"),
+    [
+        ("uploadType=media&name=a.txt&ifGenerationMatch=0&upload_protocol=resumable", {}),
+        ("uploadType=media&name=a.txt&ifGenerationMatch=0", {"x-goog-upload-protocol": "resumable"}),
+        ("uploadType=media&name=a.txt&ifGenerationMatch=0&$ct=application/json", {}),
+    ],
+)
+def test_other_upload_protocols_and_content_type_overrides_are_refused(query, headers):
+    o = ROUTES.match(req("POST", GCS, "/upload/storage/v1/b/acme-data/o", query, b"x", ct="text/plain", headers=headers))
+    assert o is not None and o.unresolved, o
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"schema": {"fields": [{"name": "ssn", "type": "STRING", "policyTags": {"names": ["projects/p/locations/us/taxonomies/1/policyTags/2"]}}]}},
+        {"schema": {"fields": [{"name": "ssn", "type": "STRING", "policy_tags": {"names": []}}]}},
+        {"schema": {"fields": [{"name": "r", "type": "RECORD", "fields": [{"name": "ssn", "type": "STRING", "dataPolicies": [{"name": "x"}]}]}]}},
+    ],
+)
+def test_column_level_security_in_a_new_tables_schema_is_refused(body):
+    o = ROUTES.match(req("POST", BQ, "/bigquery/v2/projects/my-proj/datasets/sales/tables", "", body))
+    assert o is not None and o.unresolved and "setCategory" in o.unresolved, o
+
+
+@pytest.mark.parametrize("method", ["PATCH", "PUT"])
+def test_a_schema_change_on_an_existing_table_is_refused(method):
+    # Columns sent without their policy tags lose them.
+    o = ROUTES.match(req(method, BQ, TBL, "", {"schema": {"fields": [{"name": "ssn", "type": "STRING"}]}}))
+    assert o is not None and o.unresolved and "setCategory" in o.unresolved, o
+    o = ROUTES.match(req(method, BQ, TBL, "", {"description": "x"}))
+    assert o is not None and (o.action, o.unresolved) == ("raw:bigquery.tables.update", None)
+
+
+def test_a_new_table_with_a_plain_schema_is_routed():
+    body = {"schema": {"fields": [{"name": "a", "type": "STRING"}, {"name": "r", "type": "RECORD", "fields": [{"name": "b", "type": "INT64"}]}]}}
+    o = ROUTES.match(req("POST", BQ, "/bigquery/v2/projects/my-proj/datasets/sales/tables", "", body))
+    assert o is not None and (o.action, o.resource, o.unresolved) == ("raw:bigquery.tables.create", "dataset:my-proj/sales", None)
+
+
+def test_an_object_name_with_a_question_mark_is_refused_with_its_reason():
+    o = ROUTES.match(req("GET", GCS, "/storage/v1/b/acme-data/o/what%3F.txt", "alt=media"))
+    assert o is not None and o.unresolved and "?" in o.unresolved
+    o = ROUTES.match(req("POST", GCS, "/upload/storage/v1/b/acme-data/o", "uploadType=media&name=what%3F.txt&ifGenerationMatch=0", b"x", ct="text/plain"))
+    assert o is not None and o.unresolved and "?" in o.unresolved
+
+
 def test_the_hosts_are_googles():
     eps = ROUTES.endpoints(Settings("gcp", "googlecloud", {"scope": "project:my-proj"}))
     assert [(h, "") for h in HOSTS] == eps[: len(HOSTS)]

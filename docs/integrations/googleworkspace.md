@@ -155,12 +155,15 @@ The integration's route table (`toolpass routes googleworkspace`) maps the reque
 sends to Google's APIs to an action and a resource, so the toolkit checks the session's user before
 each request leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
 `admin`, `docs`, `sheets` and `slides` hosts under `googleapis.com`, and `api_url` when it names
-another endpoint.
+another endpoint. It also claims Drive's web hosts, `docs.google.com`, `drive.google.com` and
+`drive.usercontent.google.com`, and refuses every request to them: their export and download links
+(`exportLinks`, `webContentLink`) serve a file's content to the same bearer token by paths no route
+reads, so a tool downloads through the Drive API instead.
 
 | Request | Action | Resource |
 |---|---|---|
 | Drive file metadata, comments, permissions (read) | `drive.file.read` | `file:<id>` |
-| Drive content (`alt=media`, export, download); Docs, Sheets and Slides reads | `drive.file.download` | `file:<id>` |
+| Drive content (`alt=media` or `$alt=media`, export, download, the media download service `/download/drive/v3/...`); Docs, Sheets and Slides reads | `drive.file.download` | `file:<id>` |
 | Drive change; Docs, Sheets and Slides `batchUpdate` and value writes | `drive.file.edit` (`drive.file.rename`, `drive.file.trash` when that is all it does) | `file:<id>` |
 | Sharing: permissions, sharing settings, publishing a revision, resolving an access proposal | `drive.file.share`, sends out | `file:<id>` |
 | Comments and replies | `drive.file.comment`, sends out | `file:<id>` |
@@ -177,8 +180,16 @@ than the user's: Gmail `me` and Calendar `primary` (name the mailbox or calendar
 another folder, ownership transfers, Gmail settings changes (a delegate may read a mailbox but not
 change its forwarding, filters or delegates), moving an event between calendars, every Directory
 write and every other Directory read, Sheets charts in Slides, batch requests,
-`X-HTTP-Method-Override`, `useDomainAdminAccess`, JSON with a key given twice, and any Drive, Gmail,
-Calendar or Directory read the table does not know (Drive v2 included). Lists and searches
+`X-HTTP-Method-Override`, `useDomainAdminAccess`, JSON with a key given twice, any Drive, Gmail,
+Calendar or Directory read the table does not know (Drive v2 included), and any other path under
+`/download/`. Google reads a query parameter by its camelCase or snake_case name and a system
+parameter also with a `$` prefix, so `add_parents`, `transfer_ownership`, `use_domain_admin_access`
+and `$alt` count as `addParents`, `transferOwnership`, `useDomainAdminAccess` and `alt`; a parameter
+given twice, in one spelling or two, is refused, and so is a `$` system parameter other than `$alt`,
+`$fields`, `$prettyPrint`, `$quotaUser`, `$key`, `$callback`, `$userIp` and `$.xgafv`. A `$ct`
+Content-Type override on a request with a body is refused (Google would read the body as another
+type), and an upload names its protocol with `uploadType` only: `upload_protocol` and the
+`X-Goog-Upload-*` headers are refused. Lists and searches
 (`files.list`, the agent's calendar list) are not checked: they return what the agent's own
 credential sees, marked untrusted. `mail.delegate_access` needs `enable_gmail_settings`; with it off
 every Gmail request is refused as unknown.
@@ -235,4 +246,5 @@ canary and the key pair is generated in the test.
 `tests/integrations/googleworkspace/test_routes.py` holds the route table to the Drive, Gmail,
 Calendar and Directory discovery documents (every write routed or left out with a reason), checks
 that every routed resource parses with the integration's own parser, and covers the refusals above,
-multipart and resumable uploads, and bodies that two readers could read differently.
+multipart and resumable uploads, the media download service and the web hosts, query parameter
+spellings, and bodies that two readers could read differently.

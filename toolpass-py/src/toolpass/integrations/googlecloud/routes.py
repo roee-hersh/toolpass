@@ -15,7 +15,8 @@ integration's named action when one asks exactly that permission
 Requests that need a second permission or a second resource are refused:
 an upload that may overwrite an object (without ``ifGenerationMatch=0``),
 copies, rewrites and composes, BigQuery jobs and queries (SQL names its own
-tables), Cloud Run deploys and Compute changes that run code as a service
+tables), table schemas that set or may drop column-level security
+(``bigquery.tables.setCategory``), Cloud Run deploys and Compute changes that run code as a service
 account (``iam.serviceAccounts.actAs``), token minting through a chain of
 ``delegates``. Every read toolpass does not know is refused, not passed:
 the hosts are Google Cloud's own. The XML API, virtual-hosted buckets
@@ -57,9 +58,22 @@ _CRM = "cloudresourcemanager.googleapis.com"
 _PT = "policytroubleshooter.googleapis.com"
 
 HOSTS = (_GCS, "storage.cloud.google.com", _BQ, _SM, _IAM, _IAMC, _GCE, _RUN, _GKE, _CRM, _PT)
-# The same services under www.googleapis.com and content.googleapis.com:
-# claimed so a request there is refused rather than passed unseen.
-_ALIASES = ("/storage/v1", "/upload/storage/v1", "/bigquery/v2", "/compute/v1")
+# The same services under www.googleapis.com and content.googleapis.com
+# (their JSON paths, uploads, media downloads and batches): claimed so a
+# request there is refused rather than passed unseen.
+_ALIASES = (
+    "/storage/v1",
+    "/upload/storage/v1",
+    "/resumable/upload/storage/v1",
+    "/download/storage/v1",
+    "/batch/storage/v1",
+    "/bigquery/v2",
+    "/upload/bigquery/v2",
+    "/batch/bigquery/v2",
+    "/compute/v1",
+    "/batch/compute/v1",
+)
+_SHARED = ("www.googleapis.com", "content.googleapis.com")
 
 _NAMED = {a.permission: a for a in ACTION_LIST if a.permission}
 
@@ -199,6 +213,9 @@ def _object(v: Mapping[str, str]) -> str:
 
 
 def _object_named(bucket: str, name: str) -> str:
+    if "?" in name:
+        # A resource reference ends its id at "?"; escaping it would ask the troubleshooter about another object's name.
+        raise Unreadable(f"{name!r}: an object name with ? cannot be named as a toolpass resource; not routed")
     if not is_object_name(name):
         raise Unreadable(f"{name!r} is not an object name toolpass can check (no control characters, no . or .. segments)")
     return f"object:{bucket}/{name}"
@@ -287,12 +304,24 @@ def _storage() -> list[Route]:
         Route("GET", _BK + "/o", "storage.list", "bucket:{bucket}", body=on(_fixed("storage.objects.list", _bucket))),
         Route("POST", _BK + "/o/watch", "storage.list", "bucket:{bucket}", sends_out=True, body=on(_fixed("storage.objects.list", _bucket))),
         Route("GET", _OBJ, "storage.read", "object:{bucket}/{object}", body=on(_fixed("storage.objects.get", _object))),
+        # The media download service (the client's downloads, an object's mediaLink): the same read.
+        Route("GET", "/download" + _OBJ, "storage.read", "object:{bucket}/{object}", body=on(_fixed("storage.objects.get", _object))),
         Route("PATCH", _OBJ, "raw:storage.objects.update", "object:{bucket}/{object}", body=on(_object_update)),
         Route("PUT", _OBJ, "raw:storage.objects.update", "object:{bucket}/{object}", body=on(_object_update)),
         Route("DELETE", _OBJ, "storage.delete", "object:{bucket}/{object}", body=on(_fixed("storage.objects.delete", _object))),
-        Route("POST", "/upload" + _BK + "/o", "storage.write", "object:{bucket}/{name}", body=on(_upload)),
-        Route("PUT", "/upload" + _BK + "/o", "storage.write", "bucket:{bucket}", body=on(_upload_chunk)),
+        Route(
+            "POST",
+            "/batch/storage/v1",
+            None,
+            "",
+            body=refusing("a batch request carries several requests toolpass cannot check one by one; send them separately"),
+        ),
     ]
+    for up in ("/upload", "/resumable/upload"):
+        out += [
+            Route("POST", up + _BK + "/o", "storage.write", "object:{bucket}/{name}", body=on(_upload)),
+            Route("PUT", up + _BK + "/o", "storage.write", "bucket:{bucket}", body=on(_upload_chunk)),
+        ]
     # ACLs are IAM in Cloud Storage's model: reading them is getIamPolicy, changing them setIamPolicy.
     for coll in ("/acl", "/defaultObjectAcl"):
         out += [
@@ -367,14 +396,44 @@ def _same_place(ref: Any, v: Mapping[str, str], keys: tuple[str, ...]) -> None:
         raise Unreadable("the body's reference carries unknown fields")
 
 
+# Column-level security in a table's schema: setting a column's policy tags
+# or data policies needs bigquery.tables.setCategory (and the policies' own
+# permissions), more than tables.create or tables.update.
+_COLUMN_SECURITY = frozenset({"policytags", "datapolicies"})
+
+
+def _column_security(node: Any) -> bool:
+    """True when ``policyTags`` or ``dataPolicies`` appears anywhere in a schema, in any spelling."""
+    if isinstance(node, dict):
+        return bool(_canon_keys(node) & _COLUMN_SECURITY) or any(_column_security(x) for x in node.values())
+    if isinstance(node, list):
+        return any(_column_security(x) for x in node)
+    return False
+
+
 def _definition(permission: str, resource: Callable[[Mapping[str, str]], str], fields: frozenset[str], ref: str, keys: tuple[str, ...]) -> Build:
-    """A dataset or table created or changed: only the fields the permission covers, in the path's own place."""
+    """A dataset or table created or changed: only the fields the permission covers, in the path's own place.
+
+    A table's schema carries its columns' policy tags and data policies.
+    Setting them needs bigquery.tables.setCategory, so a schema that names
+    them is refused. A table update that sends a schema replaces every
+    column's, and a column sent without its policy tags loses them, which
+    needs the same permission: a schema change on an existing table is
+    refused."""
 
     def build(r: Request, v: Mapping[str, str]) -> Mapping[str, str]:
         body = body_object(r)
         other = sorted(_canon_keys(body) - _BQ_OUTPUT - fields)
         if other:
             raise Unreadable(f"{', '.join(other)}: more than {permission} covers (a view, an external source, an access list); not routed")
+        schema = [x for k, x in body.items() if k.replace("_", "").lower() == "schema"]
+        if schema and permission == "bigquery.tables.update":
+            raise Unreadable(
+                "a schema update replaces the columns' policy tags and data policies (column-level security), "
+                "which needs bigquery.tables.setCategory; not routed"
+            )
+        if schema and _column_security(schema[0]):
+            raise Unreadable("policyTags and dataPolicies set column-level security, which needs bigquery.tables.setCategory; not routed")
         refs = [v for k, v in body.items() if k.replace("_", "").lower() == ref]
         _same_place(refs[0] if refs else None, v, keys)
         return _check(permission, resource(v))
@@ -915,6 +974,14 @@ def _resource_manager() -> list[Route]:
 # -- the table --------------------------------------------------------------------------------------
 
 
+def _not_routed(r: Request, v: Mapping[str, str]) -> Mapping[str, str]:
+    if r.host.lower().rstrip(".") in _SHARED:
+        raise Unreadable(
+            f"Google Cloud services under {r.host} are not routed; address the service's own host (storage.googleapis.com, bigquery.googleapis.com)"
+        )
+    raise Unreadable("this Google Cloud request is not routed")
+
+
 def _routes() -> list[Route]:
     return [
         *_storage(),
@@ -926,7 +993,7 @@ def _routes() -> list[Route]:
         *_gke(),
         *_resource_manager(),
         # Everything else read on these hosts is refused, not passed unseen.
-        *(Route(m, "/{rest+}", None, "", body=refusing("this Google Cloud request is not routed"), spec=False) for m in ("GET", "HEAD")),
+        *(Route(m, "/{rest+}", None, "", body=guarded(_not_routed), spec=False) for m in ("GET", "HEAD")),
     ]
 
 
@@ -935,7 +1002,7 @@ def _locate(settings: Any) -> list[tuple[str, str]]:
     shared www and content hosts. The connection's own settings name only
     the Policy Troubleshooter, which toolpass calls itself."""
     out = [(h, "") for h in HOSTS]
-    out += [(shared, alias) for shared in ("www.googleapis.com", "content.googleapis.com") for alias in _ALIASES]
+    out += [(shared, alias) for shared in _SHARED for alias in _ALIASES]
     return out
 
 

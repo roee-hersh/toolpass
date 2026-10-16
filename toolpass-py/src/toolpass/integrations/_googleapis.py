@@ -7,6 +7,11 @@ upload protocols (a raw body, a ``multipart/related`` body whose first part
 is the JSON metadata, or a resumable session opened with JSON metadata and
 continued with ``upload_id``). These helpers read a request only where the
 reading is unambiguous, and say why otherwise; the tables refuse then.
+
+The front end reads a query parameter by its camelCase or its snake_case
+name (``addParents``, ``add_parents``), and a system parameter also with a
+``$`` prefix (``$alt``), so :func:`param` takes every spelling and refuses a
+parameter given in more than one.
 """
 
 from __future__ import annotations
@@ -85,15 +90,25 @@ def body_object(r: Request) -> dict[str, Any]:
     return _strict_json(r.body)
 
 
+def _param_key(name: str) -> str:
+    """A query parameter's name as Google's front end matches it: camelCase
+    and snake_case alike, a system parameter with or without its ``$``."""
+    return name.lstrip("$").replace("_", "").lower()
+
+
 def param(r: Request, name: str) -> str | None:
-    """A query parameter's value, None when absent; raises Unreadable when
-    it is given more than once."""
-    values = urllib.parse.parse_qs(r.query, keep_blank_values=True).get(name)
-    if not values:
+    """A query parameter's value, None when absent, under any spelling
+    Google reads as the same parameter (``uploadType``, ``upload_type``,
+    ``$uploadType``); raises Unreadable when it is given more than once, in
+    one spelling or several (the server may read either)."""
+    key = _param_key(name)
+    found = [(k, v) for k, vs in urllib.parse.parse_qs(r.query, keep_blank_values=True).items() if _param_key(k) == key for v in vs]
+    if not found:
         return None
-    if len(values) > 1:
-        raise Unreadable(f"the query gives {name} more than once")
-    return values[0]
+    if len(found) > 1:
+        spellings = sorted({k for k, _ in found})
+        raise Unreadable(f"the query gives {name} more than once" + (f" ({', '.join(spellings)})" if len(spellings) > 1 else ""))
+    return found[0][1]
 
 
 def upload_metadata(r: Request) -> tuple[str, dict[str, Any]]:
@@ -102,7 +117,9 @@ def upload_metadata(r: Request) -> tuple[str, dict[str, Any]]:
     ``media`` carries only content (metadata {}); ``multipart`` carries the
     metadata as the first part of a multipart/related body; ``resumable``
     opens a session with a JSON body, or continues one (``upload_id``)
-    with content only."""
+    with content only. The upload protocol is chosen by ``uploadType``
+    alone: ``upload_protocol`` and the ``X-Goog-Upload-*`` headers are
+    refused by :func:`guarded`."""
     kind = param(r, "uploadType")
     if kind not in UPLOAD_TYPES:
         raise Unreadable(f"uploadType must be one of {', '.join(UPLOAD_TYPES)}")
@@ -174,15 +191,31 @@ def multipart_metadata(r: Request) -> dict[str, Any]:
     return _strict_json(text)
 
 
+# System parameters Google also reads with a ``$`` prefix that change nothing
+# a route decides: the response's field mask and formatting, the quota and
+# API key, a JSONP callback, the error format. ``$alt`` is read as ``alt``,
+# ``$ct`` overrides the body's Content-Type; any other ``$`` parameter is
+# refused, since toolpass cannot say what it changes.
+_DOLLAR_PARAMS = frozenset({"alt", "ct", "fields", "prettyprint", "quotauser", "key", "callback", ".xgafv", "userip"})
+
+
+def _carries_body(r: Request) -> bool:
+    return bool(r.body) or (r.body is None and _has_unread_body(r))
+
+
 def guarded(extract: Extractor | None = None) -> Extractor:
     """An extractor that first refuses what every Google route must refuse:
     a path or query that is not UTF-8 once decoded (the hook keeps such a
     segment encoded, Google decodes it: two names for one request),
     ``X-HTTP-Method-Override`` (Google acts on the overriding method, the
-    route matched the sent one) and ``useDomainAdminAccess`` or
+    route matched the sent one), ``useDomainAdminAccess`` or
     ``useAdminAccess`` (the request then acts with the agent's
-    administrator rights, which the user's check does not cover). An
-    Unreadable raised inside becomes the refusal's reason."""
+    administrator rights, which the user's check does not cover), a ``$ct``
+    Content-Type override on a request with a body (Google would read the
+    body as another type than the route did), an upload protocol other
+    than ``uploadType`` (``upload_protocol``, ``X-Goog-Upload-Protocol``)
+    and a ``$`` system parameter toolpass does not know. An Unreadable
+    raised inside becomes the refusal's reason."""
 
     def run(r: Request, vars_: Mapping[str, str]) -> Mapping[str, str] | None:
         try:
@@ -193,6 +226,13 @@ def guarded(extract: Extractor | None = None) -> Extractor:
             for admin in ("useDomainAdminAccess", "useAdminAccess"):
                 if (param(r, admin) or "false").lower() != "false":
                     return {"_unresolved": f"{admin} acts with the agent's administrator rights; toolpass checks the user's own access"}
+            for k in urllib.parse.parse_qs(r.query, keep_blank_values=True):
+                if k.startswith("$") and _param_key(k) not in _DOLLAR_PARAMS:
+                    return {"_unresolved": f"the system parameter {k} is not one toolpass reads"}
+            if param(r, "$ct") is not None and _carries_body(r):
+                return {"_unresolved": "$ct overrides the body's Content-Type, so Google would read the body as another type than toolpass did"}
+            if param(r, "upload_protocol") is not None or any(h.startswith("x-goog-upload-") for h in r.headers):
+                return {"_unresolved": "upload_protocol and X-Goog-Upload-* choose an upload protocol toolpass does not read; use uploadType"}
             return extract(r, vars_) if extract is not None else {}
         except Unreadable as e:
             return {"_unresolved": str(e)}

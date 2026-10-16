@@ -32,10 +32,18 @@ Lists and searches (``files.list``, the agent's calendar list) need no
 check: they return what the agent's own credential sees, untrusted. Batch
 requests, ``X-HTTP-Method-Override`` and administrator access
 (``useDomainAdminAccess``) are refused.
+
+Drive content also comes from ``/download/drive/v3/...`` (the media
+download service) and from the web hosts (``docs.google.com`` export
+links, ``drive.google.com`` and ``drive.usercontent.google.com`` download
+links), which take the same bearer token: the first is checked like
+``alt=media``, every other ``/download/`` path and everything on the web
+hosts is refused.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -46,6 +54,10 @@ from toolpass.integrations._googleapis import Unreadable, body_object, guarded, 
 from toolpass.integrations.googleworkspace.actions import CALENDAR_ID_RE, EMAIL_RE, FILE_ID_RE, parse_ref
 
 __all__ = ["HOSTS", "ROUTES"]
+
+# Drive's web hosts: they serve a file's content to the API's bearer token
+# (export and download links), so they are claimed, and refused.
+_WEB_HOSTS = ("docs.google.com", "drive.google.com", "drive.usercontent.google.com")
 
 # The hosts that serve these APIs, besides the connection's api_url: the
 # discovery documents' root URLs and their aliases. Paths are matched whole
@@ -59,6 +71,7 @@ HOSTS = (
     "docs.googleapis.com",
     "sheets.googleapis.com",
     "slides.googleapis.com",
+    *_WEB_HOSTS,
 )
 
 _D = "/drive/v3"
@@ -302,6 +315,10 @@ def _drive() -> list[Route]:
         Route("DELETE", _F + "/revisions/{revisionId}", ed, _FILE, body=_on(ed, fid, _file)),
         # Anything else under Drive is refused rather than read unchecked.
         *(Route(m, "/drive/{rest+}", None, "", body=refusing("this Drive read is not routed (Drive v3 is)"), spec=False) for m in ("GET", "HEAD")),
+        # The media download service: files.get, files.export and revisions.get return content there.
+        Route("GET", "/download" + _F, dl, _FILE, body=_on(dl, fid, _file), spec=False),
+        Route("GET", "/download" + _F + "/export", dl, _FILE, body=_on(dl, fid, _file), spec=False),
+        Route("GET", "/download" + _F + "/revisions/{revisionId}", dl, _FILE, body=_on(dl, fid, _file), spec=False),
     ]
     # Uploads: the same checks, the metadata read from the upload body.
     for up in _UPLOADS:
@@ -540,6 +557,12 @@ def _read_if_download(r: Request, out: dict[str, str]) -> dict[str, str]:
 # -- the table --------------------------------------------------------------------
 
 
+def _other_reads(r: Request, v: Mapping[str, str]) -> dict[str, str]:
+    """A read of another Google API on the shared hosts: the agent's own
+    credential's view, untrusted, as when no route matches."""
+    return {}
+
+
 def _routes() -> list[Route]:
     batch = refusing("a batch request carries several requests toolpass cannot check one by one; send them separately")
     return [
@@ -557,7 +580,27 @@ def _routes() -> list[Route]:
         Route("GET", "/oauth2/{rest+}", None, "", body=guarded(), untrusted_output=False, spec=False, description="the agent's own token and identity"),
         Route("POST", "/batch", None, "", body=batch, spec=False),
         Route("POST", "/batch/{rest+}", None, "", body=batch, spec=False),
+        # Content from the media download service of an API the table does not route (Drive v2, Cloud Storage).
+        *(Route(m, "/download/{rest+}", None, "", body=refusing("this download is not routed (Drive v3's is)"), spec=False) for m in ("GET", "HEAD")),
+        # Other APIs' reads on the shared hosts pass, untrusted; the web hosts refuse them (see _web).
+        *(
+            Route(m, "/{rest+}", None, "", body=guarded(_other_reads), spec=False, description="another Google API's read: not checked, untrusted")
+            for m in ("GET", "HEAD")
+        ),
     ]
+
+
+def _web(extract: Extractor | None) -> Extractor:
+    """Refuses every request to the web hosts: their export and download
+    links serve a file's content to the bearer token, by paths no route
+    reads (``/document/d/<id>/export``, ``/uc?id=<id>``)."""
+
+    def run(r: Request, v: Mapping[str, str]) -> Mapping[str, str] | None:
+        if r.host.lower().rstrip(".") in _WEB_HOSTS:
+            return {"_unresolved": f"{r.host} serves files to the bearer token by paths toolpass does not read; use the Drive API"}
+        return extract(r, v) if extract is not None else {}
+
+    return run
 
 
 def _locate(settings: Any) -> list[tuple[str, str]]:
@@ -579,7 +622,7 @@ _SETTINGS_REASON = (
 
 ROUTES = RouteTable(
     "googleworkspace",
-    _routes(),
+    [dataclasses.replace(r, body=_web(r.body)) for r in _routes()],
     claims=(_D, "/gmail/v1", _C, _A, "/admin/directory_v1"),
     unrouted={
         ("*", _G + "/settings/**"): _SETTINGS_REASON,

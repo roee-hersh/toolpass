@@ -234,7 +234,7 @@ def test_requests_toolpass_cannot_read_exactly_are_refused(method, path, query, 
 
 def test_a_method_override_is_refused():
     o = ROUTES.match(req("POST", f"/drive/v3/files/{FILE}/comments", "", {"content": "x"}, headers={"x-http-method-override": "DELETE"}))
-    assert o is not None and o.unresolved and "X-HTTP-Method-Override" in o.unresolved
+    assert o is not None and o.unresolved and "method" in o.unresolved.lower()
 
 
 def test_json_that_parsers_read_differently_is_refused():
@@ -330,8 +330,120 @@ def test_a_head_request_is_refused_like_an_unknown_read():
     assert o is not None and o.unresolved
 
 
+@pytest.mark.parametrize("query", ["alt=media", "$alt=media", "%24alt=media", "alt=proto"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/download/drive/v3/files/{FILE}",
+        f"/download/drive/v3/files/{FILE}/export",
+        f"/download/drive/v3/files/{FILE}/revisions/42",
+    ],
+)
+def test_the_media_download_service_is_a_download(path, query):
+    o = ROUTES.match(req("GET", path, query))
+    assert o is not None and o.unresolved is None, o
+    assert (o.action, o.resource, o.effect) == ("drive.file.download", f"file:{FILE}", "read")
+
+
+@pytest.mark.parametrize("query", ["$alt=media", "%24alt=media", "$alt=proto"])
+def test_dollar_alt_is_alt(query):
+    for path in (f"/drive/v3/files/{FILE}", f"/drive/v3/files/{FILE}/revisions/42"):
+        o = ROUTES.match(req("GET", path, query))
+        assert o is not None and o.unresolved is None, o
+        assert o.action == "drive.file.download", (path, query)
+    # Both spellings: the server may read either.
+    o = ROUTES.match(req("GET", f"/drive/v3/files/{FILE}", "alt=json&$alt=media"))
+    assert o is not None and o.unresolved and "more than once" in o.unresolved
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "host"),
+    [
+        ("GET", f"/download/drive/v2/files/{FILE}", "www.googleapis.com"),
+        ("HEAD", f"/download/drive/v3/files/{FILE}", "www.googleapis.com"),
+        ("GET", "/download/storage/v1/b/acme/o/a.txt", "www.googleapis.com"),
+        ("GET", f"/document/d/{FILE}/export", "docs.google.com"),
+        ("GET", "/feeds/download/documents/export/Export", "docs.google.com"),
+        ("GET", "/uc", "drive.google.com"),
+        ("GET", f"/drive/v3/files/{FILE}", "drive.google.com"),
+        ("GET", "/download", "drive.usercontent.google.com"),
+        ("GET", f"/drive/v3/files/{FILE}", "docs.google.com."),
+    ],
+)
+def test_other_downloads_and_the_web_hosts_are_refused(method, path, host):
+    o = ROUTES.match(req(method, path, f"id={FILE}&export=download", host=host))
+    assert o is not None and o.unresolved, o
+
+
+def test_a_write_to_a_web_host_is_refused():
+    o = ROUTES.match(req("POST", "/drive/v3/files", "", {"name": "x", "parents": [FOLDER]}, host="docs.google.com"))
+    assert o is not None and o.unresolved
+
+
+def test_another_apis_read_on_a_shared_host_passes_unchecked():
+    o = ROUTES.match(req("GET", "/youtube/v3/videos", "id=x"))
+    assert o is not None and (o.action, o.unresolved, o.effect, o.untrusted_output) == (None, None, "read", True)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "query", "body"),
+    [
+        ("PATCH", f"/drive/v3/files/{FILE}", f"add_parents={FOLDER}", {}),
+        ("PATCH", f"/drive/v3/files/{FILE}", f"remove_parents={FOLDER}", {}),
+        ("PATCH", f"/drive/v3/files/{FILE}", f"$addParents={FOLDER}", {}),
+        ("POST", f"/drive/v3/files/{FILE}/permissions", "transfer_ownership=true", {"role": "reader"}),
+        ("POST", f"/drive/v3/files/{FILE}/permissions", "use_domain_admin_access=true", {"role": "reader"}),
+        ("GET", "/admin/directory/v1/users/dana@example.com", "use_admin_access=true", None),
+        # One parameter in two spellings: the server may read either.
+        ("POST", f"/drive/v3/files/{FILE}/permissions", "transferOwnership=false&transfer_ownership=true", {"role": "reader"}),
+        ("GET", f"/drive/v3/files/{FILE}", "alt=json&ALT=media", None),
+    ],
+)
+def test_snake_case_query_parameters_are_the_same_parameters(method, path, query, body):
+    o = ROUTES.match(req(method, path, query, body))
+    assert o is not None and o.unresolved, o
+
+
+def test_upload_type_is_read_in_every_spelling():
+    o = ROUTES.match(req("POST", "/upload/drive/v3/files", "upload_type=resumable", {"parents": [FOLDER]}))
+    assert o is not None and (o.action, o.resource, o.unresolved) == ("drive.folder.add_child", f"file:{FOLDER}", None)
+    o = ROUTES.match(req("POST", "/upload/drive/v3/files", "uploadType=resumable&upload_type=media", {"parents": [FOLDER]}))
+    assert o is not None and o.unresolved
+
+
+@pytest.mark.parametrize(
+    ("query", "headers"),
+    [
+        ("uploadType=resumable&upload_protocol=multipart", {}),
+        ("uploadType=resumable&uploadProtocol=resumable", {}),
+        ("uploadType=resumable", {"x-goog-upload-protocol": "multipart"}),
+        ("uploadType=resumable", {"x-goog-upload-command": "start"}),
+        ("upload_protocol=resumable", {}),
+    ],
+)
+def test_other_upload_protocols_are_refused(query, headers):
+    for path in ("/upload/drive/v3/files", "/upload/gmail/v1/users/dana@example.com/messages/send"):
+        o = ROUTES.match(req("POST", path, query, {"parents": [FOLDER]}, headers=headers))
+        assert o is not None and o.unresolved and "upload" in o.unresolved, (path, o)
+
+
+def test_a_content_type_override_on_a_body_is_refused():
+    o = ROUTES.match(req("POST", "/drive/v3/files", "$ct=multipart/related", {"name": "x", "parents": [FOLDER]}))
+    assert o is not None and o.unresolved and "$ct" in o.unresolved
+    # Without a body there is nothing to read differently.
+    o = ROUTES.match(req("GET", f"/drive/v3/files/{FILE}", "$ct=text/plain"))
+    assert o is not None and (o.action, o.unresolved) == ("drive.file.read", None)
+    # Harmless system parameters pass; unknown ones are refused.
+    o = ROUTES.match(req("GET", f"/drive/v3/files/{FILE}", "$fields=id&$prettyPrint=false"))
+    assert o is not None and (o.action, o.unresolved) == ("drive.file.read", None)
+    o = ROUTES.match(req("GET", f"/drive/v3/files/{FILE}", "$frobnicate=1"))
+    assert o is not None and o.unresolved
+
+
 def test_the_hosts_are_googles_and_the_api_url():
     eps = ROUTES.endpoints(Settings("gws", "googleworkspace", {"api_url": "https://www.googleapis.com"}))
     assert eps == [(h, "") for h in HOSTS]
+    # Drive's web hosts serve content to the same token: claimed, and refused.
+    assert {("docs.google.com", ""), ("drive.google.com", ""), ("drive.usercontent.google.com", "")} <= set(eps)
     eps = ROUTES.endpoints(Settings("gws", "googleworkspace", {"api_url": "https://google-proxy.example:8443/g"}))
     assert ("google-proxy.example:8443", "/g") in eps and ("gmail.googleapis.com", "") in eps
