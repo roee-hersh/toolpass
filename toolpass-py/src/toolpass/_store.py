@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS calls (
   duration_ms REAL,
   started REAL NOT NULL DEFAULT 0,
   ended REAL,
+  t0 REAL,
+  t1 REAL,
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
@@ -69,6 +71,8 @@ CREATE TABLE IF NOT EXISTS tool_events (
   tool TEXT NOT NULL,
   started REAL NOT NULL,
   ended REAL NOT NULL,
+  t0 REAL,
+  t1 REAL,
   call_id INTEGER,
   event TEXT NOT NULL
 );
@@ -82,6 +86,10 @@ _MAX_EVENT = 64000
 # Seconds a tool event's start may precede its call's: the event's time is
 # kept to the millisecond, and the wall clock is coarse on some systems.
 _SLACK = max(0.002, 2 * time.get_clock_info("time").resolution)
+# The same for t0/t1: time.perf_counter(), one clock for every process on the
+# machine (QueryPerformanceCounter, CLOCK_MONOTONIC, mach_absolute_time) and
+# fine enough to tell two calls a millisecond apart where the wall clock is not.
+_TICK = 0.0005
 
 
 # The call a tool event belongs to, chosen once its candidates are final:
@@ -100,19 +108,35 @@ _OWNER = (
     " ORDER BY c.tool = :tool DESC, NOT EXISTS (SELECT 1 FROM tool_events e WHERE e.call_id = c.id) DESC, c.started, c.id"
     " LIMIT 1"
 )
+# The same by the precise clock, between rows that both carry it.
+_OWNER_T = (
+    "SELECT c.id FROM calls c WHERE c.session = :session AND c.t0 IS NOT NULL AND c.t0 <= :t0 + :tick"
+    " AND c.t1 IS NOT NULL AND c.t1 >= :t1 - :tick"
+    " ORDER BY c.tool = :tool DESC, NOT EXISTS (SELECT 1 FROM tool_events e WHERE e.call_id = c.id) DESC, c.t0, c.id"
+    " LIMIT 1"
+)
 
 
 def _place(db: sqlite3.Connection, rev: int, session: str) -> None:
     """Place the session's unplaced tool events whose call has finished,
     oldest first, so two runs of one tool pair with their calls in order."""
-    waiting = db.execute("SELECT id, tool, started, ended FROM tool_events WHERE session = ? AND call_id IS NULL ORDER BY started, id", (session,)).fetchall()
+    waiting = db.execute(
+        "SELECT id, tool, started, ended, t0, t1 FROM tool_events WHERE session = ? AND call_id IS NULL ORDER BY started, id", (session,)
+    ).fetchall()
     for e in waiting:
-        pending = db.execute(
-            "SELECT 1 FROM calls WHERE session = ? AND tool = ? AND ended IS NULL AND started <= ? LIMIT 1", (session, e[1], e[2] + _SLACK)
-        ).fetchone()
+        if e[4] is not None and e[5] is not None:
+            pending = db.execute(
+                "SELECT 1 FROM calls WHERE session = ? AND tool = ? AND ended IS NULL AND t0 IS NOT NULL AND t0 <= ? LIMIT 1", (session, e[1], e[4] + _TICK)
+            ).fetchone()
+            query, args = _OWNER_T, {"session": session, "tool": e[1], "t0": e[4], "t1": e[5], "tick": _TICK}
+        else:  # written by a toolpass that kept the wall clock only
+            pending = db.execute(
+                "SELECT 1 FROM calls WHERE session = ? AND tool = ? AND ended IS NULL AND started <= ? LIMIT 1", (session, e[1], e[2] + _SLACK)
+            ).fetchone()
+            query, args = _OWNER, {"session": session, "tool": e[1], "started": e[2], "ended": e[3], "slack": _SLACK}
         if pending is not None:
             continue  # a call of its own tool that could own it has not finished yet
-        found = db.execute(_OWNER, {"session": session, "tool": e[1], "started": e[2], "ended": e[3], "slack": _SLACK}).fetchone()
+        found = db.execute(query, args).fetchone()
         if found is not None:
             db.execute("UPDATE tool_events SET call_id = ? WHERE id = ?", (found[0], e[0]))
             db.execute("UPDATE calls SET rev = ? WHERE id = ?", (rev, found[0]))
@@ -185,7 +209,8 @@ class Store:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.execute("PRAGMA busy_timeout=15000")
-            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_events'").fetchone() is None:
+            have = {r[1] for r in self._db.execute("PRAGMA table_info(tool_events)").fetchall()}
+            if "t1" not in have:
                 self._db.execute("PRAGMA journal_mode=WAL")
                 self._upgrade()
                 self._db.executescript(_SCHEMA)
@@ -196,9 +221,13 @@ class Store:
         if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
             return
         have = {r[1] for r in self._db.execute("PRAGMA table_info(calls)").fetchall()}
-        for column, kind in (("started", "REAL NOT NULL DEFAULT 0"), ("ended", "REAL")):
+        for column, kind in (("started", "REAL NOT NULL DEFAULT 0"), ("ended", "REAL"), ("t0", "REAL"), ("t1", "REAL")):
             if column not in have:
                 _add_column(self._db, "calls", column, kind)
+        events = {r[1] for r in self._db.execute("PRAGMA table_info(tool_events)").fetchall()}
+        for column in ("t0", "t1"):
+            if events and column not in events:
+                _add_column(self._db, "tool_events", column, "REAL")
 
     def _private_side_files(self) -> None:
         """SQLite's WAL and shared-memory files carry recent rows too: same
@@ -263,26 +292,38 @@ class Store:
                     (client, config, server, name, json.dumps(annotations, default=repr), rev),
                 )
 
-    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any], started: float | None = None) -> int:
+    def start_call(
+        self,
+        client: str,
+        config: str,
+        server: str,
+        session: str,
+        tool: str,
+        arguments: Mapping[str, Any],
+        started: float | None = None,
+        t0: float | None = None,
+    ) -> int:
         """Record a call that was just sent to the server; returns its id.
-        ``started`` is when it was sent (wall clock), now by default."""
+        ``started`` is when it was sent (wall clock), now by default; ``t0``
+        the same by ``time.perf_counter()``."""
         at = started or time.time()
         with self._write() as (db, rev):
             cur = db.execute(
-                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, rev)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
-                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), at, rev),
+                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, t0, rev)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), at, t0, rev),
             )
             call_id = int(cur.lastrowid or 0)
         self._private_side_files()
         return call_id
 
-    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float, ended: float | None = None) -> None:
-        """Record the answer to a call; ``ended`` is when it arrived (wall clock), now by default."""
+    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float, ended: float | None = None, t1: float | None = None) -> None:
+        """Record the answer to a call; ``ended`` is when it arrived (wall
+        clock), now by default; ``t1`` the same by ``time.perf_counter()``."""
         with self._write() as (db, rev):
             db.execute(
-                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, rev = ? WHERE id = ?",
-                (outcome, _cut(result), round(duration_ms, 1), ended or time.time(), rev, call_id),
+                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, t1 = ?, rev = ? WHERE id = ?",
+                (outcome, _cut(result), round(duration_ms, 1), ended or time.time(), t1, rev, call_id),
             )
             row = db.execute("SELECT session FROM calls WHERE id = ?", (call_id,)).fetchone()
             if row is not None:
@@ -290,7 +331,7 @@ class Store:
 
     # -- readers ----------------------------------------------------------------
 
-    def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
+    def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float, t0: float | None = None, t1: float | None = None) -> None:
         """What a toolpass-secured tool inside a wrapped server did during a
         call: its audit event, with the requests it made to GitHub, Jira, ...
         It is placed under its call (``_OWNER``) as soon as that call has
@@ -299,8 +340,8 @@ class Store:
         tool = str(event.get("tool", ""))
         with self._write() as (db, rev):
             db.execute(
-                "INSERT INTO tool_events (session, tool, started, ended, event) VALUES (?, ?, ?, ?, ?)",
-                (session, tool, started, ended, _cut_event(event)),
+                "INSERT INTO tool_events (session, tool, started, ended, t0, t1, event) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session, tool, started, ended, t0, t1, _cut_event(event)),
             )
             _place(db, rev, session)
 

@@ -25,7 +25,7 @@ from toolpass._audit import AuditEvent
 __all__ = ["emit"]
 
 _lock = threading.Lock()
-_queue: queue.Queue[tuple[str, dict[str, Any], float, float] | None] | None = None
+_queue: queue.Queue[tuple[str, dict[str, Any], float, float, float, float] | None] | None = None
 _writer: threading.Thread | None = None
 _session: str | None = None
 _warned = False
@@ -36,9 +36,9 @@ def _target() -> tuple[str, str] | None:
     return (session, db) if session and db else None
 
 
-def _start(db: str) -> queue.Queue[tuple[str, dict[str, Any], float, float] | None]:
+def _start(db: str) -> queue.Queue[tuple[str, dict[str, Any], float, float, float, float] | None]:
     global _queue, _writer
-    q: queue.Queue[tuple[str, dict[str, Any], float, float] | None] = queue.Queue()
+    q: queue.Queue[tuple[str, dict[str, Any], float, float, float, float] | None] = queue.Queue()
 
     def write() -> None:
         global _warned
@@ -82,8 +82,9 @@ def emit(event: AuditEvent) -> None:
     session, db = target
     with _lock:
         q = _queue if _queue is not None else _start(db)
-    # The same clock the gateway times its calls with, read as the run is
-    # reported, which is before the server answers: comparable on every system.
-    ended = time.time()
-    started = ended - (event.duration_ms or 0.0) / 1000
-    q.put((session, event.to_dict(), started, ended))
+    # Read as the run is reported, which is before the server answers, with the
+    # clocks the gateway times its calls with: the wall clock for the record,
+    # perf_counter (one clock for every process, fine-grained) to place the run.
+    took = (event.duration_ms or 0.0) / 1000
+    ended, t1 = time.time(), time.perf_counter()
+    q.put((session, event.to_dict(), ended - took, ended, t1 - took, t1))

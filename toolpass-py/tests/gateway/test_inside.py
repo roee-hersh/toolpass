@@ -196,3 +196,37 @@ def test_a_call_not_finished_yet_does_not_take_the_next_calls_run(tmp_path: Path
     rows = {r["id"]: r for r in store.calls(0)[0]}
     assert [e["n"] for e in rows[one]["inside"]] == [1]
     assert [e["n"] for e in rows[two]["inside"]] == [2]
+
+
+def test_a_coarse_wall_clock_does_not_mix_up_two_quick_calls(tmp_path: Path) -> None:
+    # Windows' wall clock on Python 3.10 ticks every 15.6 ms: two short calls of one tool share
+    # their wall stamps, and the second's run arrives before its call is recorded. The precise
+    # clock (t0/t1) still tells them apart.
+    store = Store(tmp_path / "g.db")
+    wall = time.time() - 10
+    one = store.start_call("c", "cfg", "srv", "sess", "ship", {"n": 1}, started=wall, t0=100.000)
+    store.record_tool_event("sess", {"tool": "ship", "n": 1}, wall, wall, t0=100.001, t1=100.090)
+    store.finish_call(one, "ok", "", 95.0, ended=wall, t1=100.095)
+    store.record_tool_event("sess", {"tool": "ship", "n": 2}, wall, wall, t0=100.097, t1=100.100)  # before call 2 is recorded
+    two = store.start_call("c", "cfg", "srv", "sess", "ship", {"n": 2}, started=wall, t0=100.096)
+    store.finish_call(two, "error", "", 5.0, ended=wall, t1=100.101)
+    rows = {r["id"]: r for r in store.calls(0)[0]}
+    assert [e["n"] for e in rows[one]["inside"]] == [1]
+    assert [e["n"] for e in rows[two]["inside"]] == [2]
+
+
+def test_a_record_from_before_the_precise_clock_is_upgraded(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "g.db"
+    Store(path).close()
+    db = sqlite3.connect(path)
+    db.executescript(
+        "DROP TABLE tool_events; CREATE TABLE tool_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, tool TEXT NOT NULL, started REAL NOT NULL, ended REAL NOT NULL, call_id INTEGER, event TEXT NOT NULL);"
+    )
+    db.close()
+    store = Store(path)  # adds t0/t1
+    call = store.start_call("c", "cfg", "srv", "s", "ship", {}, t0=1.0)
+    store.record_tool_event("s", {"tool": "ship"}, time.time(), time.time(), t0=1.001, t1=1.002)
+    store.finish_call(call, "ok", "", 3.0, t1=1.003)
+    assert [e["tool"] for e in store.calls(0)[0][0]["inside"]] == ["ship"]
