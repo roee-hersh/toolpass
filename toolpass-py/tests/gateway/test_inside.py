@@ -222,7 +222,8 @@ def test_a_record_from_before_the_precise_clock_is_upgraded(tmp_path: Path) -> N
     Store(path).close()
     db = sqlite3.connect(path)
     db.executescript(
-        "DROP TABLE tool_events; CREATE TABLE tool_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, tool TEXT NOT NULL, started REAL NOT NULL, ended REAL NOT NULL, call_id INTEGER, event TEXT NOT NULL);"
+        "DROP TABLE tool_events; CREATE TABLE tool_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL,"
+        " tool TEXT NOT NULL, started REAL NOT NULL, ended REAL NOT NULL, call_id INTEGER, event TEXT NOT NULL);"
     )
     db.close()
     store = Store(path)  # adds t0/t1
