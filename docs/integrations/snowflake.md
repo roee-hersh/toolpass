@@ -115,6 +115,23 @@ them answers `denied` and says which `USAGE` is missing.
 | `invalid_request` | a malformed identifier, the wrong number of name parts, a resource type the action does not take |
 | `upstream_*` | 5xx, 429, a statement that does not finish, other Snowflake errors (reported by code only; the message may echo identifiers) |
 
+## Intercepted requests
+
+A secured tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
+(`POST /queries/v1/query-request`) are read statement by statement
+(`src/toolpass/integrations/snowflake/routes.py`, `toolpass routes snowflake`). One statement on one
+table is checked: `SELECT ... FROM <table>` as `table.select`, `INSERT INTO <table> ... VALUES` as
+`table.insert`, `UPDATE` as `table.update`, `DELETE FROM` as `table.delete`, `TRUNCATE` as
+`table.truncate`, on `table:DB.SCHEMA.NAME`. On the SQL API an unqualified name takes the body's
+`database` and `schema` (upper-case names only); through the connector the name must be fully
+qualified, because the session's defaults are not in the request.
+
+Everything else is refused: several statements, comments, joins, subqueries and set operations,
+`IDENTIFIER()` and `TABLE()`, stages, variables, functions other than a list of built-ins (a
+user-defined function reads with its owner's rights), quoted names with lower-case letters, a
+backslash in a string, and session parameters other than output formats and tags. A `SELECT` with no
+table needs no check. The warehouse a statement runs on is not checked.
+
 ## What it cannot see
 
 - **Future grants** before an object exists, **masking and row access policies**, **secure
