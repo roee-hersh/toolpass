@@ -46,6 +46,7 @@ from toolpass.core.integration import (
     Settings,
     User,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.integrations.jira.actions import ACTION_LIST, ACTIONS, ResKind, parse_resource
 from toolpass.integrations.jira.site import Site, new_site, site_fields
 from toolpass.net import httpx
@@ -69,6 +70,11 @@ class Jira(Integration):
 
     def fields(self) -> list[Field]:
         return site_fields()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.jira.routes import ROUTES
+
+        return ROUTES
 
     def actions(self) -> list[Action]:
         """The native permission keys."""

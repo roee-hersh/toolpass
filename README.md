@@ -19,12 +19,23 @@ toolpass dashboard -open   # every call, from every chat, kept
 
 There is nothing to register. `gateway on` reads the clients' own config files, puts toolpass in
 front of each server, and keeps the original beside it; `toolpass gateway off` puts them back.
-Restart the client and use it as before. The dashboard lists each call with the server, the tool,
-the arguments, the result, and how long it took, and the servers it found with their tools, the
-destructive ones marked. Nothing is blocked or changed: the client's own "Allow this tool?" still
-decides. Everything stays in one file on your machine.
+Restart the client and use it as before. Nothing is blocked or changed: the client's own "Allow
+this tool?" still decides. Everything stays in one file on your machine.
 
-![The dashboard: two calls made through toolpass to an MCP server named repos, a delete_repo with its result opened and an echo, each with its arguments, duration and time](docs/assets/dashboard.png)
+Most gateways stop at the tool: they show that `open_pr` ran. When a server's tools are toolpass
+[secured tools](#check-what-your-own-tools-do), the dashboard also shows what each call did inside
+GitHub, Jira, Slack, Linear or Kubernetes, request by request, for the person who asked, and which
+request was refused and why:
+
+![The dashboard: 9 tool calls by Dana and Sam, a map from the MCP server shop to its tools open_pr, ship, report_bug and status to the systems they reached (Kubernetes, GitHub, Jira, Slack, Linear), and the calls, Sam's refused at Linear, Kubernetes and GitHub](docs/assets/dashboard.png)
+
+See it on your machine, with no accounts: two people use an MCP server whose tools each use
+several of five systems, and the real integrations decide every request.
+
+```sh
+git clone https://github.com/roee-hersh/toolpass && cd toolpass/toolpass-py
+pip install -e . && python examples/demo/run.py -open
+```
 
 Servers started over stdio are recorded today; HTTP servers are listed and come next. The
 [gateway guide](docs/guides/gateway.md) has the details.
@@ -167,7 +178,7 @@ pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=
 - Sessions and limits live in memory, in one process.
 - A permission check and the action after it are not atomic.
 - Observed actions cover HTTP from urllib3, the standard library, httpx and aiohttp, with route
-  tables for GitHub and Slack so far; gRPC and threads an SDK starts are not seen.
+  tables for GitHub, Slack, Jira, Linear and Kubernetes so far; gRPC and threads an SDK starts are not seen.
 
 ## Repository
 

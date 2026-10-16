@@ -57,13 +57,77 @@ CREATE TABLE IF NOT EXISTS calls (
   outcome TEXT NOT NULL,
   result TEXT,
   duration_ms REAL,
+  started REAL NOT NULL DEFAULT 0,
+  ended REAL,
   rev INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_rev ON calls (rev);
+CREATE INDEX IF NOT EXISTS calls_session ON calls (session, started);
+CREATE TABLE IF NOT EXISTS tool_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  started REAL NOT NULL,
+  ended REAL NOT NULL,
+  call_id INTEGER,
+  event TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_events_session ON tool_events (session, call_id, started);
+CREATE INDEX IF NOT EXISTS tool_events_call ON tool_events (call_id);
 CREATE INDEX IF NOT EXISTS calls_time ON calls (time);
 """
 
 _MAX_TEXT = 4000
+_MAX_EVENT = 64000
+# Seconds a tool event's start may precede its call's: the event's time is
+# kept to the millisecond, and the wall clock is coarse on some systems.
+_SLACK = max(0.002, 2 * time.get_clock_info("time").resolution)
+
+
+# The call a tool event belongs to, chosen once its candidates are final:
+# among the finished calls of its session that were sent before the tool
+# started and answered after it ended, one of the same tool first, then one
+# that holds no event yet, then the first sent. Only finished calls count, so
+# a call whose answer is not recorded yet cannot claim the next call's runs;
+# the times are the proxy's own, right however late they are written. Calls one after another leave
+# a single candidate; two of one tool at once (parallel tool use) pair up in
+# the order they were sent, as a server starts them; a tool the MCP server
+# names differently, or a secured tool another one calls, lands on the call
+# running at that time.
+_OWNER = (
+    "SELECT c.id FROM calls c WHERE c.session = :session AND c.started <= :started + :slack"
+    " AND c.ended IS NOT NULL AND c.ended >= :ended - :slack"
+    " ORDER BY c.tool = :tool DESC, NOT EXISTS (SELECT 1 FROM tool_events e WHERE e.call_id = c.id) DESC, c.started, c.id"
+    " LIMIT 1"
+)
+
+
+def _place(db: sqlite3.Connection, rev: int, session: str) -> None:
+    """Place the session's unplaced tool events whose call has finished,
+    oldest first, so two runs of one tool pair with their calls in order."""
+    waiting = db.execute("SELECT id, tool, started, ended FROM tool_events WHERE session = ? AND call_id IS NULL ORDER BY started, id", (session,)).fetchall()
+    for e in waiting:
+        pending = db.execute(
+            "SELECT 1 FROM calls WHERE session = ? AND tool = ? AND ended IS NULL AND started <= ? LIMIT 1", (session, e[1], e[2] + _SLACK)
+        ).fetchone()
+        if pending is not None:
+            continue  # a call of its own tool that could own it has not finished yet
+        found = db.execute(_OWNER, {"session": session, "tool": e[1], "started": e[2], "ended": e[3], "slack": _SLACK}).fetchone()
+        if found is not None:
+            db.execute("UPDATE tool_events SET call_id = ? WHERE id = ?", (found[0], e[0]))
+            db.execute("UPDATE calls SET rev = ? WHERE id = ?", (rev, found[0]))
+
+
+def _cut_event(event: Mapping[str, Any]) -> str:
+    text = json.dumps(event, default=repr, ensure_ascii=False)
+    if len(text) <= _MAX_EVENT:
+        return text
+    trimmed = dict(event)
+    actions = trimmed.get("actions")
+    if isinstance(actions, list):
+        trimmed["actions"] = actions[:50]
+        trimmed["actions_cut"] = len(actions) - 50
+    return json.dumps(trimmed, default=repr, ensure_ascii=False)[:_MAX_EVENT]
 
 
 def data_dir() -> Path:
@@ -91,6 +155,15 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
 
 
+def _add_column(db: sqlite3.Connection, table: str, column: str, kind: str) -> None:
+    """Add a column; one another server opening the same record added first is fine."""
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")  # fixed names, no input
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e):
+            raise
+
+
 def _cut(text: str) -> str:
     return text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + f"...({len(text)} chars)"
 
@@ -112,10 +185,20 @@ class Store:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.execute("PRAGMA busy_timeout=15000")
-            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
+            if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_events'").fetchone() is None:
                 self._db.execute("PRAGMA journal_mode=WAL")
+                self._upgrade()
                 self._db.executescript(_SCHEMA)
         self._private_side_files()
+
+    def _upgrade(self) -> None:
+        """Columns a record from an earlier toolpass lacks."""
+        if self._db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calls'").fetchone() is None:
+            return
+        have = {r[1] for r in self._db.execute("PRAGMA table_info(calls)").fetchall()}
+        for column, kind in (("started", "REAL NOT NULL DEFAULT 0"), ("ended", "REAL")):
+            if column not in have:
+                _add_column(self._db, "calls", column, kind)
 
     def _private_side_files(self) -> None:
         """SQLite's WAL and shared-memory files carry recent rows too: same
@@ -180,30 +263,52 @@ class Store:
                     (client, config, server, name, json.dumps(annotations, default=repr), rev),
                 )
 
-    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any]) -> int:
-        """Record a call that was just sent to the server; returns its id."""
+    def start_call(self, client: str, config: str, server: str, session: str, tool: str, arguments: Mapping[str, Any], started: float | None = None) -> int:
+        """Record a call that was just sent to the server; returns its id.
+        ``started`` is when it was sent (wall clock), now by default."""
+        at = started or time.time()
         with self._write() as (db, rev):
             cur = db.execute(
-                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, rev) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
-                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), rev),
+                "INSERT INTO calls (time, client, config, server, session, tool, arguments, outcome, started, rev)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+                (_now(), client, config, server, session, tool, _cut(json.dumps(arguments, default=repr, ensure_ascii=False)), at, rev),
             )
             call_id = int(cur.lastrowid or 0)
         self._private_side_files()
         return call_id
 
-    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float) -> None:
+    def finish_call(self, call_id: int, outcome: str, result: str, duration_ms: float, ended: float | None = None) -> None:
+        """Record the answer to a call; ``ended`` is when it arrived (wall clock), now by default."""
         with self._write() as (db, rev):
             db.execute(
-                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, rev = ? WHERE id = ?",
-                (outcome, _cut(result), round(duration_ms, 1), rev, call_id),
+                "UPDATE calls SET outcome = ?, result = ?, duration_ms = ?, ended = ?, rev = ? WHERE id = ?",
+                (outcome, _cut(result), round(duration_ms, 1), ended or time.time(), rev, call_id),
             )
+            row = db.execute("SELECT session FROM calls WHERE id = ?", (call_id,)).fetchone()
+            if row is not None:
+                _place(db, rev, row[0])
 
     # -- readers ----------------------------------------------------------------
+
+    def record_tool_event(self, session: str, event: Mapping[str, Any], started: float, ended: float) -> None:
+        """What a toolpass-secured tool inside a wrapped server did during a
+        call: its audit event, with the requests it made to GitHub, Jira, ...
+        It is placed under its call (``_OWNER``) as soon as that call has
+        finished, now or when its answer is recorded; the call's rev moves so
+        the dashboard shows it."""
+        tool = str(event.get("tool", ""))
+        with self._write() as (db, rev):
+            db.execute(
+                "INSERT INTO tool_events (session, tool, started, ended, event) VALUES (?, ?, ?, ?, ?)",
+                (session, tool, started, ended, _cut_event(event)),
+            )
+            _place(db, rev, session)
 
     def prune(self, days: float = 90) -> int:
         """Delete calls older than ``days``; returns how many."""
         cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
         with self._write() as (db, _):
+            db.execute("DELETE FROM tool_events WHERE started < ?", (time.time() - days * 86400,))
             return int(db.execute("DELETE FROM calls WHERE time < ?", (cutoff,)).rowcount)
 
     def calls(self, since: int = 0, limit: int = 500) -> tuple[list[dict[str, Any]], int]:
@@ -221,6 +326,7 @@ class Store:
                     rows = self._db.execute("SELECT * FROM calls WHERE rev > ? ORDER BY rev LIMIT ?", (since, limit)).fetchall()
             finally:
                 self._db.execute("COMMIT")
+            events = self._events_for(rows)
         out = []
         for r in rows:
             row = dict(r)
@@ -228,9 +334,25 @@ class Store:
                 row["arguments"] = json.loads(row["arguments"])
             except ValueError:
                 pass
+            row["inside"] = events.get(row["id"], [])
             out.append(row)
         nxt = int(out[-1]["rev"]) if since > 0 and len(out) == limit else current
         return out, nxt
+
+    def _events_for(self, rows: Sequence[sqlite3.Row]) -> dict[int, list[dict[str, Any]]]:
+        """The tool events placed under each call. Called with the lock held."""
+        out: dict[int, list[dict[str, Any]]] = {}
+        ids = [int(r["id"]) for r in rows]
+        for chunk in range(0, len(ids), 500):
+            part = ids[chunk : chunk + 500]
+            marks = ",".join("?" * len(part))
+            found = self._db.execute(f"SELECT call_id, event FROM tool_events WHERE call_id IN ({marks}) ORDER BY started, id", part).fetchall()
+            for e in found:
+                try:
+                    out.setdefault(int(e["call_id"]), []).append(json.loads(e["event"]))
+                except ValueError:
+                    continue
+        return out
 
     def servers(self) -> list[dict[str, Any]]:
         with self._lock:

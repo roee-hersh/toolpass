@@ -42,6 +42,7 @@ from toolpass.core.integration import (
     User,
     credential_field,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret, SecretError
 from toolpass.core.template import is_email
 from toolpass.integrations.linear.actions import UUID_RE, Target, catalog_actions, go_upper, invalid, parse_target
@@ -63,6 +64,11 @@ class Linear(Integration):
 
     def name(self) -> str:
         return "linear"
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.linear.routes import ROUTES
+
+        return ROUTES
 
     def fields(self) -> list[Field]:
         return [

@@ -21,6 +21,7 @@ from toolpass.core.catalog import Action, go_bytes, go_decode
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported, wrap_error
 from toolpass.core.errors import go_quote, go_trim_space
+from toolpass.core.routes import RouteTable
 from toolpass.core.template import Template, parse_template, validate_template
 from toolpass.net import httpx
 
@@ -81,6 +82,11 @@ class Integration(integ.Integration):
         ]
         acts.extend(Action(name=a.name, description=a.desc) for a in ALIAS_LIST)
         return acts
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.kubernetes.routes import ROUTES
+
+        return ROUTES
 
     def match_action(self, name: str) -> Action | None:
         """Accept raw:<verb>:<resource> patterns."""

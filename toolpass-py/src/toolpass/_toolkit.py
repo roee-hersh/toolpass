@@ -44,6 +44,7 @@ import types
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, Union, cast, overload
 
+from toolpass import _gateway_sink
 from toolpass._audit import AuditEvent, AuditSink, log_audit, shorten
 from toolpass._checks import ArgumentError, Scope, ScopeRule, Validator, check_arguments, hints
 from toolpass._context import CallContext, ObservedAction, running
@@ -941,6 +942,10 @@ class Toolkit:
         return result
 
     def _emit(self, ev: AuditEvent) -> None:
+        try:
+            _gateway_sink.emit(ev)  # under `toolpass mcp`: the gateway's record too; otherwise nothing
+        except Exception:  # the record must never change the call's outcome
+            log.debug("toolpass: could not queue the call for the gateway's record", exc_info=True)
         if self.audit is None:
             return
         try:

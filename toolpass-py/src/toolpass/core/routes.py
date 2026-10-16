@@ -356,7 +356,10 @@ def best_templates(templates: Iterable[PathTemplate], path: str) -> list[tuple[P
 # None when the request carries no usable resource (a channel by name). The
 # key "_action" names another of the integration's actions for this request
 # (a reply in a thread rather than a top-level message); "_unresolved" gives
-# the reason the resource could not be read, instead of returning None.
+# the reason the resource could not be read, instead of returning None;
+# "_effect" sets the request's effect (read, write, destructive) when the body
+# decides it (a GraphQL query against a mutation on one endpoint); "_resource"
+# sets the resource outright instead of filling the route's template.
 Extractor = Callable[[Request, Mapping[str, str]], Mapping[str, str] | None]
 
 # Where a connection's API lives: (host[:port], path prefix) pairs, from the
@@ -511,6 +514,8 @@ class RouteTable:
         values: dict[str, str] = dict(vars_)
         unresolved: str | None = None
         action = route.action
+        effect: str | None = None
+        literal: str | None = None
         if route.body is not None:
             try:
                 extra = route.body(request, values)
@@ -524,19 +529,28 @@ class RouteTable:
                     unresolved = extra.pop("_unresolved") or "the request does not name a resource toolpass can check"
                 if "_action" in extra:
                     action = extra.pop("_action") or None
+                if "_effect" in extra:
+                    effect = extra.pop("_effect")
+                    if effect not in EFFECTS:
+                        effect, unresolved = None, unresolved or f"the request's effect {effect!r} is not one of {', '.join(EFFECTS)}"
+                if "_resource" in extra:
+                    literal = extra.pop("_resource")
                 values.update(extra)
         resource: str | None = None
-        if unresolved is None:
+        if unresolved is None and literal is not None:
+            resource = literal
+        elif unresolved is None:
             resource = fill(route.resource, values)
             if resource is None:
                 missing = [f for f in template_fields(route.resource) if f not in values]
                 unresolved = f"the request does not carry {', '.join(missing)}"
+        final = effect or route.effect_for(method)
         return Observed(
             action=action,
             resource=resource,
-            effect=route.effect_for(method),
+            effect=final,
             sends_out=route.sends_out,
-            untrusted_output=route.untrusted_for(method),
+            untrusted_output=route.untrusted_output if route.untrusted_output is not None else final == "read",
             route=route,
             unresolved=unresolved,
             fields=values,

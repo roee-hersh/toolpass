@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import shutil
 import subprocess
@@ -61,6 +62,7 @@ class _Pending:
 
     def __init__(self, tool: str, arguments: Mapping[str, Any], start: float) -> None:
         self.tool, self.arguments, self.start = tool, arguments, start
+        self.sent = time.time()  # wall clock, to place the server's tool events under this call
         self.call_id: int | None = None
         self.finished = False
 
@@ -120,11 +122,13 @@ class Recorder:
                 kind = item[0]
                 if kind == "start":
                     pending = item[1]
-                    pending.call_id = store.start_call(self.client, self.config, self.server, self.session, pending.tool, shorten(pending.arguments))
+                    pending.call_id = store.start_call(
+                        self.client, self.config, self.server, self.session, pending.tool, shorten(pending.arguments), started=pending.sent
+                    )
                 elif kind == "finish":
-                    pending, outcome, text, elapsed = item[1:]
+                    pending, outcome, text, elapsed, ended = item[1:]
                     if pending.call_id is not None:
-                        store.finish_call(pending.call_id, outcome, text, elapsed)
+                        store.finish_call(pending.call_id, outcome, text, elapsed, ended=ended)
                 elif kind == "tools":
                     store.record_tools(self.client, self.config, self.server, item[1])
             except Exception as e:  # noqa: BLE001 - recording must never break the session
@@ -174,7 +178,7 @@ class Recorder:
                     text = _result_text(result)
                     outcome = "error" if isinstance(result, Mapping) and result.get("isError") is True else "ok"
                 call.finished = True
-                self._put("finish", call, outcome, str(text), elapsed)
+                self._put("finish", call, outcome, str(text), elapsed, time.time())
             elif listed:
                 result = msg.get("result")
                 tools = result.get("tools") if isinstance(result, Mapping) else None
@@ -188,7 +192,7 @@ class Recorder:
             left = [c for c in self._calls.values() if not c.finished]
             self._calls.clear()
         for call in left:
-            self._put("finish", call, "no response", "the session ended before the server answered", (self._clock() - call.start) * 1000)
+            self._put("finish", call, "no response", "the session ended before the server answered", (self._clock() - call.start) * 1000, time.time())
         if self.store is not None and self._writer.is_alive():
             self._queue.put(None)
             self._writer.join(self._DRAIN)
@@ -240,7 +244,12 @@ def run(
     stdout = stdout if stdout is not None else sys.stdout.buffer
     recorder = Recorder(store, client, server, config)
     try:
-        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None)
+        env = dict(os.environ)
+        if store is not None:
+            # A server built with toolpass reports what its tools did inside each call (toolpass._gateway_sink).
+            env["TOOLPASS_GATEWAY_SESSION"] = recorder.session
+            env["TOOLPASS_GATEWAY_DB"] = str(store.path)
+        child = subprocess.Popen(_resolve(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=env)
     except OSError as e:
         print(f"toolpass: could not start {command[0]!r}: {e}", file=sys.stderr, flush=True)
         return 127

@@ -43,16 +43,80 @@ toolpass dashboard -open
 ```
 
 It prints an address on `127.0.0.1` with a random token in the path, and serves until Ctrl-C.
-**Calls** lists every tool call, newest first, with the client, the server, the tool, the
-arguments, the result (click to open) and how long it took; a call shows up when it is sent and
-updates when the result arrives. A call the server never answered, because the client or the
-server stopped first, is marked `no response`. The page opens on the latest 500 calls. The filter box matches any text in a call. **Servers** lists what
-the gateway found, whether it is being recorded, how many calls it had, and its tools, marked
-read-only or destructive as the server declares them.
+
+- **The numbers** at the top: tool calls and by how many people, how many went through, how many
+  were refused and at which systems, and the systems reached. Click one to filter the list.
+- **Where the calls went**: each MCP server, its tools, and the systems each tool reached (for
+  [secured tools](#inside-a-call)), joined by lines that grow with the traffic and turn red where a
+  request was refused. Hover a box to light up what it connects to; click it to narrow the list.
+- **The calls**, newest first, each in one line: who ran which tool on which server, where it went
+  or where it was stopped, one badge per request it made, the outcome, when and how long. Click a
+  call to open it: each request in words (`Open a pull request on acme/shop`), the raw request
+  under it, allowed or refused with the reason, then the arguments and the result. A call the
+  server never answered, because the client or the server stopped first, is marked `no answer`.
+- **Filters**: by person, by outcome, and a search box that matches tools, systems and arguments.
+  The page opens on the latest 500 calls.
+- **Servers**: what the gateway found, whether it is being recorded, how many calls it had, and its
+  tools, marked read-only or destructive as the server declares them.
 
 Each time it starts, the dashboard wraps servers added to the clients since the last run, forgets
 servers removed from them, and deletes calls older than 90 days; `-no-wrap` leaves the files alone. `-listen 127.0.0.1:8899` picks the port. The page binds to the loopback
 interface only and is read-only.
+
+## Inside a call
+
+Most gateways stop at the tool: they show that `open_pr` ran, not what it did. When the server's
+tools are toolpass [secured tools](agent-tools.md), the dashboard also shows each request the tool
+made to GitHub, Jira, Slack and the other connected systems, under the call that made it. Opened,
+Dana's `open_pr` reads:
+
+```text
+GH  Read acme/shop                as the agent   GET  /api/v3/repos/acme/shop                 allowed
+GH  Open a pull request on acme/shop             POST /api/v3/repos/acme/shop/pulls           allowed
+J   Comment on SHOP-12                           POST /rest/api/3/issue/SHOP-12/comment       allowed
+J   Read SHOP-12                                 GET  /rest/api/3/issue/SHOP-12/transitions   allowed
+J   Move SHOP-12                                 POST /rest/api/3/issue/SHOP-12/transitions   allowed
+S   Post in #C0SHOPDEV                           POST /api/chat.postMessage                   allowed
+```
+
+and Sam's, who may read the repository but not open pull requests on it:
+
+```text
+GH  Read acme/shop                as the agent   GET  /api/v3/repos/acme/shop                 allowed
+GH  Open a pull request on acme/shop             POST /api/v3/repos/acme/shop/pulls           refused
+    forking disabled on acme/shop; pull request needs push access, and sam-cohen has only read
+```
+
+Each line is the action toolpass named from the request (the integration's route table:
+`github:pr.create on repo:acme/shop`), and the decision the system itself gave for the session's
+user. A refused request is never sent, and the tool stops there. The gateway passes the server two
+environment variables, `TOOLPASS_GATEWAY_SESSION` and `TOOLPASS_GATEWAY_DB`, and the toolkit
+writes each tool run to the same record; nothing needs configuring. A run is placed under
+the call of its session that was running when it ran; when several were (parallel tool use), the
+one of the same tool, paired in the order they were sent. A server whose tools are not secured
+tools shows the MCP call only.
+
+GitHub, Slack, Jira, Linear and Kubernetes have route tables today; a request to another
+integration's connection is recorded by host, without an action.
+
+### See it with five systems
+
+`examples/demo/run.py` in `toolpass-py` runs the whole picture on your machine, with no accounts:
+
+```sh
+cd toolpass-py && pip install -e .
+python examples/demo/run.py -open
+```
+
+Two people, Dana (a developer) and Sam (support, read-only), call the tools of a `shop` MCP server
+through the gateway: `open_pr` (GitHub, Jira, Slack), `ship` (Kubernetes, Slack), `report_bug`
+(Linear, Jira, Slack) and `status` (reads). GitHub, Jira, Slack, Linear and Kubernetes are
+stand-ins on `127.0.0.1` answering from the grants in `examples/demo/world.py`; the permission
+checks are the real integrations'. Dana ships to staging and is refused prod by Kubernetes RBAC;
+Sam's writes stop at the first system that says no. The record is kept in a temporary folder, not
+yours, and your Claude configuration is not touched. To use the server from Claude Code instead,
+add it (`claude mcp add shop -e DEMO_USER=sam@acme.dev -- python examples/demo/shop_server.py`),
+run `toolpass gateway on`, and ask Claude to open a pull request.
 
 ## Where the record is
 
