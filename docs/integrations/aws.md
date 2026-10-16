@@ -194,6 +194,40 @@ depends on the resource policy in that account, which the simulation does not se
 
 One check costs one `SimulatePrincipalPolicy` per candidate principal until one allows.
 
+## Requests a tool makes
+
+The route table (`toolpass routes aws`) maps a secured tool's requests to `raw:<service>:<Action>` on
+the ARN the request acts on, so a boto3 call needs no declaration. The service comes from the host
+(every region of the connection's `partition`, and the global IAM, STS and S3 hosts), the operation
+from the protocol: method and path for S3 and Lambda, `Action=` for IAM and STS, `X-Amz-Target` for
+Secrets Manager. An action IAM authorizes with no resource (`iam:ListRoles`, `s3:ListAllMyBuckets`)
+is checked on `all`; `sts:GetCallerIdentity` and `sts:GetSessionToken` concern the agent itself and
+are not checked.
+
+| Service | Checked on |
+|---|---|
+| S3 | `arn:aws:s3:::<bucket>[/<key>]`, with the IAM action S3 authorizes: `ListObjectsV2` is `s3:ListBucket`, a read with `versionId` is `s3:GetObjectVersion`, `DeleteBucketCors` is `s3:PutBucketCORS` |
+| Lambda | the function's ARN, with its version or alias; layers, code signing configs and tags by ARN |
+| Secrets Manager | the secret's full ARN, suffix included |
+| STS | `AssumeRole` on the role's ARN |
+| IAM | managed policies, OIDC and SAML providers and virtual MFA devices by ARN; the account-wide actions on `all` |
+
+The table cannot see the connection's account id, so a resource named only by name is refused
+(`unresolved_resource`) with a message asking for its ARN: a function or secret by name, and every IAM
+user, role and group, whose ARNs also carry an IAM path the request does not. EC2, RDS, EKS and SSM name
+their resources that way throughout; their hosts are not claimed. Also refused: a request that reaches a
+second resource or needs a second action (an S3 copy or bulk delete, an upload that sets an ACL, tags,
+an object lock or a KMS key, a Lambda configuration that passes a role or adds layers, `AssumeRole` with
+session tags), a parameter given twice, an S3 request naming two subresources or one the table does not
+know, and any operation not in the table. S3 writes and Lambda invocations are treated as sending data
+out: a bucket or function in another account takes what its policy allows.
+
+Only path-style S3 requests reach a host the table claims; a virtual-hosted bucket
+(`<bucket>.s3.<region>.amazonaws.com`) is a host of its own. Configure boto3 with
+`Config(s3={"addressing_style": "path"})`, or run the toolkit with `strict=True` so a request to an
+unknown host is refused. AWS hosts are shared by every account: with two aws connections in one
+process, requests are attributed to the first, and an ARN in the other account answers `unsupported`.
+
 ## Decisions
 
 Per principal, the action-level `EvalDecision` and the `ResourceSpecificResults` entry for the requested
@@ -257,3 +291,7 @@ Marked `# UNVERIFIED:` in the code:
 Unit tests run against one fake server that serves STS, IAM (Query/XML), Identity Store and SSO Admin
 (JSON 1.1 by `X-Amz-Target`) and IMDSv2, checking the SigV4 credential scope of every call. There is no
 live test; after configuring, run `toolpass probe` and one check for a user you know is allowed.
+
+`tests/integrations/aws/test_routes.py` holds the route table to the botocore models of IAM, STS, S3,
+Lambda and Secrets Manager (`aws-*` in `test/specs/fetch.sh`): every operation is routed or left out with
+a reason, and the request each S3 and Lambda operation sends is recognised as that operation.
