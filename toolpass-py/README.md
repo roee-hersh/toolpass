@@ -5,11 +5,10 @@
 > The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
-The package also ships the MCP gateway: `toolpass gateway on` puts toolpass in front of every MCP
-server Claude Desktop and Claude Code already use, and `toolpass dashboard` shows every tool call
-they make, and, for secured tools, every request each call made inside GitHub, Jira, Slack and
-the other systems. See [the gateway guide](../docs/guides/gateway.md); `python examples/demo/run.py` shows it with five systems. The rest of this page is about
-securing the tools you write yourself.
+`toolpass dashboard` shows every run of your secured tools: who it ran for, and every request
+each run made inside GitHub, Jira, Slack and the other systems, allowed or refused. Start the
+server or agent with `TOOLPASS_DASHBOARD=1`; see [the dashboard guide](../docs/guides/dashboard.md),
+and `python examples/demo/run.py` for five systems at once.
 
 Teams write custom tools for their own agents: open a pull request against the GitOps repository,
 scale a deployment, read customer records, post to Slack. Those tools usually run with one service
@@ -270,7 +269,8 @@ Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear and Zende
 pip install toolpass
 ```
 
-Python 3.10 or later. The core depends only on PyYAML. The engine runs in your process, so there is
+Python 3.10 or later. The core depends only on PyYAML. If `toolpass` is not found afterwards (pip's
+scripts folder is not on PATH, common on Windows), run `python -m toolpass` (`py -m toolpass`). The engine runs in your process, so there is
 no service to deploy; the same package also runs it as a server (`toolpass serve`).
 
 ### In-process

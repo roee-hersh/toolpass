@@ -154,6 +154,7 @@ def build(connections: list[dict[str, Any]], urls: dict[str, str]) -> list[tuple
 
 
 def main() -> None:
+    os.environ.setdefault("TOOLPASS_SERVER_NAME", "shop")  # its name on the dashboard, with TOOLPASS_DASHBOARD set
     user = os.environ.get("DEMO_USER") or world.DANA
     shared = os.environ.get("DEMO_SYSTEMS")
     systems = None if shared else Systems()

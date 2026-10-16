@@ -1,12 +1,11 @@
-"""``toolpass gateway``: find the MCP servers your clients already use and put
-toolpass in front of each, with nothing to register.
+"""``toolpass gateway off``: put back the MCP server entries an earlier
+toolpass (0.8 and 0.9, ``toolpass gateway on``) rewrote to run through
+``toolpass mcp``.
 
-Each client keeps its servers in a config file at a known place. ``on()``
-rewrites every stdio server entry in those files to run through
-``toolpass mcp``, keeping the original command in the same entry under a
-``"toolpass"`` key; ``off()`` puts every entry back. Nothing else in the files
-changes, and each file is backed up once, beside itself, before the first
-change. HTTP servers are found and listed, not wrapped yet.
+Each rewritten entry kept its original under a ``"toolpass"`` key; ``off()``
+puts it back and leaves everything else in the file as it is. The file is
+written atomically, keeping its mode, and only if no one changed it while
+toolpass was reading it.
 """
 
 from __future__ import annotations
@@ -16,20 +15,16 @@ import copy
 import dataclasses
 import json
 import os
-import shutil
 import sys
-import sysconfig
 import tempfile
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from toolpass._store import Store
-
-__all__ = ["ClientFile", "Found", "client_files", "off", "on", "scan"]
+__all__ = ["ClientFile", "Restored", "client_files", "off"]
 
 _KEY = "toolpass"
-_BACKUP_SUFFIX = ".toolpass-backup"
+_HEADERS_ENV = "TOOLPASS_MCP_HEADERS"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,21 +35,17 @@ class ClientFile:
     path: Path
 
 
-@dataclasses.dataclass
-class Found:
-    """One server entry in a client's file."""
+@dataclasses.dataclass(frozen=True)
+class Restored:
+    """One server entry put back."""
 
     client: str
     config: str  # the file, and for Claude Code the project it belongs to
     name: str
-    transport: str  # stdio, http
-    target: str  # the command line, or the URL
-    wrapped: bool
-    broken: str | None = None  # why a wrapped entry cannot start, when it cannot
 
 
 def client_files(home: Path | None = None) -> list[ClientFile]:
-    """The config files of the clients toolpass knows, wherever they exist."""
+    """The config files of the clients ``gateway on`` rewrote, wherever they exist."""
     home = home or Path.home()
     if sys.platform == "darwin":
         desktop = home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
@@ -82,41 +73,23 @@ def _server_maps(client: ClientFile, doc: Any) -> Iterator[tuple[str, MutableMap
                     yield f"{client.path} ({project})", cfg["mcpServers"]
 
 
-def _transport(entry: Any) -> str | None:
-    if not isinstance(entry, MutableMapping):
-        return None
-    kind = entry.get("type")
-    if isinstance(entry.get(_KEY), MutableMapping) or (isinstance(entry.get("command"), str) and kind in (None, "stdio")):
-        return "stdio"
-    if isinstance(entry.get("url"), str) or kind in ("http", "sse", "streamable-http"):
-        return "http"
-    return None
-
-
-def _original(entry: MutableMapping[str, Any]) -> tuple[str, list[str]]:
-    saved = entry.get(_KEY)
-    if isinstance(saved, MutableMapping):
-        return str(saved.get("command", "")), [str(a) for a in saved.get("args", []) or []]
-    return str(entry.get("command", "")), [str(a) for a in entry.get("args", []) or []]
-
-
-def _launcher() -> list[str]:
-    """How a client starts toolpass: from the installation that wrapped it,
-    wherever the client's PATH points, and never importing code from the
-    client's working directory (``python -m`` puts it first on the module
-    path, so a repository the user opened could stand in for toolpass or the
-    standard library)."""
-    if sys.version_info >= (3, 11):
-        return [sys.executable, "-P", "-m", "toolpass.cli"]  # -P: no working directory on sys.path
-    script = Path(sysconfig.get_path("scripts")) / ("toolpass.exe" if sys.platform == "win32" else "toolpass")
-    if script.is_file():
-        return [str(script)]  # a console script's sys.path starts at its own folder
-    # A source checkout on 3.10: drop the working directory before importing toolpass.
-    return [sys.executable, "-c", "import sys; sys.path[:] = [p for p in sys.path if p not in ('', '.')]; from toolpass.cli import main; main()"]
-
-
-def _read(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _restore(entry: MutableMapping[str, Any]) -> None:
+    saved = dict(entry.pop(_KEY))
+    if isinstance(saved.get("url"), str):  # an HTTP server, run through `toolpass mcp -url`
+        for k in ("type", "command", "args"):
+            entry.pop(k, None)
+        env = entry.get("env")
+        if isinstance(env, MutableMapping):
+            env.pop(_HEADERS_ENV, None)
+            if not env:
+                entry.pop("env")
+        entry.update(saved)
+        return
+    entry["command"] = saved.get("command", "")
+    if "args" in saved:
+        entry["args"] = saved["args"]
+    else:
+        entry.pop("args", None)
 
 
 class _Changed(Exception):
@@ -124,15 +97,8 @@ class _Changed(Exception):
 
 
 def _write(path: Path, doc: Any, read: bytes) -> None:
-    """Write ``doc`` as JSON over ``path`` atomically, keeping the file's mode,
-    after a one-time backup of the original beside it. Raises ``_Changed``,
-    writing nothing, when the file no longer holds ``read``: a client that
-    rewrote it in the meantime keeps its change."""
     if path.read_bytes() != read:
         raise _Changed(str(path))
-    backup = path.with_name(path.name + _BACKUP_SUFFIX)
-    if not backup.exists():
-        shutil.copy2(path, backup)
     mode = path.stat().st_mode & 0o777
     fd, tmp = tempfile.mkstemp(prefix=".toolpass-", dir=str(path.parent))
     try:
@@ -148,76 +114,33 @@ def _write(path: Path, doc: Any, read: bytes) -> None:
         raise
 
 
-def _visit(files: list[ClientFile], change: str | None, store: Store | None) -> list[Found]:
-    found: list[Found] = []
-    for cf in files:
-        for _ in range(3):  # a client rewriting its file mid-change: read it again
-            try:
-                found_here = _visit_file(cf, change)
-            except _Changed:
-                continue
-            except (OSError, ValueError):
-                found_here = []  # unreadable or not JSON: leave it alone
-            found.extend(found_here)
-            break
-        else:
-            print(f"toolpass: {cf.path} kept changing while toolpass rewrote it; left as it is, try again", file=sys.stderr)
-    if store is not None:
-        for f in found:
-            store.record_server(f.client, f.name, f.config, f.transport, f.target, f.wrapped)
-        store.forget_servers([str(cf.path) for cf in files], [(f.client, f.config, f.name) for f in found])
-    return found
-
-
-def _visit_file(cf: ClientFile, change: str | None) -> list[Found]:
-    found: list[Found] = []
-    launcher = _launcher()
+def _off_file(cf: ClientFile) -> list[Restored]:
     read = cf.path.read_bytes()
     doc = json.loads(read.decode("utf-8"))
     before = copy.deepcopy(doc)
+    done: list[Restored] = []
     for where, servers in _server_maps(cf, doc):
-        for name, entry in list(servers.items()):
-            transport = _transport(entry)
-            if transport is None or not isinstance(entry, MutableMapping):
-                continue
-            if transport == "http":
-                target = str(entry.get("url", ""))
-                found.append(Found(cf.client, where, str(name), "http", target, False))
-                continue
-            command, args = _original(entry)
-            wrapped = isinstance(entry.get(_KEY), MutableMapping)
-            if change == "on" and not wrapped and command:
-                entry[_KEY] = {"command": command, "args": args} if "args" in entry else {"command": command}
-                entry["command"] = launcher[0]
-                entry["args"] = [*launcher[1:], "mcp", "-server", str(name), "-client", cf.client, "-config", where, "--", command, *args]
-                wrapped = True
-            elif change == "off" and wrapped:
-                saved = entry.pop(_KEY)
-                entry["command"] = command
-                if "args" in saved:
-                    entry["args"] = args
-                else:
-                    entry.pop("args", None)
-                wrapped = False
-            broken = None
-            if wrapped and not Path(str(entry.get("command", ""))).is_file():
-                broken = f"the Python that wrapped it is gone ({entry.get('command')}); run `toolpass gateway off`, then `on`, from a working install"
-            found.append(Found(cf.client, where, str(name), "stdio", " ".join([command, *args]), wrapped, broken))
-    if change is not None and doc != before:
+        for name, entry in servers.items():
+            if isinstance(entry, MutableMapping) and isinstance(entry.get(_KEY), MutableMapping):
+                _restore(entry)
+                done.append(Restored(cf.client, where, str(name)))
+    if doc != before:
         _write(cf.path, doc, read)
-    return found
+    return done
 
 
-def scan(files: list[ClientFile] | None = None, store: Store | None = None) -> list[Found]:
-    """The servers in the clients' files, changing nothing."""
-    return _visit(client_files() if files is None else files, None, store)
-
-
-def on(files: list[ClientFile] | None = None, store: Store | None = None) -> list[Found]:
-    """Wrap every stdio server not wrapped yet; returns every server found."""
-    return _visit(client_files() if files is None else files, "on", store)
-
-
-def off(files: list[ClientFile] | None = None, store: Store | None = None) -> list[Found]:
-    """Put every wrapped server back as it was."""
-    return _visit(client_files() if files is None else files, "off", store)
+def off(files: list[ClientFile] | None = None) -> list[Restored]:
+    """Put every rewritten entry back; returns the entries put back."""
+    done: list[Restored] = []
+    for cf in client_files() if files is None else files:
+        for _ in range(3):  # a client rewriting its file meanwhile: read it again
+            try:
+                done.extend(_off_file(cf))
+            except _Changed:
+                continue
+            except (OSError, ValueError):
+                pass  # unreadable or not JSON: leave it alone
+            break
+        else:
+            print(f"toolpass: {cf.path} kept changing while toolpass rewrote it; left as it is, try again", file=sys.stderr)
+    return done

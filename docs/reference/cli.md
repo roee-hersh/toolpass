@@ -14,9 +14,8 @@ FILE`); `--config=FILE` works too.
 | `toolpass check -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] ...` | Ask a running toolpass the same question; `-fresh` skips its caches |
 | `toolpass catalog [INTEGRATION]` | List integrations, config keys and actions |
 | `toolpass routes [INTEGRATION]` | List how requests to an integration's API map to its actions (the secure-tools toolkit's [observed actions](../guides/intercepted-actions.md)) |
-| `toolpass gateway on\|off\|status` | Wrap every stdio MCP server Claude Desktop and Claude Code list, put them back, or list them ([the gateway](../guides/gateway.md)) |
-| `toolpass dashboard [-open] [-listen ADDR] [-no-wrap]` | Serve the page with every recorded MCP call and server, on the loopback interface |
-| `toolpass mcp -server NAME -client CLIENT -- COMMAND [ARGS...]` | Run one MCP server behind toolpass: forward its stdio unchanged and record each tool call. `gateway on` writes this into the clients' files |
+| `toolpass dashboard [-open] [-listen ADDR]` | Serve the page with every recorded run of your secured tools, on the loopback interface ([the dashboard](../guides/dashboard.md)) |
+| `toolpass gateway off` | Put back the MCP server entries toolpass 0.8 and 0.9 rewrote with `gateway on` |
 
 At startup `serve` reads the API key and exits with an error when it cannot (a server that could
 not would report healthy and refuse every check), then probes every connection and logs warnings.
@@ -51,7 +50,7 @@ toolpass check -server https://toolpass.internal -connection jira-main \
 `serve` also takes `-listen ADDR`, which overrides `listen` in the file, and
 `-log-level debug|info|warn|error` (default `info`).
 
-`gateway`, `dashboard` and `mcp` keep their record in `gateway.db` in the per-user data folder, or
-in `TOOLPASS_DATA_DIR`. `gateway` exits 0 and prints one line per server found. `mcp` exits with the
-server's own exit code, or 127 when the command cannot be started; it writes nothing to stdout but
-what the server sends.
+`dashboard` reads `dashboard.db` in the per-user data folder, or in `TOOLPASS_DATA_DIR`, or the file
+`TOOLPASS_DASHBOARD` names. `gateway off` exits 0 and prints one line per entry put back. An entry an
+earlier version rewrote starts `toolpass mcp ... -- COMMAND`, which still runs `COMMAND`, unrecorded,
+with its exit code.

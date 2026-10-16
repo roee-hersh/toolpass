@@ -7,9 +7,8 @@
     toolpass check    -server URL -api-key env:TOOLPASS_API_KEY -connection id ... [-fresh]
     toolpass catalog  [integration]
     toolpass routes   [integration]
-    toolpass gateway  on|off|status
     toolpass dashboard [-open] [-listen ADDR]
-    toolpass mcp      -server NAME -client CLIENT -- COMMAND [ARGS...]
+    toolpass gateway  off
 
 Flags keep the single-dash form the command has always taken (``-config
 FILE``, ``--config=FILE`` works too), so scripts and the Helm chart do not
@@ -63,9 +62,8 @@ Usage:
   toolpass check    -server URL [-api-key REF] [-ca-file PEM] [-timeout D] [-fresh] -connection ID -user EMAIL -action NAME -resource RES ...
   toolpass catalog  [INTEGRATION]
   toolpass routes   [INTEGRATION]
-  toolpass gateway  on|off|status
-  toolpass dashboard [-open] [-listen ADDR] [-no-wrap]
-  toolpass mcp      -server NAME -client CLIENT [-config LABEL] -- COMMAND [ARGS...]
+  toolpass dashboard [-open] [-listen ADDR]
+  toolpass gateway  off
   toolpass version
 
 Default config: {DEFAULT_CONFIG}
@@ -621,44 +619,29 @@ def routes(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
     return 0
 
 
-def _print_found(found: list[Any], stdout: IO[str]) -> None:
-    if not found:
-        stdout.write("no MCP servers found in Claude Desktop or Claude Code\n")
-        return
-    for f in found:
-        state = "found (HTTP, not recorded yet)" if f.transport == "http" else ("BROKEN" if f.broken else "recording" if f.wrapped else "not wrapped")
-        stdout.write(f"{f.client:<15} {f.name:<24} {state:<32} {f.config}\n")
-        if f.broken:
-            stdout.write(f"{'':<15} {f.broken}\n")
-
-
 def gateway(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
-    """Put toolpass in front of every MCP server the clients already list
-    (on), put them back (off), or show what is there (status)."""
-    if len(args) != 1 or args[0] not in ("on", "off", "status"):
-        stderr.write("usage: toolpass gateway on|off|status\n")
+    """Put back the MCP server entries toolpass 0.8 and 0.9 rewrote (off)."""
+    if args != ["off"]:
+        stderr.write(
+            "toolpass no longer wraps other MCP servers; `toolpass gateway off` puts back the entries an earlier"
+            " version rewrote. The dashboard shows the runs of toolpass tools: see `toolpass dashboard`.\n"
+        )
         return EXIT_ERROR
     from toolpass import _gateway
-    from toolpass._store import Store
 
-    store = Store()
-    try:
-        found = {"on": _gateway.on, "off": _gateway.off, "status": _gateway.scan}[args[0]](store=store)
-    finally:
-        store.close()
-    _print_found(found, stdout)
-    if args[0] != "status" and found:
-        stdout.write("\nrestart your MCP clients to pick the change up; `toolpass dashboard` shows every call\n")
+    done = _gateway.off()
+    for r in done:
+        stdout.write(f"{r.client:<15} {r.name:<24} put back   {r.config}\n")
+    stdout.write("restart your MCP clients to pick the change up\n" if done else "no rewritten MCP server entries found\n")
     return 0
 
 
 def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading.Event | None = None) -> int:
-    """Serve the dashboard over the gateway's record until interrupted.
-    Wraps servers added to the clients since the last run, unless -no-wrap."""
+    """Serve the dashboard over the record of toolpass tool runs until interrupted."""
     fs = _FlagSet("dashboard", stderr)
     fs.add("listen", "str", "127.0.0.1:0", "address for the page, on the loopback interface")
     fs.add("open", "bool", False, "open the page in the default browser")
-    fs.add("no-wrap", "bool", False, "do not wrap servers added to the clients since the last run")
+    fs.add("no-wrap", "bool", False, "ignored; kept so scripts written for 0.9 still run")
     try:
         fs.parse(args)
     except _FlagError:
@@ -666,14 +649,13 @@ def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading
     if fs.args:
         stderr.write(f'dashboard takes flags only, unexpected argument "{fs.args[0]}"\n')
         return EXIT_ERROR
-    from toolpass import _gateway
+    from toolpass import _record
     from toolpass._dashboard import Dashboard
     from toolpass._store import Store
     from toolpass._watch import open_in_browser
 
-    store = Store()
+    store = Store(_record.target())
     try:
-        found = _gateway.scan(store=store) if fs.values["no-wrap"] else _gateway.on(store=store)
         store.prune(days=90)
         try:
             page = Dashboard(store, listen=fs.values["listen"])
@@ -681,8 +663,7 @@ def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading
             stderr.write(f"dashboard: {e}\n")
             return EXIT_ERROR
         stdout.write(f"toolpass dashboard: {page.url}\n")
-        wrapped = sum(1 for f in found if f.wrapped)
-        stdout.write(f"{len(found)} MCP server(s) found, {wrapped} recording; press Ctrl-C to stop\n")
+        stdout.write(f"the runs of every process started with {_record.ENV}=1; press Ctrl-C to stop\n")
         stdout.flush()
         if fs.values["open"]:
             open_in_browser(page.url)
@@ -698,34 +679,24 @@ def dashboard(args: list[str], stdout: IO[str], stderr: IO[str], stop: threading
 
 
 def mcp(args: list[str], stderr: IO[str]) -> int:
-    """Run an MCP server behind toolpass: forward its stdio unchanged and
-    record every tool call. Clients start this; `toolpass gateway on` writes it."""
-    fs = _FlagSet("mcp", stderr)
-    fs.add("server", "str", "", "the server's name in the client's config")
-    fs.add("client", "str", "", "the client that starts it (claude-desktop, claude-code)")
-    fs.add("config", "str", "", "the config file (and project) the entry is in")
-    try:
-        fs.parse(args)
-    except _FlagError:
+    """What an entry rewritten by toolpass 0.8 or 0.9 starts: the original
+    server, unrecorded, so it keeps working until `toolpass gateway off`."""
+    command = args[args.index("--") + 1 :] if "--" in args else []
+    if not command:
+        stderr.write("toolpass no longer wraps MCP servers; run `toolpass gateway off` to put your client's entries back\n")
         return EXIT_ERROR
-    if not fs.args:
-        stderr.write("mcp: missing the server command after --\n")
-        return EXIT_ERROR
-    from toolpass import _mcp_proxy
-    from toolpass._store import Store
+    import shutil
+    import subprocess
 
+    stderr.write("toolpass: this MCP server entry was rewritten by an earlier toolpass; `toolpass gateway off` puts it back\n")
+    stderr.flush()
     try:
-        store: Store | None = Store()
-    except Exception as e:  # noqa: BLE001 - no record is better than no server
-        stderr.write(f"toolpass: cannot open the record ({type(e).__name__}: {e}); the server runs unrecorded\n")
-        store = None
-    try:
-        return _mcp_proxy.run(
-            fs.args, server=fs.values["server"] or fs.args[0], client=fs.values["client"] or "unknown", config=fs.values["config"], store=store
-        )
-    finally:
-        if store is not None:
-            store.close()
+        return subprocess.call([shutil.which(command[0]) or command[0], *command[1:]])
+    except OSError as e:
+        stderr.write(f"toolpass: could not start {command[0]!r}: {e}\n")
+        return 127
+    except KeyboardInterrupt:
+        return 130
 
 
 def run(args: list[str], stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> int:

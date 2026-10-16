@@ -1,6 +1,7 @@
-"""The demo in one command: two people use the ``shop`` MCP server through the
-toolpass gateway, and the dashboard shows every call and, under each call,
-what the tool did in GitHub, Jira, Slack, Linear and Kubernetes.
+"""The demo in one command: two people use the ``shop`` MCP server, built with
+toolpass, and the dashboard shows every tool run: who it ran for, and each
+request it made to GitHub, Jira, Slack, Linear and Kubernetes, allowed or
+refused by the system itself.
 
     pip install toolpass            # or, from toolpass-py: pip install -e .
     python examples/demo/run.py     # then open the address it prints
@@ -11,8 +12,7 @@ and change nothing: the same tools stop at the first request Sam may not
 make, and the dashboard shows which one and why.
 
 Everything runs on this machine: the five systems are stand-ins
-(``fake_*.py``), and the record is kept in a temporary folder, not your own
-gateway record. Nothing is written to your Claude configuration.
+(``fake_*.py``), and the record is kept in a temporary folder, not your own.
 """
 
 from __future__ import annotations
@@ -51,11 +51,10 @@ def toolpass(*args: str) -> list[str]:
 
 
 class Client:
-    """An MCP client over stdio, the way Claude Desktop starts a server the gateway wrapped."""
+    """An MCP client over stdio, the way Claude Desktop or Claude Code starts the server."""
 
     def __init__(self, user: str, env: dict[str, str]) -> None:
-        server = [sys.executable, str(HERE / "shop_server.py")]
-        cmd = toolpass("mcp", "-server", "shop", "-client", "demo", "-config", f"demo ({user})", "--", *server)
+        cmd = [sys.executable, str(HERE / "shop_server.py")]
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**env, "DEMO_USER": user})
         self.next_id = 0
         self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "demo", "version": "1"}})
@@ -86,7 +85,7 @@ class Client:
 
 
 def tour(env: dict[str, str], say: Any = print) -> list[tuple[str, str, bool]]:
-    """Run every call in TOUR through the gateway; (user, tool, ok) for each."""
+    """Run every call in TOUR; (user, tool, ok) for each."""
     out: list[tuple[str, str, bool]] = []
     clients: dict[str, Client] = {}
     try:
@@ -112,13 +111,13 @@ def main() -> None:
     systems = Systems()
     try:
         with tempfile.TemporaryDirectory(prefix="toolpass-demo-") as data:
-            env = {**os.environ, "TOOLPASS_DATA_DIR": data, "DEMO_SYSTEMS": systems.shared()}
-            print("Two people use the shop MCP server through the toolpass gateway:\n")
+            env = {**os.environ, "TOOLPASS_DATA_DIR": data, "TOOLPASS_DASHBOARD": "1", "DEMO_SYSTEMS": systems.shared()}
+            print("Two people use the shop MCP server, built with toolpass:\n")
             tour(env)
             if a.no_dashboard:
                 return
-            print("\nThe dashboard shows each call and, under it, every request the tool made. Ctrl-C to stop.\n")
-            cmd = toolpass("dashboard", "-no-wrap", "-listen", a.listen, *(["-open"] if a.open else []))
+            print("\nThe dashboard shows each run and every request the tool made. Ctrl-C to stop.\n")
+            cmd = toolpass("dashboard", "-listen", a.listen, *(["-open"] if a.open else []))
             with contextlib.suppress(KeyboardInterrupt):
                 subprocess.run(cmd, env=env, check=False)
     finally:

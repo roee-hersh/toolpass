@@ -3,29 +3,20 @@
 [![ci](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml/badge.svg)](https://github.com/roee-hersh/toolpass/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**A pass for every tool call. See every tool call your agents make, and check the ones your own
-tools make.**
+**A pass for every tool call. Your agent's tools act for many people with one credential; toolpass
+checks each request they make against what that person may do, and shows you every one.**
 
-## See what your agents do
+## See what your agent's tools do
 
-Claude Desktop and Claude Code call MCP servers (GitHub, Slack, a database) for you, and forget what
-they did when the chat closes. toolpass puts itself in front of those servers and keeps the record:
+When an MCP server or an agent is built with toolpass [secured tools](#check-what-your-own-tools-do),
+each run is recorded: who it ran for, and every request the tool made to GitHub, Jira, Slack, Linear
+or Kubernetes, allowed or refused by the system itself, with the reason.
 
 ```sh
 pip install toolpass
-toolpass gateway on        # wrap every MCP server Claude Desktop and Claude Code already use
-toolpass dashboard -open   # every call, from every chat, kept
+TOOLPASS_DASHBOARD=1 python my_server.py   # or in the server's "env" in your MCP client's config
+toolpass dashboard -open
 ```
-
-There is nothing to register. `gateway on` reads the clients' own config files, puts toolpass in
-front of each server, and keeps the original beside it; `toolpass gateway off` puts them back.
-Restart the client and use it as before. Nothing is blocked or changed: the client's own "Allow
-this tool?" still decides. Everything stays in one file on your machine.
-
-Most gateways stop at the tool: they show that `open_pr` ran. When a server's tools are toolpass
-[secured tools](#check-what-your-own-tools-do), the dashboard also shows what each call did inside
-GitHub, Jira, Slack, Linear or Kubernetes, request by request, for the person who asked, and which
-request was refused and why:
 
 ![The dashboard: 9 tool calls by Dana and Sam, a map from the MCP server shop to its tools open_pr, ship, report_bug and status to the systems they reached (Kubernetes, GitHub, Jira, Slack, Linear), and the calls, Sam's refused at Linear, Kubernetes and GitHub](docs/assets/dashboard.png)
 
@@ -37,8 +28,9 @@ git clone https://github.com/roee-hersh/toolpass && cd toolpass/toolpass-py
 pip install -e . && python examples/demo/run.py -open
 ```
 
-Servers started over stdio are recorded today; HTTP servers are listed and come next. The
-[gateway guide](docs/guides/gateway.md) has the details.
+Nothing to register and nothing sent anywhere: every process started with `TOOLPASS_DASHBOARD=1`
+writes to one file on your machine, and the [dashboard guide](docs/guides/dashboard.md) has the
+details.
 
 ## Check what your own tools do
 
@@ -162,12 +154,9 @@ runs on its own, in-process or as a server, with adapters for nine agent framewo
 pip install toolpass
 ```
 
-Python 3.10 or later; the core depends only on PyYAML. Until the first `toolpass` release reaches
-PyPI, install from this repository:
-
-```sh
-pip install "toolpass @ git+https://github.com/roee-hersh/toolpass#subdirectory=toolpass-py"
-```
+Python 3.10 or later; the core depends only on PyYAML. If your shell cannot find `toolpass` after
+installing (pip warns that its scripts folder is not on PATH, common on Windows), run it as
+`python -m toolpass` (`py -m toolpass` on Windows): `py -m toolpass dashboard -open`.
 
 ## Honest limits
 

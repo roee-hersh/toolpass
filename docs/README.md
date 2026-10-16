@@ -33,8 +33,8 @@ agents in any language call.
   entitlements and holding it to them.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
-- [The MCP gateway](guides/gateway.md): record every tool call Claude Desktop and Claude Code make
-  to their MCP servers, with `toolpass gateway on` and `toolpass dashboard`.
+- [The dashboard](guides/dashboard.md): every run of your secured tools, from every MCP server and
+  agent started with `TOOLPASS_DASHBOARD=1`, with each request it made and who it ran for.
 
 ## Reference
 
@@ -47,16 +47,11 @@ agents in any language call.
 - [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,
-  `gateway`, `dashboard` and `mcp`.
+  `dashboard` and `gateway off`.
 - [Integrations](integrations/README.md): the twenty-one systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.
 - [Helm chart values](../deploy/helm/toolpass/README.md).
-
-## Design
-
-- [The MCP gateway](design/mcp-gateway.md): the design. Step 1 (stdio servers, the record, the
-  dashboard) is built; HTTP servers and other clients come next.
 
 ## Development
 
