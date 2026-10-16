@@ -8,9 +8,15 @@ a public comment; a comment with ``"public": false`` is an internal note,
 checked as ``ticket.edit`` (toolpass has no action for internal notes, so a
 light agent is refused one). A comment beside property changes needs both
 checks, which one request cannot carry: it is unresolved, so send them as two
-requests. A user update is ``user.edit`` while it changes only profile fields;
-one that touches the role, groups, organizations, suspension or anything else
-is checked as ``account.admin``.
+requests. A comment record carrying ``voice_comment`` or ``tpe_voice_comment``
+is unresolved: it is a comment the rules above do not read. A requester marking
+a request solved (``PUT /requests/{id}`` with ``solved``) is unresolved: no
+action covers it, and ``ticket.edit`` is never allowed to end users, the only
+callers Zendesk accepts there. A user update is ``user.edit`` while it changes
+only profile fields; one that touches the role, groups, organizations,
+suspension or anything else is checked as ``account.admin``. Writes that can
+make Zendesk email an address in the body (identities, user updates and user
+creation: verification and welcome emails) send out.
 
 Bodies are read only as one JSON object (``Content-Type: application/json``)
 under the record's key (``{"ticket": {...}}``), with no duplicate members and
@@ -73,6 +79,9 @@ PROFILE_FIELDS = frozenset(
 
 # Ticket members that only annotate the update's audit; they may sit beside a public comment.
 _AUDIT_ONLY = frozenset({"safe_update", "updated_stamp", "macro_id", "macro_ids", "metadata"})
+
+# Ticket members that add a comment the comment rules do not read (visibility, author).
+_VOICE_COMMENTS = frozenset({"voice_comment", "tpe_voice_comment"})
 
 
 class _Duplicate(ValueError):
@@ -140,7 +149,8 @@ def _same_id(rec: Mapping[str, Any], path_id: str) -> bool:
 def _comment_update(key: str) -> _Fields:
     """PUT /tickets/{id} and PUT /requests/{id}: a public comment alone is
     ticket.comment_public; property changes, or an internal note with them,
-    ticket.edit; a public comment beside property changes is unresolved."""
+    ticket.edit; a public comment beside property changes is unresolved, as
+    are voice comments and a request marked solved."""
     ids = _ids("ticket_id")
 
     def extract(r: Request, vars_: Mapping[str, str]) -> dict[str, str]:
@@ -152,6 +162,14 @@ def _comment_update(key: str) -> _Fields:
             return {"_unresolved": rec}
         if not _same_id(rec, out["ticket_id"]):
             return {"_unresolved": f"the body's {key}.id is not the ticket in the path"}
+        voice = sorted(_VOICE_COMMENTS & set(rec))
+        if voice:
+            return {"_unresolved": f"the {key} carries {', '.join(voice)}, a comment toolpass does not read; send the comment as comment"}
+        if key == "request" and "solved" in rec:
+            return {
+                "_unresolved": "marking a request solved as its requester is not supported: the zendesk integration has no action for it, "
+                "and ticket.edit is never allowed to end users; an agent solves the ticket with PUT /api/v2/tickets/{id}"
+            }
         changes = set(rec) - _AUDIT_ONLY - {"comment"}
         if "comment" not in rec:
             return out  # ticket.edit
@@ -265,6 +283,13 @@ def _routes() -> list[Route]:
         Route("GET", f"{_A}/tickets/count", None, "", description=lists),
         Route("GET", f"{_A}/tickets/show_many", None, "", description=lists),
         Route("GET", f"{_A}/tickets/autocomplete", None, "", description=lists),
+        Route(
+            "GET",
+            f"{_A}/tickets/messaging/conversations/{{conversation_id}}/ticket",
+            None,
+            "",
+            description="the active ticket of a messaging conversation, named by the conversation, not the ticket; Zendesk applies the agent's own access",
+        ),
         Route("GET", f"{_A}/requests/{{ticket_id}}", "ticket.view", _TICKET, body=tid, description="a request is its ticket, seen by the requester"),
         Route("GET", f"{_A}/requests/{{ticket_id}}/{{rest+}}", "ticket.view", _TICKET, body=tid, spec=False),
         Route("GET", f"{_A}/requests/ccd", None, "", description=lists),
@@ -322,17 +347,26 @@ def _routes() -> list[Route]:
         Route("PUT", f"{_A}/organizations/update_many", admin, _ACCOUNT),
         Route("DELETE", f"{_A}/organizations/destroy_many", admin, _ACCOUNT),
         # Users: the profile.
-        Route("PUT", u, "user.edit", _USER, body=_user_update),
+        # A changed email, or a new or changed email identity, is verified by email unless the body says skip_verify_email.
+        Route("PUT", u, "user.edit", _USER, body=_user_update, sends_out=True, description="profile fields; a changed email is sent a verification"),
         Route("POST", u + "/tags", "user.edit", _USER, body=uid),
         Route("PUT", u + "/tags", "user.edit", _USER, body=uid),
         Route("DELETE", u + "/tags", "user.edit", _USER, body=uid, effect="write"),
-        Route("POST", u + "/identities", "user.edit", _USER, body=uid),
-        Route("PUT", u + "/identities/{user_identity_id}", "user.edit", _USER, body=uid),
+        Route("POST", u + "/identities", "user.edit", _USER, body=uid, sends_out=True, description="a new email identity is sent a verification"),
+        Route("PUT", u + "/identities/{user_identity_id}", "user.edit", _USER, body=uid, sends_out=True, description="a changed email is sent a verification"),
         Route("DELETE", u + "/identities/{user_identity_id}", "user.edit", _USER, body=uid),
         Route("PUT", u + "/identities/{user_identity_id}/make_primary", "user.edit", _USER, body=uid),
         Route("PUT", u + "/identities/{user_identity_id}/verify", "user.edit", _USER, body=uid),
         Route("PUT", u + "/identities/{user_identity_id}/request_verification", "user.edit", _USER, body=uid, sends_out=True),
-        Route("POST", f"{_A}/end_users/{{user_id}}/identities", "user.edit", _USER, body=uid),
+        Route(
+            "POST",
+            f"{_A}/end_users/{{user_id}}/identities",
+            "user.edit",
+            _USER,
+            body=uid,
+            sends_out=True,
+            description="a new email identity is sent a verification",
+        ),
         Route("DELETE", f"{_A}/end_users/{{user_id}}/identities/{{user_identity_id}}", "user.edit", _USER, body=uid),
         Route("PUT", f"{_A}/end_users/{{user_id}}/identities/{{user_identity_id}}/make_primary", "user.edit", _USER, body=uid),
         Route("PUT", f"{_A}/end_users/{{user_id}}/identities/{{user_identity_id}}/request_verification", "user.edit", _USER, body=uid, sends_out=True),
@@ -353,11 +387,12 @@ def _routes() -> list[Route]:
         Route("PUT", u + "/organization_memberships/{organization_membership_id}/make_default", admin, _ACCOUNT),
         Route("DELETE", u + "/organizations/{organization_id}", admin, _ACCOUNT),
         Route("PUT", u + "/organizations/{organization_id}/make_default", admin, _ACCOUNT),
-        Route("POST", f"{_A}/users", admin, _ACCOUNT),
-        Route("POST", f"{_A}/users/create_many", admin, _ACCOUNT),
-        Route("POST", f"{_A}/users/create_or_update", admin, _ACCOUNT),
-        Route("POST", f"{_A}/users/create_or_update_many", admin, _ACCOUNT),
-        Route("PUT", f"{_A}/users/update_many", admin, _ACCOUNT),
+        # Creating users sends welcome emails, changing their emails verifications.
+        Route("POST", f"{_A}/users", admin, _ACCOUNT, sends_out=True),
+        Route("POST", f"{_A}/users/create_many", admin, _ACCOUNT, sends_out=True),
+        Route("POST", f"{_A}/users/create_or_update", admin, _ACCOUNT, sends_out=True),
+        Route("POST", f"{_A}/users/create_or_update_many", admin, _ACCOUNT, sends_out=True),
+        Route("PUT", f"{_A}/users/update_many", admin, _ACCOUNT, sends_out=True),
         Route("DELETE", f"{_A}/users/destroy_many", admin, _ACCOUNT),
         Route("POST", f"{_A}/users/logout_many", admin, _ACCOUNT),
     ]

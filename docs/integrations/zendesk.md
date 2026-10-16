@@ -131,17 +131,28 @@ Ids are plain decimal; a `.json` suffix on the path is read as Zendesk reads it.
 | `DELETE /api/v2/tickets/{id}`, comment and chat redaction | `ticket.delete` on `ticket:{id}` |
 | ticket tags, making a comment private | `ticket.edit` on `ticket:{id}` |
 | `PUT`, `DELETE /api/v2/organizations/{id}`, its tags | `organization.edit` on `organization:{id}` |
-| `PUT /api/v2/users/{id}` changing profile fields only (name, email, phone, notes, tags, user fields, ...), user tags and identities | `user.edit` on `user:{id}` |
-| a user update touching anything else (role, organization, suspension, ...); deleting, merging, suspending users, their group and organization memberships; creating users and organizations | `account.admin` on `account` |
+| `PUT /api/v2/users/{id}` changing profile fields only (name, email, phone, notes, tags, user fields, ...), user tags and identities | `user.edit` on `user:{id}`; the user update, adding or changing an identity and requesting verification send out |
+| a user update touching anything else (role, organization, suspension, ...); deleting, merging, suspending users, their group and organization memberships; creating users and organizations | `account.admin` on `account`; creating users and `update_many` send out |
 | macros, views, triggers and automations | `macro.manage`, `view.manage`, `business_rules.manage` on `account` |
 | account configuration (fields, forms, groups, brands, roles, SLAs, targets, ...) | `account.admin` on `account` |
-| search and lists, `GET /api/v2/users/me` | no check (the agent's own access) |
+| search and lists, `GET /api/v2/users/me`, `GET /api/v2/tickets/messaging/conversations/{id}/ticket` | no check (the agent's own access) |
+
+A request that sends out may make Zendesk email someone, so it counts as sending data out of the
+session: a ticket update notifies its requester and CCs, a new or changed email address (a user's
+`email`, an email identity) is sent a verification unless the body says `"skip_verify_email": true`,
+and a new user may be sent a welcome email. The route cannot read `skip_verify_email`, so these
+writes send out either way.
 
 An internal note is checked as `ticket.edit`: toolpass has no action for internal notes, so a light
 agent is refused one. Refused, so the tool stops there:
 
 - a public comment beside property changes: it needs two checks; send them as two requests;
-- a comment that names its author (`author_id`) or says `is_public`;
+- a comment that names its author (`author_id`) or says `is_public`, and a `voice_comment` or
+  `tpe_voice_comment` in the ticket or request: the comment rules cannot read them;
+- `PUT /api/v2/requests/{id}` with `solved`: a requester marking their request solved is not
+  supported. Zendesk accepts that endpoint from end users only, `ticket.edit` is never allowed to
+  end users, and no action covers solving as the requester; an agent solves the ticket with
+  `PUT /api/v2/tickets/{id}` instead;
 - a body that is not one JSON object under its record's key (`{"ticket": {...}}`) sent as
   `application/json`, that names a member twice, whose `id` is another record's, or that comes
   with a query string (Zendesk would merge a query's `ticket[...]` over the body);

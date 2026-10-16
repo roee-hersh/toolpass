@@ -44,6 +44,9 @@ ROUTED = [
     ("GET", "/api/v2/tickets/12/comments", None, "ticket.view", "ticket:12", "read"),
     ("GET", "/api/v2/requests/12/comments", None, "ticket.view", "ticket:12", "read"),
     ("GET", "/api/v2/tickets/recent", None, None, "", "read"),
+    # A messaging conversation's ticket, not a ticket named "messaging".
+    ("GET", "/api/v2/tickets/messaging/conversations/f82db38d3dbf67fe2d1e1233/ticket", None, None, "", "read"),
+    ("GET", "/api/v2/tickets/messaging/conversations/f82db38d3dbf67fe2d1e1233/ticket.json", None, None, "", "read"),
     ("GET", "/api/v2/search.json", None, None, "", "read"),
     ("GET", "/api/v2/users/me.json", None, None, "", "read"),
     ("POST", "/api/v2/views/preview", {"view": {}}, None, "", "read"),
@@ -61,7 +64,6 @@ ROUTED = [
         "write",
     ),
     ("PUT", "/api/v2/requests/12", {"request": {"comment": {"body": "thanks"}}}, "ticket.comment_public", "ticket:12", "write"),
-    ("PUT", "/api/v2/requests/12", {"request": {"solved": True}}, "ticket.edit", "ticket:12", "write"),
     ("DELETE", "/api/v2/tickets/12", None, "ticket.delete", "ticket:12", "destructive"),
     ("PUT", "/api/v2/tickets/12/tags", {"tags": ["vip"]}, "ticket.edit", "ticket:12", "write"),
     ("PUT", "/api/v2/tickets/12/comments/99/redact", {"text": "secret"}, "ticket.delete", "ticket:12", "destructive"),
@@ -160,6 +162,14 @@ def test_the_check_answers_the_routed_questions(setup: Setup):  # noqa: F811
         ("PUT", "/api/v2/users/me", {"user": {"name": "Ann"}}, "", None),
         ("PUT", "/api/v2/organizations/500", {"organization": {"id": 501}}, "", None),
         ("PUT", "/api/v2/tickets/12", b'{"ticket": {"priority": NaN}}', "", None),
+        # A voice comment is a comment the comment rules do not read.
+        ("PUT", "/api/v2/tickets/12", {"ticket": {"voice_comment": {"from": "+1", "to": "+2", "recording_url": "https://x"}}}, "", None),
+        ("PUT", "/api/v2/tickets/12", {"ticket": {"tpe_voice_comment": {"body": "hi"}}}, "", None),
+        ("PUT", "/api/v2/tickets/12", {"ticket": {"tpe_voice_comment": {"body": "hi"}, "status": "open"}}, "", None),
+        ("PUT", "/api/v2/requests/12", {"request": {"voice_comment": {"body": "hi"}}}, "", None),
+        # A requester solving a request: no action covers it.
+        ("PUT", "/api/v2/requests/12", {"request": {"solved": "true"}}, "", None),
+        ("PUT", "/api/v2/requests/12", {"request": {"solved": True}}, "", None),
     ],
 )
 def test_requests_that_cannot_be_read_exactly_are_unresolved(method, path, body, query, headers):
@@ -190,3 +200,38 @@ def test_ticket_updates_send_out_and_reads_are_untrusted():
     assert ROUTES.match(req("PUT", "/api/v2/tickets/1", {"ticket": {"status": "open"}})).sends_out  # type: ignore[union-attr]
     assert ROUTES.match(req("GET", "/api/v2/tickets/1")).untrusted_output  # type: ignore[union-attr]
     assert not ROUTES.match(req("GET", "/api/v2/users/me")).untrusted_output  # type: ignore[union-attr]
+
+
+def test_a_request_marked_solved_says_it_is_not_supported():
+    o = ROUTES.match(req("PUT", "/api/v2/requests/12", {"request": {"solved": "true"}}))
+    assert o is not None and o.unresolved is not None and "not supported" in o.unresolved, o
+
+
+def test_a_messaging_conversation_ticket_is_not_read_as_a_ticket_id():
+    o = ROUTES.match(req("GET", "/api/v2/tickets/messaging/conversations/abc/ticket"))
+    assert o is not None and o.unresolved is None and o.action is None and o.untrusted_output, o
+    # A numeric ticket's sub-resources are still checked as the ticket.
+    o = ROUTES.match(req("GET", "/api/v2/tickets/12/audits"))
+    assert o is not None and (o.action, o.resource) == ("ticket.view", "ticket:12")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        # Zendesk emails a new or changed email identity unless skip_verify_email is true.
+        ("POST", "/api/v2/users/20/identities", {"identity": {"type": "email", "value": "a@b.c"}}),
+        ("PUT", "/api/v2/users/20/identities/7", {"identity": {"value": "a@b.c"}}),
+        ("POST", "/api/v2/end_users/20/identities", {"identity": {"type": "email", "value": "a@b.c"}}),
+        ("PUT", "/api/v2/users/20/identities/7/request_verification", None),
+        # A changed email is verified by email; a new user is sent a welcome email.
+        ("PUT", "/api/v2/users/20", {"user": {"email": "a@b.c"}}),
+        ("POST", "/api/v2/users", {"user": {"name": "Ann", "email": "a@b.c"}}),
+        ("POST", "/api/v2/users/create_many", {"users": []}),
+        ("POST", "/api/v2/users/create_or_update", {"user": {"email": "a@b.c"}}),
+        ("POST", "/api/v2/users/create_or_update_many", {"users": []}),
+        ("PUT", "/api/v2/users/update_many", {"users": []}),
+    ],
+)
+def test_writes_that_email_an_address_send_out(method, path, body):
+    o = ROUTES.match(req(method, path, body))
+    assert o is not None and o.unresolved is None and o.sends_out, o
