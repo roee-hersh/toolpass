@@ -104,6 +104,33 @@ Wildcards are not accepted in `raw:` or `data:`; role definitions carry them.
    management group is `unsupported` since the hierarchy is not read. An assignment without a scope
    is treated as uncertain.
 
+## Requests a tool makes
+
+The route table (`toolpass routes azure`) maps a secured tool's requests to the connection's `url`
+to the operation ARM authorizes them as, read from the path: `{ns}/{type}[/{type}...]/read` for GET
+and HEAD, `/write` for PUT and PATCH, `/delete` for DELETE, `/{action}/action` for a POST to
+`.../{name}/{action}`; a GET of a collection is the type's read on its parent. Paths without a
+provider are Microsoft.Resources' (`Microsoft.Resources/subscriptions/resourceGroups/delete`); an
+extension resource such as `{resource}/providers/Microsoft.Authorization/roleAssignments/{id}` is its
+own provider's. The scope is the narrowest the integration takes: `resource:<id>` inside a resource
+group, `resourcegroup:`, `subscription:` or `managementgroup:` for those themselves. An object
+directly under a subscription or management group (a role assignment there, a subscription
+deployment) is checked on that subscription or management group, so an assignment on the object
+alone is not seen.
+
+Refused (`unresolved_resource`): a path that does not parse exactly (percent-encoded characters, dot
+or empty segments, a subscription that is not a GUID), `/batch`, tenant-level writes
+(`elevateAccess`, Resource Graph queries), resource moves, moving a subscription between management
+groups, creating or changing a template deployment or deployment stack (its template can create
+anything, as the agent), and a write whose JSON body names another Azure resource by id: ARM checks
+the linked permission (joining a subnet, attaching a disk, assigning an identity) as the agent. A
+role assignment's own `roleDefinitionId`, the target itself and the scopes above it are allowed in
+the body. Tenant-level listings (subscriptions, tenants, management groups) list only what the
+agent can see and provider metadata is public, so they are not checked; any other tenant-level path
+is refused. Every POST action is treated as sending data out (it may run a Logic App or
+send a notification), and its output as untrusted. The data planes (blob storage, Key Vault) are
+other hosts and not routed.
+
 ## Decisions
 
 | Code | When |
@@ -150,4 +177,5 @@ against `authorization-RoleAssignmentsCalls`, `authorization-RoleDefinitionsCall
 role, assignments direct and through a group at management-group, subscription, resource-group and
 resource scopes, a conditional assignment, and deny assignments with exclusions, conditions and
 `doNotApplyToChildScopes`. A property test (`test_fuzz_parse_target`) checks that only well-formed
-scopes and operations reach the API.
+scopes and operations reach the API. `test_routes.py` checks the route table against the same three
+descriptions and that every scope it builds is one `parse_target` takes.
