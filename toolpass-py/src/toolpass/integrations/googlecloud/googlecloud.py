@@ -51,6 +51,7 @@ from toolpass.core.integration import (
     credential_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.integrations.googlecloud.actions import catalog_actions, full_resource_name, is_project, match_action, parse_ref
 from toolpass.net import httpx
@@ -174,6 +175,11 @@ class GoogleCloud(Integration):
     def match_action(self, name: str) -> Action | None:
         """Accept raw:<permission>."""
         return match_action(name)
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.googlecloud.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network; the key is read when a

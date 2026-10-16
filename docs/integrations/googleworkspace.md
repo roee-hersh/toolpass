@@ -149,6 +149,40 @@ warns, naming the scope, for each one the token endpoint refuses. It warns that
 `enable_gmail_settings` grants a write-capable scope when on, and always reminds that domain-wide
 delegation is a broad grant. The summary names the service account and the admin.
 
+## Requests a secured tool makes
+
+The integration's route table (`toolpass routes googleworkspace`) maps the requests a secured tool
+sends to Google's APIs to an action and a resource, so the toolkit checks the session's user before
+each request leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
+`admin`, `docs`, `sheets` and `slides` hosts under `googleapis.com`, and `api_url` when it names
+another endpoint.
+
+| Request | Action | Resource |
+|---|---|---|
+| Drive file metadata, comments, permissions (read) | `drive.file.read` | `file:<id>` |
+| Drive content (`alt=media`, export, download); Docs, Sheets and Slides reads | `drive.file.download` | `file:<id>` |
+| Drive change; Docs, Sheets and Slides `batchUpdate` and value writes | `drive.file.edit` (`drive.file.rename`, `drive.file.trash` when that is all it does) | `file:<id>` |
+| Sharing: permissions, sharing settings, publishing a revision, resolving an access proposal | `drive.file.share`, sends out | `file:<id>` |
+| Comments and replies | `drive.file.comment`, sends out | `file:<id>` |
+| A new file (also by upload) | `drive.folder.add_child` | `file:<parent>` |
+| Gmail: messages, threads, drafts, labels; sending sends out | `mail.delegate_access` | `mailbox:<address in the path>` |
+| Calendar events (read) and free/busy of one calendar | `calendar.read` | `calendar:<id>` |
+| Calendar event changes, sends out | `calendar.event.write` | `calendar:<id>` |
+| Calendar sharing (ACL), the calendar itself, ownership transfer | `calendar.share` | `calendar:<id>` |
+| The user's own Directory record; a group's details and members | `user.active`, `group.member` | `user:`, `group:` |
+
+Refused, because one check cannot cover them or the request acts on the agent's own account rather
+than the user's: Gmail `me` and Calendar `primary` (name the mailbox or calendar by address), Drive
+`root` and `appDataFolder`, a new file without one parent folder, moves (`addParents`), copies into
+another folder, ownership transfers, Gmail settings changes (a delegate may read a mailbox but not
+change its forwarding, filters or delegates), moving an event between calendars, every Directory
+write and every other Directory read, Sheets charts in Slides, batch requests,
+`X-HTTP-Method-Override`, `useDomainAdminAccess`, JSON with a key given twice, and any Drive, Gmail,
+Calendar or Directory read the table does not know (Drive v2 included). Lists and searches
+(`files.list`, the agent's calendar list) are not checked: they return what the agent's own
+credential sees, marked untrusted. `mail.delegate_access` needs `enable_gmail_settings`; with it off
+every Gmail request is refused as unknown.
+
 ## What it cannot see
 
 - **DLP and IRM** rules, **context-aware access** and **Drive trust rules** can block an action
@@ -197,3 +231,8 @@ split, every send-as and delegate verification status including an absent one, G
 the user's own mailbox, a `hasMember` body without `isMember`, the Gmail feature on and off, the
 probe warnings and the injected failure modes. The test key JSON's `private_key_id` carries the
 canary and the key pair is generated in the test.
+
+`tests/integrations/googleworkspace/test_routes.py` holds the route table to the Drive, Gmail,
+Calendar and Directory discovery documents (every write routed or left out with a reason), checks
+that every routed resource parses with the integration's own parser, and covers the refusals above,
+multipart and resumable uploads, and bodies that two readers could read differently.

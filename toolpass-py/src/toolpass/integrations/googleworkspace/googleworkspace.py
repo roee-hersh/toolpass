@@ -53,6 +53,7 @@ from toolpass.core.integration import (
     credential_field,
     validate_https_url,
 )
+from toolpass.core.routes import RouteTable
 from toolpass.core.secret import SecretError
 from toolpass.integrations.googleworkspace.actions import ACTION_INDEX, ACTION_LIST, EMAIL_RE, catalog_actions, parse_ref
 from toolpass.net import httpx
@@ -203,6 +204,11 @@ class GoogleWorkspace(Integration):
 
     def actions(self) -> list[Action]:
         return catalog_actions()
+
+    def routes(self) -> RouteTable | None:
+        from toolpass.integrations.googleworkspace.routes import ROUTES
+
+        return ROUTES
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         """Build a connection. It touches no network; the key is read when a
