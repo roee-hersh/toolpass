@@ -32,6 +32,13 @@ def spec_template(path: str) -> PathTemplate:
     return PathTemplate("/".join(segs))
 
 
+def _whole_segments(path: str) -> str:
+    """A description path with a variable that shares its segment with a
+    suffix (Zendesk's ``/countries/{id}.json``) as that variable alone, the
+    way a route template names it."""
+    return re.sub(r"\{([A-Za-z0-9_-]+)\}[^/{}]+(?=/|$)", r"{\1}", path)
+
+
 def spec_operations(name: str) -> list[tuple[str, str]] | None:
     """(METHOD, template) for every operation of a loaded OpenAPI/Swagger
     description, or None when the description is not at hand."""
@@ -41,7 +48,7 @@ def spec_operations(name: str) -> list[tuple[str, str]] | None:
     ops: dict[str, dict[str, Any]] | None = getattr(spec, "ops", None)
     if ops is None:
         raise TypeError(f"{name}: not an OpenAPI description")
-    return [(method, path) for path, by_method in ops.items() for method in by_method]
+    return [(method, _whole_segments(path)) for path, by_method in ops.items() for method in by_method]
 
 
 def check_routes_against_spec(table: RouteTable, name: str, *, host: str) -> list[str]:
