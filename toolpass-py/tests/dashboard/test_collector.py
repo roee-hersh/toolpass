@@ -119,8 +119,8 @@ def test_a_batch_may_be_larger_than_a_check(running: Running) -> None:
     too_big = json.dumps({"server": "shop", "runs": [{**RUN, "arguments": {"b": "x" * 1_100_000}}]}).encode()
     try:
         status = running.request("POST", "/runs", too_big, _auth())[0]
-    except (BrokenPipeError, ConnectionResetError):
-        status = 413  # the server answered and closed before reading the rest of it
+    except ConnectionError:  # broken pipe, reset, or aborted (Windows): the server answered and closed
+        status = 413  # before reading the rest of it
     assert status == 413
     assert len(running.server.runs) == 1
 
