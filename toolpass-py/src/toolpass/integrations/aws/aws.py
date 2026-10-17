@@ -20,7 +20,7 @@ from typing import Any
 
 from toolpass.authx import xmlutil
 from toolpass.authx.awscreds import OS_ENV, ambient_provider, static_from_json
-from toolpass.authx.awsquery import AWSClient, CredentialProvider, iam_endpoint, regional_endpoint
+from toolpass.authx.awsquery import AWSClient, CredentialProvider, iam_endpoint, regional_endpoint, rest_label
 from toolpass.authx.sigv4 import AWSCredentials
 from toolpass.authx.sts import CachedProvider, STSClient, assume_role_provider, validate_role_arn
 from toolpass.core import jsonx
@@ -29,11 +29,12 @@ from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unknown_decision, unsupported, user_not_found
 from toolpass.core.errors import go_lower, go_quote, go_trim_space, path_error_text
-from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, ProbeResult, Settings, credential_field
+from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, KubernetesSubject, ProbeResult, Settings, User, credential_field
 from toolpass.core.log import Logger
 from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret
 from toolpass.integrations.aws.actions import arn_field, catalog_actions, match_action, parse_resource, resolve_action
+from toolpass.integrations.aws.eks import EKSMapping, arn_candidates, merge_mappings, validate_eks_cluster
 from toolpass.integrations.aws.identity import (
     IAM_VERSION,
     MAX_PAGES,
@@ -63,7 +64,7 @@ _SESSION_NAME_RE = re.compile(r"[\w+=,.@-]{2,64}", re.ASCII)
 _CONTEXT_KEY_RE = re.compile(r"[A-Za-z0-9:_/.@-]{1,256}")
 
 # When not None, replaces the AWS endpoints. Keys: sts, iam, identitystore,
-# sso, imds. Tests set it so one fake server serves them all. Read at new().
+# sso, eks, imds. Tests set it so one fake server serves them all. Read at new().
 TEST_ENDPOINTS: dict[str, str] | None = None
 
 
@@ -207,6 +208,11 @@ class AWS(Integration):
                 description="what an implicitDeny (no matching statement) answers",
             ),
             Field(
+                name="eks_region",
+                validate=_match_re(_REGION_RE, "a region such as eu-west-1"),
+                description="region of the EKS clusters a kubernetes connection looks up through this connection (default: region)",
+            ),
+            Field(
                 name="session_name",
                 default="toolpass",
                 validate=_match_re(_SESSION_NAME_RE, "2-64 characters of [A-Za-z0-9+=,.@_-]"),
@@ -275,6 +281,8 @@ class AWS(Integration):
         iam_ep, iam_region = iam_endpoint(c.partition)
         c.iam = AWSClient(c.plain, _endpoint("iam", iam_ep), iam_region, "iam", c.account_creds)
         c.sts = AWSClient(c.plain, sts_endpoint, c.region, "sts", c.account_creds)
+        eks_region = s.get("eks_region") or c.region
+        c.eks = AWSClient(c.plain, _endpoint("eks", regional_endpoint(c.partition, "eks", eks_region)), eks_region, "eks", c.account_creds)
 
         if c.mode == "identity_center":
             ic_role = s.get("identity_center_role_arn")
@@ -441,6 +449,9 @@ def _role_name(arn: str) -> str:
 class AWSConnection(IdentityResolver, Connection):
     """One AWS account."""
 
+    # kubernetes_subject looks access entries up on a named EKS cluster.
+    kubernetes_needs_cluster = True
+
     def __init__(
         self,
         logger: Logger,
@@ -464,6 +475,7 @@ class AWSConnection(IdentityResolver, Connection):
         self.ic_creds: CachedProvider | None = None  # the Identity Center role
         self.iam: AWSClient
         self.sts: AWSClient
+        self.eks: AWSClient
         self.identity_store: AWSClient | None = None
         self.sso_admin: AWSClient | None = None
         self.identity_store_id = ""
@@ -642,6 +654,75 @@ class AWSConnection(IdentityResolver, Connection):
         if out.decision not in ("allowed", "explicitDeny", "implicitDeny"):
             raise errorf(Code.UPSTREAM_ERROR, "SimulatePrincipalPolicy returned an unknown decision")
         return out
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """The Kubernetes groups (and username) EKS gives the user on
+        cluster: the email's IAM principals, as resolve_identity finds them,
+        each looked up with eks:DescribeAccessEntry. The groups of every
+        matching entry are unioned; the entry's username is used only when
+        exactly one entry matched. found is False when no principal has an
+        entry, so the kubernetes connection can try aws-auth next."""
+        validate_eks_cluster(cluster)
+        principals, missing = self._kubernetes_principals(ctx, email)
+        tried = tuple(p.arn for p in principals)
+        if not principals:
+            text = f"{email} has no IAM principal in account {self.account_id} to look up on EKS cluster {cluster}"
+            if missing:
+                text += f" (permission set {', '.join(missing)} is assigned but its role is not provisioned)"
+            raise user_not_found(text)
+        found: list[EKSMapping] = []
+        for p in principals:
+            m = self._access_entry(ctx, cluster, p.arn)
+            if m is not None:
+                found.append(m)
+        if not found:
+            return KubernetesSubject(found=False, mapped=True, tried=tried)
+        username, groups = merge_mappings(found, email)
+        return KubernetesSubject(username=username, groups=groups, mapped=True, tried=tried)
+
+    def _kubernetes_principals(self, ctx: Context, email: str) -> tuple[list[Principal], list[str]]:
+        if self.mode == "static_map":
+            assert self.role_map is not None
+            email = go_trim_space(email)
+            if email == "" or "@" not in email:
+                raise user_not_found(f"{go_quote(email)} is not an email address")
+            arns = self.role_map.lookup(email, [])
+            if not arns:
+                raise user_not_found(f"{email} is not in role_map_file")
+            return [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns], []
+        ident = self.resolve_identity(ctx, User(email=email))
+        if ident.attr("user_status") == "DISABLED":
+            raise user_not_found(f"{ident.display} is disabled in IAM Identity Center")
+        nat = ident.native if isinstance(ident.native, Native) else None
+        if nat is None:
+            raise errorf(Code.UPSTREAM_ERROR, "identity carries no principals")
+        return list(nat.principals), list(nat.missing)
+
+    def _access_entry(self, ctx: Context, cluster: str, arn: str) -> EKSMapping | None:
+        """The access entry of the principal, tried by its ARN and then by
+        the ARN without its IAM path; None when neither has one."""
+        for cand in arn_candidates(arn):
+            path = "/clusters/" + rest_label(cluster) + "/access-entries/" + rest_label(cand)
+            try:
+                out = jsonx.obj(self.eks.rest_get(ctx, path))
+                entry = jsonx.o(out, "accessEntry")
+                username = jsonx.s(entry, "username")
+                groups = tuple(jsonx.strs(entry, "kubernetesGroups"))
+            except Exception as e:
+                code = aws_code(e)
+                if code == "ResourceNotFoundException":
+                    # No entry for this ARN (or no such cluster: a cluster
+                    # name typo reads as "no entry" for everyone).
+                    continue
+                if code == "InvalidRequestException":
+                    # UNVERIFIED: a cluster whose authenticationMode is
+                    # CONFIG_MAP has no access entries and is understood to
+                    # answer InvalidRequestException; aws-auth may still map
+                    # the principal.
+                    return None
+                raise classified(e, "DescribeAccessEntry") from e
+            return EKSMapping(principal=arn, username=username, groups=groups)
+        return None
 
     def probe(self, ctx: Context) -> ProbeResult:
         """Verify the assumed role, list the account's Identity Center roles

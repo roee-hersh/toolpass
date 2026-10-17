@@ -163,6 +163,10 @@ class FakeAWS:
         self.first_result = ""  # an extra result for the same action, before the real one
         self.sim_err = ""  # IAM error code returned by SimulatePrincipalPolicy
         self.fail = ""  # "throttle" or "denied": every signed call fails
+        # EKS: cluster name -> principal ARN -> access entry.
+        self.eks_entries: dict[str, dict[str, dict[str, Any]]] = {}
+        self.eks_calls: list[str] = []  # the principal ARNs looked up
+        self.eks_err = ""  # EKS error code returned by DescribeAccessEntry
 
     def user(self, email: str) -> ICUserRec | None:
         u = self.users.get(email)
@@ -212,6 +216,9 @@ class FakeAWS:
             xml_error(w, 403, "MissingAuthenticationToken", "unsigned")
             return
         akid, region, service = credential_scope(auth)
+        if r.method == "GET" and r.path.startswith("/clusters/"):
+            self.serve_eks(w, r, akid, region, service)
+            return
         target = r.header.get("X-Amz-Target")
         if target != "":
             if self.fail == "throttle":
@@ -245,6 +252,46 @@ class FakeAWS:
         for k, vs in urllib.parse.parse_qs(r.body.decode(), keep_blank_values=True).items():
             form.setdefault(k, []).extend(vs)
         self.serve_query(w, form, akid, region, service, r.header.get("X-Amz-Security-Token") != "")
+
+    def serve_eks(self, w: Any, r: Any, akid: str, region: str, service: str) -> None:
+        """eks:DescribeAccessEntry (REST-JSON)."""
+        w.header().set("Content-Type", "application/json")
+
+        def err(status: int, code: str) -> None:
+            w.header().set("x-amzn-ErrorType", code + ":http://internal.amazon.com/coral/com.amazon.eks/")
+            w.write_header(status)
+            w.write(json.dumps({"message": code}))
+
+        if service != "eks" or akid != TARGET_KEY or r.header.get("X-Amz-Security-Token") == "" or region != "eu-west-1":
+            err(403, "AccessDeniedException")
+            return
+        if self.fail == "throttle":
+            err(429, "ThrottlingException")
+            return
+        if self.fail == "denied":
+            err(403, "AccessDeniedException")
+            return
+        # The ARN must arrive as one escaped segment.
+        parts = r.raw_path.split("/")
+        if len(parts) != 5 or parts[1] != "clusters" or parts[3] != "access-entries":
+            err(400, "InvalidRequestException")
+            return
+        cluster, principal = urllib.parse.unquote(parts[2]), urllib.parse.unquote(parts[4])
+        self.eks_calls.append(principal)
+        if self.eks_err != "":
+            err(400, self.eks_err)
+            return
+        entries = self.eks_entries.get(cluster)
+        if entries is None:
+            err(404, "ResourceNotFoundException")
+            return
+        e = entries.get(principal)
+        if e is None:
+            err(404, "ResourceNotFoundException")
+            return
+        out = {"clusterName": cluster, "principalArn": principal, "type": "STANDARD", "accessEntryArn": "arn:aws:eks:eu-west-1:" + ACCT + ":access-entry/x"}
+        out.update(e)
+        _encode(w, {"accessEntry": out})
 
     def serve_query(self, w: Any, form: dict[str, list[str]], akid: str, region: str, service: str, has_token: bool) -> None:
         def get(k: str) -> str:
@@ -505,7 +552,9 @@ def aws_spec_options() -> SpecOptions:
 
 
 def aws_spec() -> Any:
-    return any_spec(spec_from_env("aws-sts"), spec_from_env("aws-iam"), spec_from_env("aws-identitystore"), spec_from_env("aws-sso-admin"))
+    return any_spec(
+        spec_from_env("aws-sts"), spec_from_env("aws-iam"), spec_from_env("aws-identitystore"), spec_from_env("aws-sso-admin"), spec_from_env("aws-eks")
+    )
 
 
 class Env:
@@ -549,7 +598,9 @@ def setup(servers: list[itest.Server], monkeypatch: pytest.MonkeyPatch) -> Setup
         srv.handle("", "/*", f.handler)
         e = Env(srv, f)
         deps, _ = itest.deps(srv, now=e.clock)
-        monkeypatch.setattr(aws_mod, "TEST_ENDPOINTS", {"sts": srv.url, "iam": srv.url, "identitystore": srv.url, "sso": srv.url, "imds": srv.url})
+        monkeypatch.setattr(
+            aws_mod, "TEST_ENDPOINTS", {"sts": srv.url, "iam": srv.url, "identitystore": srv.url, "sso": srv.url, "eks": srv.url, "imds": srv.url}
+        )
         v = {
             "account_id": ACCT,
             "role_arn": ROLE_ARN,

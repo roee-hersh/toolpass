@@ -16,7 +16,7 @@ from tests import harness as itest
 from tests.harness.spec import SpecOptions, any_spec, spec_from_env
 from toolpass.authx.jwt import RS256, Header, decode_jwt_claims, sign_jwt, verify
 from toolpass.core.context import background
-from toolpass.core.decision import Code, Decision, to_decision
+from toolpass.core.decision import Code, Decision, ToolpassError, to_decision
 from toolpass.core.integration import Connection, Identity, User, find_action, validate_fields
 from toolpass.core.secret import Secret
 from toolpass.core.secret import literal as secret_literal
@@ -29,6 +29,7 @@ from toolpass.integrations.googleworkspace.googleworkspace import (
     MODE_KEYLESS,
     SCOPE_CALENDAR,
     SCOPE_DIRECTORY_GROUP,
+    SCOPE_DIRECTORY_GROUP_READ,
     SCOPE_DIRECTORY_USER,
     SCOPE_DRIVE,
     SCOPE_GMAIL_SETTINGS,
@@ -147,6 +148,26 @@ class FakeGoogle:
         }
         self.group_members = {"eng@example.com": ["dana@example.com"]}  # group -> members; missing group -> 404
         self.no_is_member = False  # hasMember answers {} without isMember
+        # groups.list?userKey: user -> direct groups, served one per page.
+        self.user_groups: dict[str, list[str]] = {"dana@example.com": ["eng@example.com", "Ops@Example.com", "all@example.com"]}
+        # members.list of a group: the GROUP members.
+        self.group_groups: dict[str, list[str]] = {
+            "gke-security-groups@example.com": ["eng@example.com", "ops@example.com", "unrelated@example.com", "user:all@example.com"]
+        }
+
+    def _page(self, w: itest.ResponseWriter, key: str, emails: list[str], token: str) -> None:
+        """One item per page. A "user:" prefix makes a USER member."""
+        i = int(token) if token else 0
+        items = []
+        for n, e in enumerate(emails[i : i + 1]):
+            item = {"email": e.removeprefix("user:"), "id": str(n)}
+            if key == "members":
+                item["type"] = "USER" if e.startswith("user:") else "GROUP"
+            items.append(item)
+        body: dict[str, Any] = {key: items}
+        if i + 1 < len(emails):
+            body["nextPageToken"] = str(i + 1)
+        write(w, body)
 
     def token_url(self, srv: itest.Server) -> str:
         return srv.url + "/token"
@@ -266,6 +287,22 @@ class FakeGoogle:
             if u.archived is not None:
                 body["archived"] = u.archived
             write(w, body)
+        elif p == "/admin/directory/v1/groups":
+            if not need(ADMIN_EMAIL, SCOPE_DIRECTORY_GROUP_READ):
+                return
+            if q("maxResults") != "200" or q("customer") != "":
+                self.errors.append(f"groups.list query {r.query}")
+            self._page(w, "groups", self.user_groups.get(q("userKey"), []), q("pageToken"))
+        elif p.startswith("/admin/directory/v1/groups/") and p.endswith("/members"):
+            if not need(ADMIN_EMAIL, SCOPE_DIRECTORY_GROUP_READ):
+                return
+            if q("maxResults") != "200":
+                self.errors.append(f"members.list query {r.query}")
+            group = p.removeprefix("/admin/directory/v1/groups/").removesuffix("/members")
+            if group not in self.group_groups:
+                api_err(w, 404, "notFound")
+                return
+            self._page(w, "members", self.group_groups[group], q("pageToken"))
         elif p.startswith("/admin/directory/v1/groups/"):
             if not need(ADMIN_EMAIL, SCOPE_DIRECTORY_GROUP):
                 return
@@ -1065,3 +1102,48 @@ def test_actions_listed() -> None:
     for a in ACTION_LIST:
         assert find_action(GoogleWorkspace(), a.name) is not None, f"{a.name} not found"
     assert len(GoogleWorkspace().actions()) == 18, f"{len(GoogleWorkspace().actions())} actions"
+
+
+# -- kubernetes groups_connection ----------------------------------------------------
+
+
+def test_kubernetes_subject_lists_group_emails(env: Env) -> None:
+    _, f, c = env.setup()
+    assert isinstance(c, GoogleWorkspaceConnection)
+    s = c.kubernetes_subject(background(), "D.Alias@example.com", "")
+    # Every page read, emails lower-cased (GKE RBAC names groups by email),
+    # the username left to the kubernetes connection's template.
+    assert s.groups == ("eng@example.com", "ops@example.com", "all@example.com"), s
+    assert s.username == "" and not s.mapped and s.found
+    # The lookup is by the primary email, as the admin, with the group scope.
+    assert f.minted.get((ADMIN_EMAIL, SCOPE_DIRECTORY_GROUP_READ)) == 1
+    assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ()
+
+
+def test_kubernetes_subject_gke_security_group(env: Env) -> None:
+    _, f, c = env.setup({"gke_security_group": "gke-security-groups@example.com"})
+    assert isinstance(c, GoogleWorkspaceConnection)
+    s = c.kubernetes_subject(background(), "dana@example.com", "")
+    assert s.groups == ("eng@example.com", "ops@example.com"), "all@example.com is not under gke-security-groups"
+    f.group_groups.clear()
+    with pytest.raises(ToolpassError) as ei:
+        c.kubernetes_subject(background(), "dana@example.com", "")
+    assert ei.value.code == Code.INVALID_REQUEST and "gke_security_group" in ei.value.text
+
+
+def test_kubernetes_subject_unknown_and_inactive_users(env: Env) -> None:
+    _, _, c = env.setup()
+    assert isinstance(c, GoogleWorkspaceConnection)
+    for email, want in (("nobody@example.com", "no Workspace account"), ("sus@example.com", "suspended"), ("arch@example.com", "archived")):
+        with pytest.raises(ToolpassError) as ei:
+            c.kubernetes_subject(background(), email, "")
+        assert ei.value.code == Code.USER_NOT_FOUND and want in ei.value.text, ei.value
+
+
+def test_kubernetes_subject_scope_not_delegated(env: Env) -> None:
+    _, f, c = env.setup()
+    assert isinstance(c, GoogleWorkspaceConnection)
+    f.bad_grant[ADMIN_EMAIL] = True
+    with pytest.raises(ToolpassError) as ei:
+        c.kubernetes_subject(background(), "dana@example.com", "")
+    assert ei.value.code != Code.USER_NOT_FOUND, "a delegation failure must not read as no account"

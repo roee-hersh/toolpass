@@ -13,7 +13,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from toolpass.core.catalog import Action, Resource, validate_action_name
 from toolpass.core.context import Context
@@ -35,6 +35,8 @@ __all__ = [
     "Field",
     "Identity",
     "Integration",
+    "KubernetesSubject",
+    "KubernetesSubjectSource",
     "ProbeResult",
     "Registry",
     "Settings",
@@ -43,6 +45,8 @@ __all__ = [
     "credential_field",
     "find_action",
     "is_loopback_host",
+    "ref_integrations",
+    "ref_text",
     "url_field",
     "validate_fields",
     "validate_https_url",
@@ -109,7 +113,9 @@ class Field:
     # Secret fields must be env: or file: references.
     secret: bool = False
     # Names another integration; the value must be the id of a connection
-    # of that integration. Used for keys ending in _connection.
+    # of that integration. Several integrations are separated by "|"
+    # ("aws|googleworkspace"): a connection of any of them is accepted.
+    # Used for keys ending in _connection.
     ref: str = ""
     # Applies when the key is absent.
     default: str = ""
@@ -132,8 +138,20 @@ def credential_field(required: bool, desc: str) -> Field:
 
 
 def connection_ref_field(name: str, integration: str, required: bool, desc: str) -> Field:
-    """A reference to a connection of another integration."""
+    """A reference to a connection of another integration, or of one of
+    several ("aws|okta")."""
     return Field(name=name, ref=integration, required=required, description=desc)
+
+
+def ref_integrations(ref: str) -> tuple[str, ...]:
+    """The integrations a Field.ref accepts, in declaration order."""
+    return tuple(p for p in ref.split("|") if p)
+
+
+def ref_text(ref: str) -> str:
+    """The accepted integrations for messages: "kubernetes", or "aws,
+    googleworkspace, okta" for several."""
+    return ", ".join(ref_integrations(ref))
 
 
 _FIELD_NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
@@ -155,6 +173,8 @@ def validate_fields(fields: list[Field] | tuple[Field, ...]) -> None:
             raise ValueError(f"field {go_quote(f.name)} is a common field and may not be redeclared")
         if f.ref and not f.name.endswith("_connection"):
             raise ValueError(f"field {go_quote(f.name)} references a connection so its name must end in _connection")
+        if f.ref and any(not _NAME_RE.fullmatch(n) for n in f.ref.split("|")):
+            raise ValueError(f"field {go_quote(f.name)}: ref must be integration names separated by |")
         if f.secret and f.default:
             raise ValueError(f"field {go_quote(f.name)}: secret fields cannot have defaults")
 
@@ -419,6 +439,49 @@ class Connection(ABC):
     @abstractmethod
     def probe(self, ctx: Context) -> ProbeResult:
         """Verify the credential and permissions without a user."""
+
+
+@dataclass(frozen=True)
+class KubernetesSubject:
+    """Who an email is to a Kubernetes API server, as a directory or cloud
+    account sees it: the groups a SubjectAccessReview should carry and,
+    when the source decides it, the username."""
+
+    # The Kubernetes username; "" leaves it to the kubernetes connection's
+    # username_template.
+    username: str = ""
+    groups: tuple[str, ...] = ()
+    # True when the groups are already Kubernetes group names (an EKS access
+    # entry's kubernetesGroups): the kubernetes connection sends them as
+    # they are, without group_prefix and without refusing system: names,
+    # which such a mapping may legitimately contain (system:masters). False
+    # when they are directory group names, treated like groups a caller sent.
+    mapped: bool = False
+    # False when the source knows the user but found no mapping to the
+    # cluster (an IAM role with no EKS access entry). The kubernetes
+    # connection may look further (aws-auth) before refusing the user.
+    found: bool = True
+    # The cloud principals that were looked up (IAM role and user ARNs),
+    # for messages and for further lookups.
+    tried: tuple[str, ...] = ()
+
+
+@runtime_checkable
+class KubernetesSubjectSource(Protocol):
+    """A connection that can name the Kubernetes subject for an email. A
+    kubernetes connection's groups_connection must implement it."""
+
+    # True when kubernetes_subject needs the cluster's name in the source
+    # (an EKS cluster name); the kubernetes connection then requires it.
+    kubernetes_needs_cluster: bool
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """The subject for email on cluster ("" when the source needs no
+        cluster name). Raise ToolpassError with USER_NOT_FOUND when the
+        source has no account for the email; any other exception means the
+        lookup itself failed. A user in no group is a subject with no
+        groups, not an error."""
+        ...
 
 
 class Integration(ABC):

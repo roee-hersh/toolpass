@@ -58,7 +58,8 @@ A role in `account_id` that trusts the starting credential (with `external_id` i
 
 For `static_map` the `Simulate` statement's resource must cover the roles named in the map file; for
 `iam_user` it must cover `arn:aws:iam::123456789012:user/*` and the role also needs `iam:GetUser`.
-`sts:GetCallerIdentity` is always allowed and is listed only for clarity.
+`sts:GetCallerIdentity` is always allowed and is listed only for clarity. A connection that a
+kubernetes connection uses for groups also needs `eks:DescribeAccessEntry` (below).
 
 ### The Identity Center role (`identity_center_role_arn`, mode `identity_center`)
 
@@ -110,6 +111,7 @@ by toolpass alone.
     context_entries: "aws:MultiFactorAuthPresent=boolean:true;aws:SourceIp=ip:10.0.0.1"   # optional
     implicit_deny_as: deny                        # deny (default) or unknown
     session_name: toolpass                        # optional
+    eks_region: eu-west-1                         # optional: EKS clusters' region, default region
 ```
 
 | Key | Meaning |
@@ -129,12 +131,14 @@ by toolpass alone.
 | `context_entries` | condition keys for the simulation: `key=type:value;key=type:value`; types `string`, `stringList` (comma-separated values), `numeric`, `boolean`, `ip`, `binary`, `date` |
 | `implicit_deny_as` | what "no statement matched" (and, for `identity_center`, "no permission set assigned") answers: `deny` (default) or `unknown` |
 | `session_name` | `RoleSessionName`, default `toolpass` |
+| `eks_region` | region of the EKS clusters a kubernetes connection looks up through this connection; default `region` |
 
 Endpoints: STS `https://sts.<region>.amazonaws.com`, IAM `https://iam.amazonaws.com` (signed for
 `us-east-1`; `iam.us-gov.amazonaws.com` for GovCloud), Identity Store
 `https://identitystore.<identity_center_region>.amazonaws.com` (JSON 1.1, `X-Amz-Target:
 AWSIdentityStore.<Op>`), SSO Admin `https://sso.<identity_center_region>.amazonaws.com` (JSON 1.1,
-`SWBExternalService.<Op>`). Every call is a SigV4-signed POST.
+`SWBExternalService.<Op>`), EKS `https://eks.<eks_region>.amazonaws.com` (REST-JSON). Every call is a
+SigV4-signed POST, except the EKS `GET`.
 
 ### Identity modes
 
@@ -276,9 +280,41 @@ The simulation covers identity-based policies, permissions boundaries and SCPs. 
 
 `iam:SimulatePrincipalPolicy` discloses permissions of other principals to whoever holds `role_arn`.
 
+## EKS access entries
+
+A [kubernetes](kubernetes.md#eks) connection with `groups_connection` set to this connection and
+`eks_cluster` set asks it for the Kubernetes groups of a user who sent none. toolpass resolves the
+email to IAM principals by `identity_mode`, as for a check (in `static_map` only the rows for the
+email itself, since no groups were sent), then calls `eks:DescribeAccessEntry`
+(`GET /clusters/{name}/access-entries/{principalArn}`) for each principal ARN, first as it is, then
+with its IAM path removed. The `kubernetesGroups` of every matching entry are unioned. The entry's
+`username` is used only when exactly one entry matched.
+
+The account role (`role_arn`) needs:
+
+```json
+{
+  "Sid": "EKSAccessEntries",
+  "Effect": "Allow",
+  "Action": "eks:DescribeAccessEntry",
+  "Resource": "arn:aws:eks:eu-west-1:123456789012:access-entry/prod/*"
+}
+```
+
+A disabled Identity Center user, an email with no principal in the account and a principal with no
+entry answer `user_not_found`. A missing cluster reads as "no entry" (`ResourceNotFoundException`),
+so check `eks_cluster` with one user you know has access. A cluster in `CONFIG_MAP` authentication
+mode has no access entries; set `eks_aws_auth` on the kubernetes connection for those.
+
 ## Unverified
 
 Marked `# UNVERIFIED:` in the code:
+
+- That EKS matches an `AWSReservedSSO_*` role's access entry by the ARN without its
+  `/aws-reserved/sso.amazonaws.com/[<region>/]` path; toolpass tries the full ARN first and then the
+  short one.
+- That `DescribeAccessEntry` answers `InvalidRequestException` on a cluster whose authentication mode
+  is `CONFIG_MAP`; toolpass reads that as "no access entry".
 
 - `identitystore:DescribeUser` returning a `UserStatus` field; when present and `DISABLED` the user is
   denied every action, otherwise the field is ignored.
@@ -296,7 +332,10 @@ Marked `# UNVERIFIED:` in the code:
 ## Test
 
 Unit tests run against one fake server that serves STS, IAM (Query/XML), Identity Store and SSO Admin
-(JSON 1.1 by `X-Amz-Target`) and IMDSv2, checking the SigV4 credential scope of every call. There is no
+(JSON 1.1 by `X-Amz-Target`), EKS `DescribeAccessEntry` (REST-JSON) and IMDSv2, checking the SigV4
+credential scope of every call, and validating every request against the botocore models (`aws-eks`
+included) when `TOOLPASS_SPECS_DIR` is set. The REST signature (the escaped ARN label escaped again in
+the canonical URI) is compared with one botocore produced. There is no
 live test; after configuring, run `toolpass probe` and one check for a user you know is allowed.
 
 `tests/integrations/aws/test_routes.py` holds the route table to the botocore models of IAM, STS, S3,

@@ -33,6 +33,7 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
     username_template: "oidc:{email}"          # optional, default {email}
     group_prefix: "oidc:"                      # optional
     add_authenticated_group: "true"            # optional, default true
+    groups_connection: okta-main               # optional: where groups come from when the caller sends none
 ```
 
 | Key | Meaning |
@@ -42,16 +43,85 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
 | `username_template` | How the API server names your users. Placeholders `{email}`, `{local}`, `{domain}`. Must contain `{email}` or `{local}`. A name that comes out starting with `system:` (Kubernetes' own ServiceAccounts and components) is refused (`invalid_request`). `{local}` drops the domain, so it suits a single-domain directory |
 | `group_prefix` | Prefix the API server puts on groups from your identity provider. Without it a caller group starting with `system:` is rejected (`invalid_request`), since it would name a built-in group such as `system:masters` |
 | `add_authenticated_group` | Also send `system:authenticated`, as the API server would for any logged-in user |
+| `groups_connection` | The id of an `aws`, `googleworkspace`, `microsoft365`, `okta` or `fake` connection that names the user's groups when the caller sends none. See [Groups from the email](#groups-from-the-email) |
+| `eks_cluster` | The EKS cluster name. Required when `groups_connection` is an `aws` connection, refused otherwise |
+| `eks_aws_auth` | `true` also reads the `kube-system/aws-auth` ConfigMap for principals with no access entry (default `false`; needs one more RBAC rule, below) |
 
 toolpass has no user directory to consult. The Kubernetes username is a pure transform of the email, so
 the template must match the API server's `--oidc-username-prefix` / `--oidc-username-claim` flags or its
 structured authentication config. A wrong template silently denies everyone. Run one check for a user
 you know is allowed after configuring.
 
-Groups come from the caller's `groups` field. toolpass cannot look them up, so every holder of the API
-key can assert any group. Set `group_prefix` to match your identity provider; then a caller's value can
-never name a group the API server reserves. Without a prefix, groups starting with `system:` are
-rejected with `invalid_request` rather than sent.
+Groups come from the caller's `groups` field, or, when the caller sends none and the connection sets
+`groups_connection`, from that connection (next section). Kubernetes has no user directory: a
+review sent with no groups is evaluated for a user in no group, so on a cluster that grants access
+through groups every such check is a false deny. Caller-sent groups always win, so an existing caller
+sees no change. Every holder of the API key can assert any group in the `groups` field. Set
+`group_prefix` to match your identity provider; then a caller's value can never name a group the API
+server reserves. Without a prefix, groups starting with `system:` are rejected with
+`invalid_request` rather than sent.
+
+## Groups from the email
+
+With `groups_connection` set, toolpass asks that connection for the user's groups whenever the
+caller sends none, so the email alone is enough:
+
+| `groups_connection` names | What toolpass sends | Fits |
+|---|---|---|
+| [`aws`](aws.md) (with `eks_cluster`) | the `kubernetesGroups` of the EKS access entries of the user's IAM principals (the Identity Center roles of their permission sets, their IAM user, or their `role_map_file` roles), unioned; the entry's `username` when exactly one entry matched | EKS |
+| [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours) | GKE with Google Groups for RBAC |
+| [`microsoft365`](microsoft365.md) | the object ids of the user's Entra groups, lower-cased, transitive | AKS with Entra ID integration |
+| [`okta`](okta.md) | the names of the user's Okta groups | an API server whose OIDC groups claim comes from Okta |
+| `fake` | the `groups` field of the fake connection | tests |
+
+Directory groups (Google, Entra, Okta) are treated exactly like groups a caller sent: `group_prefix`
+is put in front, and without a prefix a group starting with `system:` is refused. EKS access entries
+are different: their `kubernetesGroups` are Kubernetes group names the cluster admin chose, so they
+are sent as they are, with no prefix, and `system:masters` is allowed. A username a source names
+replaces `username_template`; a username starting with `system:` is refused either way.
+
+A user the source does not know, a suspended or disabled one, and (EKS) an IAM principal with no
+access entry are answered `user_not_found`, a deny, naming the principals that were tried. A
+directory user in no group is checked by username alone.
+
+### EKS
+
+```yaml
+  - id: aws-prod
+    integration: aws
+    # ... as in aws.md; eks_region if the cluster is not in `region`
+  - id: k8s-eks-prod
+    integration: kubernetes
+    url: https://ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com
+    ca_file: /etc/toolpass/ca/eks-prod.pem
+    credential: file:/secrets/eks-prod-token
+    groups_connection: aws-prod
+    eks_cluster: prod
+    eks_aws_auth: "true"      # optional: clusters still mapping users in aws-auth
+```
+
+The aws connection's account role needs `eks:DescribeAccessEntry` on the cluster (see
+[aws](aws.md#eks-access-entries)). Each principal ARN is looked up as it is and then with its IAM
+path removed, since `AWSReservedSSO_*` roles have a path and EKS (UNVERIFIED for access entries,
+documented for aws-auth) matches them without it. In a username, `{{AccountID}}` is filled from the
+principal and `{{SessionName}}` / `{{SessionNameRaw}}` with the email (UNVERIFIED: the session name
+of an Identity Center role is taken to be the email, with `@` turned into `-` for `{{SessionName}}`);
+any other placeholder leaves the username to `username_template`.
+
+With `eks_aws_auth: "true"`, principals with no access entry are looked up in the `mapRoles` and
+`mapUsers` of the `kube-system/aws-auth` ConfigMap, read with toolpass's own ServiceAccount, which
+then needs one more rule, a Role in `kube-system`:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["aws-auth"]
+    verbs: ["get"]
+```
+
+`toolpass probe` accepts that rule without the over-privilege warning when `eks_aws_auth` is on, and
+warns when the ConfigMap is missing or unreadable.
 
 ## Resources
 
@@ -104,20 +174,30 @@ anything beyond that one rule, listing the extra verbs and resources.
 - Admission: ValidatingAdmissionPolicy, admission webhooks, Pod Security admission and resource quotas
   run after authorization and can still reject a request toolpass allowed.
 - A wrong `username_template` denies everyone silently.
-- Groups are whatever the caller sends. Only the `system:` namespace is protected, and only when
-  `group_prefix` is unset.
+- Groups are whatever the caller sends, or what `groups_connection` names when the caller sends none.
+  Only the `system:` namespace is protected, and only when `group_prefix` is unset.
 
 ## Managed clusters (UNVERIFIED)
 
-- **EKS**: with IAM authentication the username is the mapped IAM identity (`{{SessionName}}` style);
-  whether EKS access policies show up in a SubjectAccessReview is unverified. Prefer checking via groups.
-- **GKE**: the username is the Google email; groups are Google Group emails (with Google Groups for RBAC).
-  Whether IAM-granted access appears in a review is unverified.
-- **AKS** with Entra: the username is the UPN and groups are group object-id GUIDs, so callers must pass
-  GUIDs. Azure RBAC for Kubernetes is unverified.
+- **EKS**: set `groups_connection` to an aws connection and `eks_cluster` (above). EKS access
+  *policies* (`AmazonEKSClusterAdminPolicy` and the other AWS-managed policies associated with an
+  access entry) are evaluated by EKS's own authorizer, not RBAC; whether a SubjectAccessReview sees
+  them is unverified. A user whose access comes only from an access policy may be denied by toolpass
+  and allowed by the cluster. Give access through `kubernetesGroups` and RBAC bindings to be sure.
+- **GKE**: the username is the Google email; set `groups_connection` to a googleworkspace connection
+  with `gke_security_group`. Whether IAM-granted access (roles/container.*) appears in a review is
+  unverified.
+- **AKS** with Entra: the username is the UPN (set `username_template` to match); set
+  `groups_connection` to a microsoft365 connection for the group object ids. Azure RBAC for
+  Kubernetes is unverified.
 
 ## Test
 
-Unit tests run against a fake API server. `test/kind/run.sh` creates a kind cluster, applies
-`test/kind/toolpass-rbac.yaml` and `test/kind/fixtures.yaml`, and runs the end-to-end tests
-(`toolpass-py/tests/e2e`) against it.
+Unit tests run against a fake API server, including a groups source of every kind and the aws-auth
+fallback. `test/kind/run.sh` creates a kind cluster, applies `test/kind/toolpass-rbac.yaml` and
+`test/kind/fixtures.yaml`, and runs the end-to-end tests (`toolpass-py/tests/e2e`) against it: among
+them, a connection whose `groups_connection` is a fake directory putting dana in `platform-team`, so
+dana is allowed `deployment.create` with no groups sent (denied on the connection without one), and
+a mapped `system:masters` group that the real API server honours. The directory halves (EKS, Google,
+Entra, Okta) are tested against fakes, and against the vendors' API descriptions where one is
+fetched; none against a live account.

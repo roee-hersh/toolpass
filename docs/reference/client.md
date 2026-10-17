@@ -52,7 +52,7 @@ All five take `(user, connection, action, resource, groups=None, *, fresh=False)
 
 | Argument | Meaning |
 |---|---|
-| `groups` | A list of the user's groups, for systems that grant by group, such as Kubernetes |
+| `groups` | A list of the user's groups, for systems that grant by group, such as Kubernetes (a kubernetes connection with `groups_connection` looks them up when none are sent) |
 | `fresh` | Skip toolpass's caches and ask the system now ([fresh checks](api.md#fresh-checks)) |
 
 `check` never raises for a failed lookup: every failure is an `unknown` decision. With `remote`, a

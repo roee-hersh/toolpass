@@ -19,7 +19,7 @@ import yaml
 from toolpass.core import secret as secretmod
 from toolpass.core.duration import parse_duration_ns
 from toolpass.core.errors import go_quote, path_error_text
-from toolpass.core.integration import COMMON_FIELDS, Integration, Registry, Settings
+from toolpass.core.integration import COMMON_FIELDS, Integration, Registry, Settings, ref_integrations, ref_text
 from toolpass.core.secret import Secret
 
 __all__ = [
@@ -559,8 +559,8 @@ def _resolve(ld: _Loader_, pending: list[tuple[Settings, _Node, dict[str, str]]]
             if tp is None:
                 ld.errf(node, f"connection {go_quote(s.id)}: {fld} refers to unknown connection {go_quote(target)}")
                 continue
-            if tp[0].integration != want:
-                ld.errf(node, f"connection {go_quote(s.id)}: {fld} must name a {want} connection, but {go_quote(target)} is {tp[0].integration}")
+            if tp[0].integration not in ref_integrations(want):
+                ld.errf(node, f"connection {go_quote(s.id)}: {fld} must name a {ref_text(want)} connection, but {go_quote(target)} is {tp[0].integration}")
             if target == s.id:
                 ld.errf(node, f"connection {go_quote(s.id)}: {fld} refers to itself")
     if ld.errs:

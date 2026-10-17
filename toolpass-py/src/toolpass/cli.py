@@ -32,7 +32,7 @@ from toolpass.core.context import Context, background, with_cancel
 from toolpass.core.declog import open_log
 from toolpass.core.duration import parse_duration
 from toolpass.core.engine import EngineError, Options, Request, build
-from toolpass.core.integration import Registry, validate_https_url
+from toolpass.core.integration import Registry, ref_text, validate_https_url
 from toolpass.core.log import WARN, JSONHandler, Logger, TextHandler, go_json, parse_level
 from toolpass.integrations import registry as all_registry
 from toolpass.net import httpx
@@ -560,7 +560,7 @@ def catalog(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
         if f.secret:
             flags.append("secret: env:NAME or file:/path")
         if f.ref:
-            flags.append(f"id of a {f.ref} connection")
+            flags.append(f"id of a {ref_text(f.ref)} connection")
         if f.default:
             flags.append(f"default {f.default}")
         if f.enum:

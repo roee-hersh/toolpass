@@ -4,8 +4,8 @@ wrong path, method, missing required parameter or missing body field
 fails the test even though the fake would have answered anyway.
 
 Supported descriptions: OpenAPI 3 and Swagger 2 (JSON or YAML), Google
-API discovery documents, botocore service models (AWS Query and JSON
-protocols) and GraphQL schemas in SDL form (see graphql.py). Descriptions
+API discovery documents, botocore service models (AWS Query, JSON and
+REST-JSON protocols) and GraphQL schemas in SDL form (see graphql.py). Descriptions
 are loaded from $TOOLPASS_SPECS_DIR/<name>.spec; when the directory or
 file is absent validation is skipped and the test says so once.
 
@@ -744,11 +744,11 @@ class _Botocore:
     def __init__(self, name: str, doc: dict[str, Any]) -> None:
         meta = _m(doc.get("metadata"))
         self._name = name
-        self.protocol = as_string(meta.get("protocol"))  # "query" or "json"
+        self.protocol = as_string(meta.get("protocol"))  # "query", "json" or "rest-json"
         self.target_prefix = as_string(meta.get("targetPrefix"))
         self.ops: dict[str, dict[str, Any]] = {n: _m(op) for n, op in _m(doc.get("operations")).items()}
         self.shapes = _m(doc.get("shapes"))
-        if self.protocol not in ("query", "json"):
+        if self.protocol not in ("query", "json", "rest-json"):
             raise SpecError(f"{name}: unsupported protocol {go_quote(self.protocol)}")
 
     def name(self) -> str:
@@ -770,7 +770,58 @@ class _Botocore:
         inp = _m(self.ops.get(op_name, {}).get("input"))
         return _m(_m(self.shapes.get(as_string(inp.get("shape")))).get("members"))
 
+    def _validate_rest(self, r: SpecRequest, body: bytes) -> None:
+        """REST-JSON: the operation is the one whose HTTP method and
+        requestUri template match; uri members are path labels, querystring
+        members query parameters, the rest body members."""
+        segs = r.raw_path.split("/")
+        matched: list[tuple[str, dict[str, str]]] = []
+        for op_name, op in self.ops.items():
+            http = _m(op.get("http"))
+            if as_string(http.get("method")) != r.method:
+                continue
+            labels = _rest_match(as_string(http.get("requestUri")).split("?", 1)[0], segs)
+            if labels is not None:
+                matched.append((op_name, labels))
+        if not matched:
+            raise SpecError(f"{self._name}: no operation is {r.method} {r.raw_path}")
+        # A literal segment beats a label: prefer the template with the most
+        # literal segments matched (fewest labels).
+        op_name, labels = min(matched, key=lambda m: len(m[1]))
+        members = self._members(op_name)
+        query = r.query()
+        body_members: dict[str, Any] = {}
+        if body.strip():
+            try:
+                body_members = _json_doc(body)
+            except ValueError as e:
+                raise SpecError(f"{self._name}: {op_name} body is not JSON: {e}") from None
+        for name, m in members.items():
+            mm = _m(m)
+            loc, loc_name = as_string(mm.get("location")), as_string(mm.get("locationName")) or name
+            if loc == "uri" and labels.get(loc_name, "") == "":
+                if name in self._required_members(op_name):
+                    raise SpecError(f"{self._name}: {op_name} has an empty path label {go_quote(loc_name)}")
+        for name in self._required_members(op_name):
+            mm = _m(members.get(name))
+            loc, loc_name = as_string(mm.get("location")), as_string(mm.get("locationName")) or name
+            if loc == "querystring" and loc_name not in query:
+                raise SpecError(f"{self._name}: {op_name} lacks required query parameter {go_quote(loc_name)}")
+            if loc == "" and name not in body_members:
+                raise SpecError(f"{self._name}: {op_name} lacks required member {go_quote(name)}")
+        allowed_query = {as_string(_m(m).get("locationName")) or n for n, m in members.items() if as_string(_m(m).get("location")) == "querystring"}
+        for k in sorted(query):
+            if k not in allowed_query:
+                raise SpecError(f"{self._name}: {op_name} sends unknown query parameter {go_quote(k)}")
+        body_ok = {n for n, m in members.items() if as_string(_m(m).get("location")) == ""}
+        for k in body_members:
+            if k not in body_ok:
+                raise SpecError(f"{self._name}: {op_name} sends unknown member {go_quote(k)}")
+
     def validate(self, r: SpecRequest, body: bytes) -> None:
+        if self.protocol == "rest-json":
+            self._validate_rest(r, body)
+            return
         if r.method != "POST":
             raise SpecError(f"{self._name}: AWS calls are POST, got {r.method}")
         if self.protocol == "query":
@@ -816,6 +867,26 @@ class _Botocore:
             for k in m:
                 if k not in members:
                     raise SpecError(f"{self._name}: {op} sends unknown member {go_quote(k)}")
+
+
+def _rest_match(template: str, segs: list[str]) -> dict[str, str] | None:
+    """The decoded path labels when the escaped path segments match a
+    botocore requestUri template ("/clusters/{name}", "{key+}" greedy),
+    else None."""
+    tpl = template.split("/")
+    labels: dict[str, str] = {}
+    for i, t in enumerate(tpl):
+        if t.startswith("{") and t.endswith("+}"):
+            labels[t[1:-2]] = urllib.parse.unquote("/".join(segs[i:]))
+            return labels
+        if i >= len(segs):
+            return None
+        if t.startswith("{") and t.endswith("}"):
+            labels[t[1:-1]] = urllib.parse.unquote(segs[i])
+            continue
+        if t != segs[i]:
+            return None
+    return labels if len(tpl) == len(segs) else None
 
 
 # -- several descriptions ----------------------------------------------------------

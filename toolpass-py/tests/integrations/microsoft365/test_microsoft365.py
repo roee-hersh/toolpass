@@ -19,7 +19,7 @@ from tests import harness as itest
 from tests.harness.spec import SpecOptions, spec_from_env
 from toolpass.authx.jwt import PS256, cert_thumbprint_sha256, decode_jwt_claims, verify
 from toolpass.core.context import background
-from toolpass.core.decision import Code, Decision, to_decision
+from toolpass.core.decision import Code, Decision, ToolpassError, to_decision
 from toolpass.core.integration import Connection, Identity, User, find_action, validate_fields
 from toolpass.core.secret import literal as secret_literal
 from toolpass.integrations.microsoft365 import Microsoft365, Microsoft365Connection
@@ -224,6 +224,19 @@ class FakeGraph:
             if q("$select") != USER_SELECT:
                 self.errors.append(f"user lookup without select: {r.query}")
             write(w, self.user_json(u))
+        elif seg[0] == "users" and len(seg) == 3 and seg[2] == "getMemberGroups":
+            try:
+                body = json.loads(r.body)
+            except ValueError:
+                body = None
+            if not isinstance(body, dict) or not isinstance(body.get("securityEnabledOnly"), bool):
+                graph_err(w, 400, "Request_BadRequest")
+                return
+            if seg[1] not in self.users:
+                graph_err(w, 404, "Request_ResourceNotFound")
+                return
+            # Graph returns the ids as stored; one is upper-cased here.
+            write(w, {"value": [g.upper() if i == 0 else g for i, g in enumerate(self.groups.get(seg[1], []))]})
         elif seg[0] == "users" and len(seg) == 3 and seg[2] == "checkMemberGroups":
             try:
                 group_ids = json.loads(r.body).get("groupIds") or []
@@ -1204,3 +1217,29 @@ def test_actions_listed() -> None:
     for a in ACTION_LIST:
         assert find_action(Microsoft365(), a.name) is not None, f"{a.name} not found"
     assert len(Microsoft365().actions()) == 18, f"{len(Microsoft365().actions())} actions"
+
+
+# -- kubernetes groups_connection ----------------------------------------------------
+
+
+def test_kubernetes_subject_member_group_ids(env: Env) -> None:
+    srv, f, c = env.setup()
+    assert isinstance(c, Microsoft365Connection)
+    f.groups[DANA_ID] = [GROUP_A, GROUP_B, GROUP_A.upper()]
+    s = c.kubernetes_subject(background(), "dana@example.com", "")
+    # Lower-cased object ids, once each: what AKS's Entra RBAC binds to.
+    assert s.groups == (GROUP_A, GROUP_B), s
+    assert s.username == "" and not s.mapped and s.found
+    last = srv.last_call()
+    assert last.method == "POST" and last.path == "/v1.0/users/" + DANA_ID + "/getMemberGroups", f"{last.method} {last.path}"
+    assert last.json() == {"securityEnabledOnly": False}
+    assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ()
+
+
+def test_kubernetes_subject_unknown_and_disabled(env: Env) -> None:
+    _, _, c = env.setup()
+    assert isinstance(c, Microsoft365Connection)
+    for email, want in (("nobody@example.com", "no Entra user"), ("off@example.com", "disabled")):
+        with pytest.raises(ToolpassError) as ei:
+            c.kubernetes_subject(background(), email, "")
+        assert ei.value.code == Code.USER_NOT_FOUND and want in ei.value.text, ei.value

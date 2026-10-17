@@ -36,6 +36,7 @@ fetch aws-iam           https://raw.githubusercontent.com/boto/botocore/develop/
 fetch aws-sts           https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/sts/2011-06-15/service-2.json
 fetch aws-identitystore https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/identitystore/2020-06-15/service-2.json
 fetch aws-sso-admin     https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/sso-admin/2020-07-20/service-2.json
+fetch aws-eks           https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/eks/2017-11-01/service-2.json
 fetch aws-s3            https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json
 fetch aws-lambda        https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/lambda/2015-03-31/service-2.json
 fetch aws-secretsmanager https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/secretsmanager/2017-10-17/service-2.json
