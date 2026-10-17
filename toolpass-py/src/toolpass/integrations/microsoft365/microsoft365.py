@@ -46,6 +46,7 @@ from toolpass.core.integration import (
     Field,
     Identity,
     Integration,
+    KubernetesSubject,
     ProbeResult,
     Settings,
     User,
@@ -912,6 +913,39 @@ class Microsoft365Connection(Connection):
                 f"no permission on {what} is granted to {who} or a group they belong to; its organization-wide sharing link is not usable by guest accounts"
             )
         return denied(f"no permission on {what} is granted to {who} or a group they belong to")
+
+    # -- kubernetes groups --
+
+    # kubernetes_subject needs no cluster name.
+    kubernetes_needs_cluster = False
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """The user's groups as AKS's Entra integration names them: the
+        object ids, lower-cased, of every group the user belongs to directly
+        or transitively (getMemberGroups). The username stays the kubernetes
+        connection's username_template. UNVERIFIED: AKS puts the same ids in
+        the token's groups claim, and a user in more than 200 groups gets a
+        token with an overage claim instead, which AKS resolves itself."""
+        ident = self.resolve_identity(ctx, User(email=email))
+        if ident.attr("account_enabled") == "false":
+            raise user_not_found(f"{ident.display} is disabled in Entra ID")
+        resp = self._do(
+            ctx,
+            httpx.Request(
+                method="POST", path="/v1.0/users/" + httpx.path_escape(ident.id) + "/getMemberGroups", json={"securityEnabledOnly": False}, idempotent=True
+            ),
+            _resource_not_visible("user " + ident.id),
+        )
+        try:
+            values = jsonx.strs(jsonx.obj(resp.json()), "value")
+        except (ValueError, RecursionError) as e:
+            raise wrap_error(Code.UPSTREAM_ERROR, e, "Graph returned an unreadable getMemberGroups response") from e
+        groups: list[str] = []
+        for g in values:
+            g = go_lower(g)
+            if g != "" and g not in groups:
+                groups.append(g)
+        return KubernetesSubject(groups=tuple(groups))
 
     # -- probe --
 

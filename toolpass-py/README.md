@@ -190,7 +190,7 @@ is refused.
 
 `permission_check` asks `Toolpass`, the permission engine in this package, whether the session's
 user may perform the action, live, in the system that owns the resource (GitHub, Jira, Kubernetes,
-AWS, and 17 more). It works with `Toolpass.from_config(...)` in-process or `Toolpass.remote(...)`
+AWS, and 18 more). It works with `Toolpass.from_config(...)` in-process or `Toolpass.remote(...)`
 against a toolpass server. Any callable that returns `AuthDecision`, `True` or `False` can be the
 authorizer instead. The engine also works on its own:
 [permission checks on their own](#permission-checks-on-their-own), below.
@@ -263,9 +263,9 @@ Permission checks for AI agents and bots, answered live by the system they act i
 Before your agent acts for a user (delete a Jira issue, push to a repository, scale a deployment),
 ask toolpass whether that user may do it. toolpass asks the system that owns the resource, live,
 with its own read-only credential, and answers `allow`, `deny` or `unknown`. It only checks; it
-never performs the action. Twenty-one systems are supported: Kubernetes, Argo CD, GitHub, GitLab,
+never performs the action. Twenty-two systems are supported: Kubernetes, Argo CD, GitHub, GitLab,
 Bitbucket, Jira, Confluence, Slack, Datadog, PagerDuty, AWS, Google Workspace, Google Cloud,
-Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear and Zendesk.
+Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear, Zendesk and Okta.
 
 ```sh
 pip install toolpass

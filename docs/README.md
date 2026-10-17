@@ -50,7 +50,7 @@ agents in any language call.
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,
   and `gateway off`.
-- [Integrations](integrations/README.md): the twenty-one systems, their status, and one page each.
+- [Integrations](integrations/README.md): the twenty-two systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.
 - [Helm chart values](../deploy/helm/toolpass/README.md).

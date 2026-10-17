@@ -45,6 +45,11 @@ class SigV4Signer:
     region: str
     service: str
     now: Callable[[], float] | None = None
+    # The REST protocols (rest-json: EKS) escape every path segment of the
+    # already escaped path once more, as botocore and the Go SDK do; a
+    # label such as an ARN sent as arn%3Aaws%3A... is signed as
+    # arn%253Aaws%253A.... False keeps the single encoding.
+    double_escape: bool = False
 
     def sign(self, req: PreparedRequest, body: bytes | None, creds: AWSCredentials) -> None:
         """Add X-Amz-Date, X-Amz-Security-Token (when present) and
@@ -64,7 +69,7 @@ class SigV4Signer:
             amz_date = req.headers.get("X-Amz-Date")
         if creds.session_token:
             req.headers.set("X-Amz-Security-Token", creds.session_token)
-        canon, signed = _canonical_request(req, _payload_hash(body))
+        canon, signed = _canonical_request(req, _payload_hash(body), self.double_escape)
         date = amz_date[:8]
         scope = f"{date}/{self.region}/{self.service}/aws4_request"
         sts = _string_to_sign(amz_date, scope, canon)
@@ -73,7 +78,7 @@ class SigV4Signer:
 
     def canonical_request(self, req: PreparedRequest, body: bytes | None) -> tuple[str, str]:
         """For the test-suite comparison."""
-        return _canonical_request(req, _payload_hash(body))
+        return _canonical_request(req, _payload_hash(body), self.double_escape)
 
     def string_to_sign(self, amz_date: str, canon: str) -> str:
         """For the test-suite comparison."""
@@ -90,7 +95,7 @@ def _payload_hash(body: bytes | None) -> str:
 _SKIP = frozenset({"authorization", "content-length", "user-agent", "expect"})
 
 
-def _canonical_request(req: PreparedRequest, payload_hash: str) -> tuple[str, str]:
+def _canonical_request(req: PreparedRequest, payload_hash: str, double_escape: bool = False) -> tuple[str, str]:
     # Lower-case names, trimmed and space-collapsed values, sorted. Host is
     # always included. Values of repeated headers are joined by ",".
     names: dict[str, list[str]] = {}
@@ -108,7 +113,8 @@ def _canonical_request(req: PreparedRequest, payload_hash: str) -> tuple[str, st
     keys = sorted(names)
     ch = "".join(f"{k}:{','.join(names[k])}\n" for k in keys)
     signed = ";".join(keys)
-    canon = f"{req.method}\n{_canonical_uri(_escaped_path(u.path))}\n{_canonical_query(u.query)}\n{ch}\n{signed}\n{payload_hash}"
+    uri = _double_escaped_uri(_escaped_path(u.path)) if double_escape else _canonical_uri(_escaped_path(u.path))
+    canon = f"{req.method}\n{uri}\n{_canonical_query(u.query)}\n{ch}\n{signed}\n{payload_hash}"
     return canon, signed
 
 
@@ -164,6 +170,19 @@ def _canonical_uri(p: str) -> str:
     out = "/".join(segs)
     if out == "":
         out = "/"
+    if not out.startswith("/"):
+        out = "/" + out
+    return out
+
+
+def _double_escaped_uri(p: str) -> str:
+    """The canonical URI of a REST request: the escaped path with dot
+    segments and duplicate slashes removed, each segment escaped again
+    without decoding it first."""
+    if p == "":
+        p = "/"
+    p = _remove_dot_segments(p)
+    out = "/".join(_aws_escape(s) for s in p.split("/"))
     if not out.startswith("/"):
         out = "/" + out
     return out

@@ -104,7 +104,7 @@ you can run with no network and no model:
 | **Argument validation** | Arguments match their type hints and your validators before anything else runs |
 | **Scope limits** | The tool can only touch what it declares (`repo: acme/gitops-*`), whoever asks |
 | **Action limits** | A loop or an injection cannot run 200 deletes in one session |
-| **Permission checks** | The call runs only if the person asking may do it, answered live by Jira, GitHub, Kubernetes, AWS and 17 more |
+| **Permission checks** | The call runs only if the person asking may do it, answered live by Jira, GitHub, Kubernetes, AWS and 18 more |
 | **Untrusted-input check** | An action whose arguments repeat injected text from an email or web page is refused |
 | **Fencing** | Untrusted text reaches the model in a nonce-tagged block marked as data |
 | **Exfiltration guard** | Once a session has read private data and seen untrusted content, nothing leaves |
@@ -150,7 +150,7 @@ def delete_issue(key: str) -> str: ...
 The [permission engine](docs/permission-checks.md) answers for
 Kubernetes, Argo CD, GitHub, GitLab, Bitbucket, Jira, Confluence, Slack, Datadog, PagerDuty, AWS,
 Google Workspace, Google Cloud, Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure,
-Linear and Zendesk, with no policy language and no synced copy of anyone's permissions. It also
+Linear, Zendesk and Okta, with no policy language and no synced copy of anyone's permissions. It also
 runs on its own, in-process or as a server, with adapters for nine agent frameworks.
 
 ## Install
@@ -172,7 +172,7 @@ installing (pip warns that its scripts folder is not on PATH, common on Windows)
 - Sessions and limits live in memory, in one process.
 - A permission check and the action after it are not atomic.
 - Observed actions cover HTTP from urllib3, the standard library, httpx and aiohttp, with route
-  tables for all 21 integrations (`toolpass routes`); gRPC and threads an SDK starts are not seen. A
+  tables for all 22 integrations (`toolpass routes`); gRPC and threads an SDK starts are not seen. A
   write a table cannot map exactly is refused; such a read goes through unchecked, marked untrusted.
 
 ## Repository

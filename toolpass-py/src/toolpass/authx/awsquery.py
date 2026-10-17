@@ -1,5 +1,6 @@
-"""AWS service calls: Query protocol (IAM, STS; form POST, XML replies) and
-JSON 1.1 (Identity Store), signed with SigV4, and the errors they return."""
+"""AWS service calls: Query protocol (IAM, STS; form POST, XML replies),
+JSON 1.1 (Identity Store) and REST-JSON GETs (EKS), signed with SigV4, and
+the errors they return."""
 
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ __all__ = [
     "iam_endpoint",
     "query_form",
     "regional_endpoint",
+    "rest_label",
 ]
 
 
@@ -194,17 +196,42 @@ class AWSClient:
         except ValueError as e:
             raise ValueError(f"decode {target} response: {e}") from e
 
-    def _send(self, ctx: Context, body: bytes, hdr: Mapping[str, str]) -> httpx.Response:
+    def rest_get(self, ctx: Context, path: str) -> Any:
+        """A REST-JSON GET (EKS); path is already escaped, each label with
+        rest_label. Returns the decoded reply (None for an empty body).
+        Errors are AWSError (decoded as JSON 1.1 errors are: the
+        x-amzn-ErrorType header, then the body) or transport errors."""
+        resp = self._send(ctx, b"", {"Accept": "application/json"}, method="GET", path=path, double_escape=True)
+        if resp.status >= 400:
+            raise decode_json_error(resp.status, resp.header, resp.body)
+        if not resp.body.strip():
+            return None
+        try:
+            return go_json_loads(resp.body)
+        except ValueError as e:
+            raise ValueError(f"decode {self.service} GET response: {e}") from e
+
+    def _send(self, ctx: Context, body: bytes, hdr: Mapping[str, str], method: str = "POST", path: str = "/", double_escape: bool = False) -> httpx.Response:
         creds = self.creds.credentials(ctx)
         client = copy.copy(self.http)
-        signer = SigV4Signer(self.region, self.service)
+        signer = SigV4Signer(self.region, self.service, double_escape=double_escape)
 
         def auth(_: Context, r: httpx.PreparedRequest) -> None:
             signer.sign(r, body, creds)
 
         client.auth = auth
         # Every call toolpass makes is a read, so it may be retried.
-        return client.do(ctx, httpx.Request(method="POST", path=self.endpoint + "/", body=body, header=dict(hdr), idempotent=True, accept_4xx=True))
+        return client.do(ctx, httpx.Request(method=method, path=self.endpoint + path, body=body, header=dict(hdr), idempotent=True, accept_4xx=True))
+
+
+_LABEL_SAFE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~")
+
+
+def rest_label(v: str) -> str:
+    """One URI label of a REST request, escaped as botocore escapes a
+    non-greedy label: everything but unreserved characters, "/" and ":"
+    included, so an ARN stays one path segment."""
+    return "".join(c if c in _LABEL_SAFE else "".join(f"%{b:02X}" for b in c.encode("utf-8")) for c in v)
 
 
 def dns_suffix(partition: str) -> str:

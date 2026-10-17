@@ -47,7 +47,7 @@ everything it remembers is a short-lived cache in memory.
 ## Vocabulary
 
 - **Integration**: a product toolpass knows how to ask, such as `jira` or `kubernetes`. There are
-  [twenty-one](../integrations/README.md).
+  [twenty-two](../integrations/README.md).
 - **Connection**: one configured system of an integration, such as one Jira site or one cluster,
   with an `id` callers use (`jira-main`, `k8s-prod-eu`).
 - **Action**: what the caller asks about, named in the integration's own terms (`DELETE_ISSUES`,

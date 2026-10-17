@@ -17,7 +17,7 @@ from toolpass.core.decision import (
     user_ambiguous,
     user_not_found,
 )
-from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Identity, Integration, ProbeResult, Settings, User
+from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Identity, Integration, KubernetesSubject, ProbeResult, Settings, User
 
 
 class Fake(Integration):
@@ -28,6 +28,17 @@ class Fake(Integration):
         return [
             Field(name="users", description="comma-separated emails that exist and may read"),
             Field(name="admins", description="comma-separated emails allowed every action"),
+            Field(
+                name="groups",
+                validate=_validate_groups,
+                description="directory groups for kubernetes groups_connection: email=group,group;email=group",
+            ),
+            Field(
+                name="groups_mapped",
+                default="false",
+                enum=("true", "false"),
+                description="hand the groups to kubernetes as Kubernetes group names (as EKS access entries are)",
+            ),
             Field(
                 name="fail",
                 default="none",
@@ -45,18 +56,59 @@ class Fake(Integration):
 
     def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
         fail = s.get("fail")
-        return FakeConnection(_set(s.get("users")), _set(s.get("admins")), Code(fail) if fail not in ("", "none") else None)
+        c = FakeConnection(_set(s.get("users")), _set(s.get("admins")), Code(fail) if fail not in ("", "none") else None)
+        c.groups = _groups(s.get("groups"))
+        c.groups_mapped = s.bool("groups_mapped", False)
+        return c
 
 
 def _set(csv: str) -> frozenset[str]:
     return frozenset(p.strip().lower() for p in csv.split(",") if p.strip())
 
 
+def _groups(v: str) -> dict[str, tuple[str, ...]]:
+    """email=group,group;email=group -> {email: groups}."""
+    out: dict[str, tuple[str, ...]] = {}
+    for part in v.split(";"):
+        part = part.strip()
+        if part == "":
+            continue
+        email, sep, groups = part.partition("=")
+        email = email.strip().lower()
+        if not sep or email == "" or "@" not in email:
+            raise ValueError(f"groups entry {part!r} must be email=group,group")
+        if email in out:
+            raise ValueError(f"groups names {email} twice")
+        out[email] = tuple(g.strip() for g in groups.split(",") if g.strip())
+    return out
+
+
+def _validate_groups(v: str) -> None:
+    _groups(v)
+
+
 class FakeConnection(Connection):
+    # kubernetes_subject needs no cluster name.
+    kubernetes_needs_cluster = False
+
     def __init__(self, users: frozenset[str], admins: frozenset[str], fail: Code | None) -> None:
         self.users = users
         self.admins = admins
         self.fail = fail
+        self.groups: dict[str, tuple[str, ...]] = {}
+        self.groups_mapped = False
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """The groups listed for the email; a known user with none listed
+        is in no group; anyone else has no account."""
+        if self.fail is not None:
+            raise errorf(self.fail, "fake failure")
+        e = email.strip().lower()
+        if e in self.groups:
+            return KubernetesSubject(groups=self.groups[e], mapped=self.groups_mapped)
+        if e in self.users or e in self.admins:
+            return KubernetesSubject(mapped=self.groups_mapped)
+        raise user_not_found(f"no account for {email}")
 
     def resolve_identity(self, ctx: Context, u: User) -> Identity:
         """Known users and admins resolve; an email containing "ambiguous"

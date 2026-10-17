@@ -30,6 +30,16 @@ performs an action and nothing is persisted.
    `gmail.settings.basic` has **no read-only variant**: it can also change users' basic Gmail
    settings. Leave `enable_gmail_settings` off unless `mail.send_as` or `mail.delegate_access` are
    needed; with it off both actions are unknown, for the user's own mailbox too.
+
+   and, only when a [kubernetes](kubernetes.md#groups-from-the-email) connection uses this
+   connection as its `groups_connection`:
+
+   ```
+   https://www.googleapis.com/auth/admin.directory.group.readonly
+   ```
+
+   Listing a user's groups (`groups.list?userKey=`) needs it; `group.member.readonly` is not enough.
+   `toolpass probe` warns when it cannot be minted, saying it is needed only for that use.
 3. Make `admin_email` an admin whose custom role has only **Users > Read** and **Groups > Read**.
    A super admin works but is far more than toolpass needs.
 4. Enable the Admin SDK, Drive, Calendar and (optionally) Gmail APIs in the service account's
@@ -48,6 +58,7 @@ Signing with a service-account key needs `cryptography`: install `toolpass[crypt
     auth_mode: key                             # or keyless
     service_account_email: toolpass@proj.iam.gserviceaccount.com   # keyless only
     enable_gmail_settings: "false"             # optional
+    gke_security_group: gke-security-groups@example.com   # optional, kubernetes groups on GKE
 ```
 
 | Key | Meaning |
@@ -58,6 +69,7 @@ Signing with a service-account key needs `cryptography`: install `toolpass[crypt
 | `auth_mode` | `key` (default) signs the assertion with the key; `keyless` signs with the IAM Credentials API using the GCE/GKE identity |
 | `service_account_email` | the service account to sign as, `keyless` only |
 | `enable_gmail_settings` | `true` enables the Gmail settings calls (write-capable scope) |
+| `gke_security_group` | for a kubernetes `groups_connection` on GKE: only the user's groups that are members of this group count, as GKE's Google Groups for RBAC honours only groups in `gke-security-groups@<domain>` |
 | `token_url` | default `https://oauth2.googleapis.com/token` |
 | `api_url` | default `https://www.googleapis.com` |
 | `metadata_url` | default `http://metadata.google.internal`, `keyless` only |
@@ -209,9 +221,25 @@ every Gmail request is refused as unknown.
 - **Why Drive answered 404**: with reason `notFound` Drive does not distinguish "no access" from
   "does not exist", and toolpass answers deny for both.
 
+## Kubernetes groups
+
+As a kubernetes connection's `groups_connection`, the connection resolves the user as for a check
+(a suspended or archived user is `user_not_found`), lists the user's groups with
+`GET /admin/directory/v1/groups?userKey=<primary email>&maxResults=200` (every page) as
+`admin_email`, and returns their email addresses, lower-cased: the names GKE's Google Groups for
+RBAC binds to. With `gke_security_group` set it also lists that group's members
+(`GET /admin/directory/v1/groups/{group}/members`) and keeps only the user's groups that are
+`GROUP` members of it; that member list is reused for a minute across users. The Kubernetes
+username is the account's primary email, as GKE names the user, so an alias the caller sent
+still matches the user's RoleBindings.
+
 ## Unverified
 
 Each item is marked `# UNVERIFIED:` in the code.
+
+- `groups.list?userKey=` returns the groups the user is a direct member of. GKE also honours a
+  group the user reaches through nesting; such a group is missing from toolpass's list, which can
+  only deny.
 
 - The IAM Credentials `signJwt` request `{"payload": "<claims JSON>"}` and response
   `{"keyId", "signedJwt"}` shapes for `auth_mode: keyless`.

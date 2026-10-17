@@ -142,3 +142,27 @@ def parse_target(target: str) -> str:
     path from the URL string, and emulates Go's EscapedPath itself. No
     suite target carries a "#", which urlsplit would cut off.)"""
     return "https://example.amazonaws.com" + target
+
+
+def test_double_escaped_rest_path_matches_botocore() -> None:
+    """A REST-JSON request (EKS DescribeAccessEntry) signed the way
+    botocore 1.43 signs it: the escaped ARN label is escaped once more in
+    the canonical URI. The signature was captured from botocore."""
+    from toolpass.authx.awsquery import rest_label
+
+    arn = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_Dev_0123456789abcdef"
+    url = "https://eks.eu-west-1.amazonaws.com/clusters/prod/access-entries/" + rest_label(arn)
+    assert url.endswith("arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2Faws-reserved%2Fsso.amazonaws.com%2Feu-west-1%2FAWSReservedSSO_Dev_0123456789abcdef")
+    req = PreparedRequest(method="GET", url=url, headers=Headers({"X-Amz-Date": "20261017T203600Z"}), body=b"")
+    signer = SigV4Signer("eu-west-1", "eks", double_escape=True)
+    canon, _ = signer.canonical_request(req, b"")
+    assert canon.split("\n")[1] == "/clusters/prod/access-entries/" + rest_label(arn).replace("%", "%25")
+    signer.sign(req, b"", AWSCredentials("AKID", "SECRET", ""))
+    assert req.headers.get("Authorization") == (
+        "AWS4-HMAC-SHA256 Credential=AKID/20261017/eu-west-1/eks/aws4_request, SignedHeaders=host;x-amz-date, "
+        "Signature=b357ff87ff2fa57c2d615286017a2086376c225bb9b7617c4c38c90a1186a7fa"
+    )
+    # The single escaping the Query and JSON protocols use signs differently.
+    plain = PreparedRequest(method="GET", url=url, headers=Headers({"X-Amz-Date": "20261017T203600Z"}), body=b"")
+    SigV4Signer("eu-west-1", "eks").sign(plain, b"", AWSCredentials("AKID", "SECRET", ""))
+    assert plain.headers.get("Authorization") != req.headers.get("Authorization")
