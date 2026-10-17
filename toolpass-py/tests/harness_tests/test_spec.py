@@ -135,6 +135,38 @@ def test_botocore() -> None:
     assert validate(j, r, b"{}") is not None, "wrong target prefix accepted"
 
 
+BOTO_REST = """{"metadata": {"protocol": "rest-json"}, "operations": {
+  "DescribeAccessEntry": {"http": {"method": "GET", "requestUri": "/clusters/{name}/access-entries/{principalArn}"}, "input": {"shape": "D"}},
+  "ListAccessEntries": {"http": {"method": "GET", "requestUri": "/clusters/{name}/access-entries"}, "input": {"shape": "L"}},
+  "TagResource": {"http": {"method": "POST", "requestUri": "/tags/{resourceArn+}"}, "input": {"shape": "T"}}},
+ "shapes": {
+  "D": {"type": "structure", "required": ["clusterName", "principalArn"], "members": {
+    "clusterName": {"shape": "S", "location": "uri", "locationName": "name"},
+    "principalArn": {"shape": "S", "location": "uri", "locationName": "principalArn"}}},
+  "L": {"type": "structure", "required": ["clusterName"], "members": {
+    "clusterName": {"shape": "S", "location": "uri", "locationName": "name"},
+    "maxResults": {"shape": "S", "location": "querystring", "locationName": "maxResults"}}},
+  "T": {"type": "structure", "required": ["resourceArn", "tags"], "members": {
+    "resourceArn": {"shape": "S", "location": "uri", "locationName": "resourceArn"}, "tags": {"shape": "S"}}},
+  "S": {"type": "string"}}}"""
+
+
+def test_botocore_rest_json() -> None:
+    s = load_spec("eks", BOTO_REST.encode())
+    arn = "arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2FDev"
+    assert validate(s, req("GET", "https://eks/clusters/prod/access-entries/" + arn, ""), b"") is None
+    assert validate(s, req("GET", "https://eks/clusters/prod/access-entries", ""), b"") is None
+    assert validate(s, req("GET", "https://eks/clusters/prod/access-entries?maxResults=5", ""), b"") is None
+    assert validate(s, req("GET", "https://eks/clusters/prod/access-entries?bogus=1", ""), b"") is not None, "unknown query parameter accepted"
+    # An unescaped ARN spans segments and matches no operation.
+    assert validate(s, req("GET", "https://eks/clusters/prod/access-entries/arn:aws:iam::1:role/Dev", ""), b"") is not None, "a split label accepted"
+    assert validate(s, req("POST", "https://eks/clusters/prod/access-entries/" + arn, ""), b"") is not None, "wrong method accepted"
+    assert validate(s, req("GET", "https://eks/clusters//access-entries/" + arn, ""), b"") is not None, "empty label accepted"
+    assert validate(s, req("POST", "https://eks/tags/arn:aws:eks:x/y", "application/json"), b'{"tags":{}}') is None, "greedy label"
+    assert validate(s, req("POST", "https://eks/tags/arn:aws:eks:x/y", "application/json"), b"{}") is not None, "missing body member accepted"
+    assert validate(s, req("POST", "https://eks/tags/x", "application/json"), b'{"tags":{},"nope":1}') is not None, "unknown body member accepted"
+
+
 def _client_get(url: str) -> None:
     urllib.request.urlopen(urllib.request.Request(url), context=itest.test_ca().client_context(), timeout=5).read()
 

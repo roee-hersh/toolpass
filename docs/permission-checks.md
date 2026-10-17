@@ -46,7 +46,7 @@ for. When Dana asks it to delete a Jira issue or scale a deployment, the bot can
 could not. Copying every system's permission model into your own policy engine drifts out of date
 the day you write it. toolpass asks the source of truth instead: Kubernetes `SubjectAccessReview`,
 Jira's permission API, GitHub collaborator roles, AWS IAM policy simulation, and so on. One API,
-twenty-one systems, no synced copy of anyone's permissions.
+twenty-two systems, no synced copy of anyone's permissions.
 
 ```mermaid
 sequenceDiagram

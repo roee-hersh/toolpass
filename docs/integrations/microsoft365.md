@@ -15,7 +15,7 @@ admin consent. All of them are read-only:
 | Permission | Needed for | Note |
 |---|---|---|
 | `User.Read.All` | identity lookup, `user.active`, `mail.send_as_self` | |
-| `GroupMember.Read.All` | `group.member`, group grants on files | |
+| `GroupMember.Read.All` | `group.member`, group grants on files, a kubernetes connection's groups (`getMemberGroups`) | |
 | `Member.Read.Hidden` (optional) | hidden-membership groups | without it those groups are silently omitted from `checkMemberGroups`: `group.member` answers unknown for a hidden-membership group unless membership is proven, but group grants on files are still omitted, a **possible false deny** there |
 | `TeamMember.Read.All` | `team.*`, standard channels | |
 | `ChannelMember.Read.All` | private and shared channels | |
@@ -204,6 +204,15 @@ warns for any permission that allows writes (`.ReadWrite.`, `Mail.Send`, ...), f
 permissions that are missing, for the breadth of `Files.Read.All`, and when `Member.Read.Hidden` is
 absent. If it cannot read its own assignments it warns "could not verify permissions".
 
+## Kubernetes groups
+
+As a [kubernetes](kubernetes.md#groups-from-the-email) connection's `groups_connection`, the
+connection resolves the user as for a check (a disabled account is `user_not_found`), then calls
+`POST /v1.0/users/{id}/getMemberGroups` with `{"securityEnabledOnly": false}` and returns the object
+ids of every group the user belongs to, directly or transitively, lower-cased: the group names AKS's
+Entra ID integration binds to. `GroupMember.Read.All` covers it. The Kubernetes username stays the
+kubernetes connection's `username_template` (the UPN on AKS).
+
 ## What it cannot see
 
 - **Site collection administrators** and SharePoint site-level roles are not in item permissions.
@@ -247,6 +256,8 @@ Each item is marked `# UNVERIFIED:` in the code.
   Microsoft's sharing documentation states; such links are not credited to guests.
 - Whether an app can read its own service principal and `appRoleAssignments` with the permissions
   above; the probe warns instead of failing when it cannot.
+- That AKS names Entra groups by the same object ids `getMemberGroups` returns, overage claims
+  included (a user in more than 200 groups gets a token without them, which AKS resolves itself).
 - National cloud endpoints (`login.microsoftonline.us`, `graph.microsoft.us`,
   `dod-graph.microsoft.us`, `login.chinacloudapi.cn`, `microsoftgraph.chinacloudapi.cn`) are
   configured through `authority_url` and `url` but were not exercised.

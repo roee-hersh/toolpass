@@ -25,6 +25,7 @@ from toolpass.authx.oauth2 import TokenError, classify_token_error, jwt_bearer
 from toolpass.authx.token import Token, TokenSource
 from toolpass.authx.util import StructDict, go_json_marshal, go_sprint
 from toolpass.core import jsonx
+from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import (
@@ -47,6 +48,7 @@ from toolpass.core.integration import (
     Field,
     Identity,
     Integration,
+    KubernetesSubject,
     ProbeResult,
     Settings,
     User,
@@ -69,6 +71,7 @@ __all__ = [
     "MODE_KEYLESS",
     "SCOPE_CALENDAR",
     "SCOPE_DIRECTORY_GROUP",
+    "SCOPE_DIRECTORY_GROUP_READ",
     "SCOPE_DIRECTORY_USER",
     "SCOPE_DRIVE",
     "SCOPE_GMAIL_SETTINGS",
@@ -84,6 +87,10 @@ DEFAULT_IAM_CREDS = "https://iamcredentials.googleapis.com"
 
 SCOPE_DIRECTORY_USER = "https://www.googleapis.com/auth/admin.directory.user.readonly"
 SCOPE_DIRECTORY_GROUP = "https://www.googleapis.com/auth/admin.directory.group.member.readonly"
+# groups.list with userKey (a user's groups, for a kubernetes
+# groups_connection) needs the group scope; group.member.readonly is not
+# enough.
+SCOPE_DIRECTORY_GROUP_READ = "https://www.googleapis.com/auth/admin.directory.group.readonly"
 SCOPE_DRIVE = "https://www.googleapis.com/auth/drive.metadata.readonly"
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 SCOPE_GMAIL_SETTINGS = "https://www.googleapis.com/auth/gmail.settings.basic"
@@ -92,6 +99,10 @@ MODE_KEY = "key"
 MODE_KEYLESS = "keyless"
 
 ASSERTION_TTL = 3600.0
+# Bounds the groups.list and members.list pages read for one lookup.
+MAX_GROUP_PAGES = 50
+# How long the members of gke_security_group are reused across users.
+GKE_GROUPS_TTL = 60.0
 # Bounds the per-(sub, scope) token cache.
 MAX_SOURCES = 500
 
@@ -185,6 +196,11 @@ class GoogleWorkspace(Integration):
                 default="false",
                 enum=("true", "false"),
                 description="evaluate mail.send_as and mail.delegate_access with the gmail.settings.basic scope, which can also write settings",
+            ),
+            Field(
+                name="gke_security_group",
+                validate=validate_email,
+                description="kubernetes groups_connection on GKE: only groups that are members of this group (gke-security-groups@<domain>) count",
             ),
             Field(name="token_url", default=DEFAULT_TOKEN_URL, validate=validate_https_url, description="OAuth token endpoint"),
             Field(
@@ -350,10 +366,13 @@ class GoogleWorkspaceConnection(Connection):
         self.mode = s.get("auth_mode")
         self.sa_email = go_lower(s.get("service_account_email"))
         self.gmail = s.bool("enable_gmail_settings", False)
+        self.gke_security_group = go_lower(s.get("gke_security_group"))
         self.token_url = s.get("token_url").rstrip("/")
         self.metadata_url = s.get("metadata_url").rstrip("/")
         self.iam_creds_url = s.get("iamcredentials_url").rstrip("/")
         self.now: Callable[[], float] = d.now if d.now is not None else time.time
+        self.gke_groups: TTL[str, frozenset[str]] = TTL(1)
+        self.gke_groups.set_clock(self.now)
         # "config" or "key" (use the key's token_uri).
         self.token_url_from = "config"
         self._mu = threading.Lock()
@@ -756,6 +775,68 @@ class GoogleWorkspaceConnection(Connection):
             return allowed(f"{user} is a member of group {group} (directly or through nested groups)")
         return denied(f"{user} is not a member of group {group}")
 
+    # -- kubernetes groups --
+
+    # kubernetes_subject needs no cluster name.
+    kubernetes_needs_cluster = False
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """The user's groups as GKE's Google Groups for RBAC names them: the
+        group email addresses, from groups.list?userKey=<user> as the admin.
+        UNVERIFIED: groups.list returns direct memberships only, while GKE
+        also honours a group reached through nesting; such a group is
+        missing here, which can only deny. With gke_security_group set only
+        the groups that are direct members of it are kept, as GKE keeps
+        only groups nested in gke-security-groups; its members are reused
+        for a minute across users. The username is the primary email."""
+        ident = self.resolve_identity(ctx, User(email=email))
+        for state in ("suspended", "archived"):
+            if ident.attr(state) == "true":
+                raise user_not_found(f"{ident.id} is {state} in Google Workspace")
+        groups = self._list_emails(ctx, "/admin/directory/v1/groups", {"userKey": ident.id}, "groups")
+        if self.gke_security_group != "":
+            allowed_groups = self.gke_groups.do(ctx, self.gke_security_group, lambda ctx: (self._gke_groups(ctx), GKE_GROUPS_TTL))
+            groups = [g for g in groups if g in allowed_groups]
+        # GKE names the user by the account's primary address, which an
+        # alias the caller sent is not.
+        return KubernetesSubject(username=ident.id, groups=tuple(groups))
+
+    def _gke_groups(self, ctx: Context) -> frozenset[str]:
+        path = "/admin/directory/v1/groups/" + httpx.path_escape(self.gke_security_group) + "/members"
+        return frozenset(self._list_emails(ctx, path, {}, "members"))
+
+    def _list_emails(self, ctx: Context, path: str, q: Mapping[str, str], key: str) -> list[str]:
+        """The lower-cased email of every item of a paginated Directory
+        list, as the admin with the group scope. Of a members list only the
+        members of type GROUP count (members.list cannot filter by type)."""
+        out: list[str] = []
+        token = ""
+        for _ in range(MAX_GROUP_PAGES):
+            query = dict(q)
+            query["maxResults"] = "200"
+            if token != "":
+                query["pageToken"] = token
+
+            def decode(v: Any) -> tuple[list[str], str]:
+                d = jsonx.obj(v)
+                items = [jsonx.obj(x) for x in jsonx.arr(d, key)]
+                if key == "members":
+                    items = [x for x in items if jsonx.s(x, "type") == "GROUP"]
+                return [go_lower(jsonx.s(x, "email")) for x in items], jsonx.s(d, "nextPageToken")
+
+            try:
+                emails, token = self._get_json(ctx, self.admin, SCOPE_DIRECTORY_GROUP_READ, path, query, decode)
+            except Exception as err:  # noqa: BLE001 - Go: the error is decided on or classified
+                if httpx.status(err) == 404 and key == "members":
+                    raise errorf(Code.INVALID_REQUEST, f"gke_security_group {self.gke_security_group} is not a group") from None
+                raise classify(err)
+            for e in emails:
+                if e != "" and e not in out:
+                    out.append(e)
+            if token == "":
+                return out
+        raise errorf(Code.UPSTREAM_ERROR, f"the Directory returned more than {MAX_GROUP_PAGES} pages")
+
     # -- probe --
 
     def probe(self, ctx: Context) -> ProbeResult:
@@ -784,13 +865,15 @@ class GoogleWorkspaceConnection(Connection):
         if self.gmail:
             scopes.append(SCOPE_GMAIL_SETTINGS)
             warnings.append("enable_gmail_settings is on: gmail.settings.basic has no read-only variant and can change users' Gmail settings")
+        scopes.append(SCOPE_DIRECTORY_GROUP_READ)
         for sc in scopes:
             try:
                 self.source(self.admin, sc).get(ctx)
             except Exception as e:  # noqa: BLE001 - reported as a warning
+                why = " (needed only when a kubernetes connection uses this connection for groups)" if sc == SCOPE_DIRECTORY_GROUP_READ else ""
                 warnings.append(
                     f"scope {sc} could not be minted as {self.admin}: add it to the domain-wide delegation "
-                    f"allowlist ({self.token_error(e, self.admin).code.value})"
+                    f"allowlist ({self.token_error(e, self.admin).code.value}){why}"
                 )
         warnings.append("domain-wide delegation lets this credential act as any user within the allowlisted scopes; keep the key tightly held")
         return ProbeResult(summary=summary, warnings=tuple(warnings))

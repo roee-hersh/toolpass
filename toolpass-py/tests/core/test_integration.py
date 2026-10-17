@@ -281,3 +281,14 @@ def test_registry_error_text() -> None:
         Registry().register(Stub(actions=[Action(name="a"), Action(name="a")]))
     # A pattern action's name documents a shape and is not validated.
     Registry().register(Stub(actions=[Action(name="raw:<verb> <resource>", pattern=True)]))
+
+
+def test_ref_with_several_integrations() -> None:
+    from toolpass.core.integration import Field, ref_integrations, ref_text, validate_fields
+
+    validate_fields([Field(name="groups_connection", ref="aws|okta")])
+    assert ref_integrations("aws|okta") == ("aws", "okta") and ref_integrations("jira") == ("jira",)
+    assert ref_text("aws|okta|fake") == "aws, okta, fake"
+    for bad in ("aws||okta", "Aws", "aws|"):
+        with pytest.raises(ValueError, match="integration names separated by"):
+            validate_fields([Field(name="x_connection", ref=bad)])
