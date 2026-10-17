@@ -29,6 +29,7 @@ class FakeOkta:
             "bob@example.com": {"id": "00u2", "status": "PASSWORD_EXPIRED", "profile": {"login": "bob@example.com"}},
             "off@example.com": {"id": "00u3", "status": "SUSPENDED", "profile": {"login": "off@example.com"}},
             "gone@example.com": {"id": "00u4", "status": "DEPROVISIONED", "profile": {"login": "gone@example.com"}},
+            "new@example.com": {"id": "00u6", "status": "STAGED", "profile": {"login": "new@example.com"}},
             # Okta matches a login shortname: this lookup returns another user.
             "short@example.com": {"id": "00u5", "status": "ACTIVE", "profile": {"login": "short@other.example"}},
         }
@@ -136,7 +137,7 @@ def test_kubernetes_subject(setup: Setup) -> None:
     s = c.kubernetes_subject(background(), "dana@example.com", "")
     assert s.groups == ("Everyone", "platform-team", "viewers") and not s.mapped and s.username == "", s
     assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ("viewers",)
-    for email in ("off@example.com", "gone@example.com", "nobody@example.com"):
+    for email in ("off@example.com", "gone@example.com", "new@example.com", "nobody@example.com"):
         with pytest.raises(ToolpassError) as ei:
             c.kubernetes_subject(background(), email, "")
         assert ei.value.code == Code.USER_NOT_FOUND, (email, ei.value)
@@ -187,6 +188,8 @@ def test_routes() -> None:
     assert o.action == "group.member" and o.resource == "group:00gB" and o.effect == "read"
     assert obs("GET", "/api/v1/users/me").action is None
     assert obs("PUT", "/api/v1/groups/00gB/users/00u1") is None and ROUTES.is_unrouted("PUT", "/api/v1/groups/00gB/users/00u1")
+    # Reads are not "left out": an unrouted read passes, untrusted.
+    assert ROUTES.is_unrouted("GET", "/api/v1/users/00u1") is None
     for r in ROUTES.routes:
         if r.action is not None:
             assert find_action(INTEGRATION, r.action) is not None, r

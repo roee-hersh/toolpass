@@ -47,9 +47,10 @@ def test_identity_center_roles_matched_without_their_path(setup: Setup) -> None:
     assert s.mapped and s.found
     assert s.groups == ("viewers", "platform-team"), s
     assert s.username == "", "two entries matched, so no single username applies"
-    assert set(s.tried) == {ROLE_RO, ROLE_DEV}, s
+    assert s.tried == (), "every principal had an entry"
     # Each ARN tried as is first, then without the path.
-    assert e.f.eks_calls[:2] == [s.tried[0], arn_candidates(s.tried[0])[1]], e.f.eks_calls
+    first = e.f.eks_calls[0]
+    assert e.f.eks_calls[:2] == [first, arn_candidates(first)[1]], e.f.eks_calls
 
 
 def test_full_arn_entry_and_single_username(setup: Setup) -> None:  # noqa: F811
@@ -58,8 +59,10 @@ def test_full_arn_entry_and_single_username(setup: Setup) -> None:  # noqa: F811
     s = subject(e, "dana@example.com")
     assert s.groups == ("system:masters",)
     assert s.username == "sso:dana-example.com", s
-    # The full ARN matched, so the short form was not asked for it.
+    # The full ARN matched, so the short form was not asked for it; the
+    # Developer role has no entry and is left for aws-auth.
     assert RO_SHORT not in e.f.eks_calls
+    assert s.tried == (ROLE_DEV,), s
 
 
 def test_no_entry_is_not_found_with_the_principals(setup: Setup) -> None:  # noqa: F811
@@ -123,7 +126,7 @@ def test_static_map_mode(setup: Setup, tmp_path: object) -> None:  # noqa: F811
     e.f.eks_entries = {"prod": {"arn:aws:iam::123456789012:role/Deployer": {"kubernetesGroups": ["deployers"]}}}
     s = subject(e, "dana@example.com")
     # Only the email's own rows: group rows need groups the caller did not send.
-    assert s.groups == ("deployers",) and s.tried == ("arn:aws:iam::123456789012:role/Deployer",), s
+    assert s.groups == ("deployers",) and s.found and s.tried == (), s
     code, _ = code_of(e, "bob@example.com")
     assert code == Code.USER_NOT_FOUND
 

@@ -39,7 +39,9 @@ __all__ = ["INACTIVE", "PAGE_SIZE", "Okta", "OktaConnection", "parse_group"]
 PAGE_SIZE = 200
 
 # User statuses that cannot sign in: such a user is a member of nothing.
-INACTIVE = ("SUSPENDED", "DEPROVISIONED")
+# STAGED and PROVISIONED users were never activated (or have not set a
+# password yet).
+INACTIVE = ("STAGED", "PROVISIONED", "SUSPENDED", "DEPROVISIONED")
 
 # An Okta group name: anything printable, up to 255 characters.
 _GROUP_RE = re.compile(r"[^\x00-\x1f\x7f]{1,255}")

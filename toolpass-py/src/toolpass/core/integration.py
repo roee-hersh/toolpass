@@ -458,11 +458,11 @@ class KubernetesSubject:
     # when they are directory group names, treated like groups a caller sent.
     mapped: bool = False
     # False when the source knows the user but found no mapping to the
-    # cluster (an IAM role with no EKS access entry). The kubernetes
-    # connection may look further (aws-auth) before refusing the user.
+    # cluster (no IAM principal of the user has an EKS access entry). The
+    # kubernetes connection may look further (aws-auth) before refusing.
     found: bool = True
-    # The cloud principals that were looked up (IAM role and user ARNs),
-    # for messages and for further lookups.
+    # The cloud principals (IAM role and user ARNs) that were looked up and
+    # had no mapping, for messages and for further lookups (aws-auth).
     tried: tuple[str, ...] = ()
 
 

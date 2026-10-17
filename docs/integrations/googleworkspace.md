@@ -229,8 +229,9 @@ As a kubernetes connection's `groups_connection`, the connection resolves the us
 `admin_email`, and returns their email addresses, lower-cased: the names GKE's Google Groups for
 RBAC binds to. With `gke_security_group` set it also lists that group's members
 (`GET /admin/directory/v1/groups/{group}/members`) and keeps only the user's groups that are
-`GROUP` members of it. The Kubernetes username stays the kubernetes connection's
-`username_template`.
+`GROUP` members of it; that member list is reused for a minute across users. The Kubernetes
+username is the account's primary email, as GKE names the user, so an alias the caller sent
+still matches the user's RoleBindings.
 
 ## Unverified
 

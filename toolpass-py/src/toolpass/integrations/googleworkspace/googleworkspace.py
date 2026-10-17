@@ -25,6 +25,7 @@ from toolpass.authx.oauth2 import TokenError, classify_token_error, jwt_bearer
 from toolpass.authx.token import Token, TokenSource
 from toolpass.authx.util import StructDict, go_json_marshal, go_sprint
 from toolpass.core import jsonx
+from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import (
@@ -100,6 +101,8 @@ MODE_KEYLESS = "keyless"
 ASSERTION_TTL = 3600.0
 # Bounds the groups.list and members.list pages read for one lookup.
 MAX_GROUP_PAGES = 50
+# How long the members of gke_security_group are reused across users.
+GKE_GROUPS_TTL = 60.0
 # Bounds the per-(sub, scope) token cache.
 MAX_SOURCES = 500
 
@@ -368,6 +371,8 @@ class GoogleWorkspaceConnection(Connection):
         self.metadata_url = s.get("metadata_url").rstrip("/")
         self.iam_creds_url = s.get("iamcredentials_url").rstrip("/")
         self.now: Callable[[], float] = d.now if d.now is not None else time.time
+        self.gke_groups: TTL[str, frozenset[str]] = TTL(1)
+        self.gke_groups.set_clock(self.now)
         # "config" or "key" (use the key's token_uri).
         self.token_url_from = "config"
         self._mu = threading.Lock()
@@ -782,17 +787,23 @@ class GoogleWorkspaceConnection(Connection):
         also honours a group reached through nesting; such a group is
         missing here, which can only deny. With gke_security_group set only
         the groups that are direct members of it are kept, as GKE keeps
-        only groups nested in gke-security-groups."""
+        only groups nested in gke-security-groups; its members are reused
+        for a minute across users. The username is the primary email."""
         ident = self.resolve_identity(ctx, User(email=email))
         for state in ("suspended", "archived"):
             if ident.attr(state) == "true":
                 raise user_not_found(f"{ident.id} is {state} in Google Workspace")
         groups = self._list_emails(ctx, "/admin/directory/v1/groups", {"userKey": ident.id}, "groups")
         if self.gke_security_group != "":
-            allowed_groups = set(self._list_emails(ctx, "/admin/directory/v1/groups/" + httpx.path_escape(self.gke_security_group) + "/members", {}, "members"))
+            allowed_groups = self.gke_groups.do(ctx, self.gke_security_group, lambda ctx: (self._gke_groups(ctx), GKE_GROUPS_TTL))
             groups = [g for g in groups if g in allowed_groups]
-        # The username stays the kubernetes connection's username_template.
-        return KubernetesSubject(groups=tuple(groups))
+        # GKE names the user by the account's primary address, which an
+        # alias the caller sent is not.
+        return KubernetesSubject(username=ident.id, groups=tuple(groups))
+
+    def _gke_groups(self, ctx: Context) -> frozenset[str]:
+        path = "/admin/directory/v1/groups/" + httpx.path_escape(self.gke_security_group) + "/members"
+        return frozenset(self._list_emails(ctx, path, {}, "members"))
 
     def _list_emails(self, ctx: Context, path: str, q: Mapping[str, str], key: str) -> list[str]:
         """The lower-cased email of every item of a paginated Directory

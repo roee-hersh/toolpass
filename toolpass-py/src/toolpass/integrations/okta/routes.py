@@ -27,5 +27,5 @@ ROUTES = RouteTable(
         Route("GET", _G + "/apps", "group.member", _GROUP),
     ),
     claims=("/api/v1",),
-    unrouted={("*", "/api/v1/**"): _ADMIN},
+    unrouted={(m, "/api/v1/**"): _ADMIN for m in ("POST", "PUT", "PATCH", "DELETE")},
 )

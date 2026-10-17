@@ -53,7 +53,7 @@ another login, is `user_not_found`. Groups sent by the caller are ignored.
 |---|---|
 | the group (by name or id) is in the user's list | allow |
 | it is not | deny |
-| the user is `SUSPENDED` or `DEPROVISIONED` | deny |
+| the user is `STAGED`, `PROVISIONED`, `SUSPENDED` or `DEPROVISIONED` (cannot sign in) | deny |
 | no user has the email as login | deny (`user_not_found`) |
 | 401, 403 | unknown (`credential_rejected`) |
 | 429, 5xx, a next link off the org | unknown (`upstream_rate_limited`, `upstream_error`) |
@@ -61,14 +61,16 @@ another login, is `user_not_found`. Groups sent by the caller are ignored.
 ## Kubernetes groups
 
 As a kubernetes `groups_connection`, the connection returns the names of the user's groups, which is
-what an Okta OIDC app's groups claim carries. A suspended or deprovisioned user is `user_not_found`.
+what an Okta OIDC app's groups claim carries. A user who cannot sign in (staged, provisioned,
+suspended, deprovisioned) is `user_not_found`.
 The Kubernetes username stays the kubernetes connection's `username_template`.
 
 ## Requests a tool makes
 
 Reading a group (`GET /api/v1/groups/{id}`, its `users` and `apps`) is checked as `group.member` on
-that group by id. Every write (users, groups, memberships, apps, policies) is administration no
-action covers, and is refused. Other reads return what the agent's own token sees, untrusted.
+that group by id. Every write under `/api/v1` (users, groups, memberships, apps, policies) is
+administration no action covers, and is refused. Other reads return what the agent's own token
+sees, untrusted.
 
 ## What it cannot see
 

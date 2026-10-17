@@ -20,7 +20,7 @@ from typing import Any, TypeVar
 
 from toolpass.core import integration as integ
 from toolpass.core import jsonx
-from toolpass.core.cache import is_panic_type
+from toolpass.core.cache import TTL, is_panic_type
 from toolpass.core.catalog import Action, go_bytes, go_decode
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported, user_not_found, wrap_error
@@ -50,6 +50,8 @@ RESERVED_GROUP_PREFIX = "system:"
 GROUP_SOURCES = "aws|googleworkspace|microsoft365|okta|fake"
 
 AWS_AUTH_PATH = "/api/v1/namespaces/kube-system/configmaps/aws-auth"
+# How long the aws-auth ConfigMap is reused across users.
+AWS_AUTH_TTL = 60.0
 
 
 class Integration(integ.Integration):
@@ -147,6 +149,7 @@ class Integration(integ.Integration):
         ref = s.get("groups_connection")
         c.eks_cluster = s.get("eks_cluster")
         c.eks_aws_auth = s.bool("eks_aws_auth", False)
+        c.aws_auth_cache.set_clock(d.now)
         if ref != "":
             src = d.connection(ref)
             if not isinstance(src, integ.KubernetesSubjectSource):
@@ -195,6 +198,7 @@ class Connection(integ.Connection):
         self.groups_source: integ.KubernetesSubjectSource | None = None
         self.eks_cluster = ""
         self.eks_aws_auth = False
+        self.aws_auth_cache: TTL[str, dict[str, Any] | None] = TTL(1)
 
     def get(self, ctx: Context, path: str, decode: Callable[[Any], T] | None = None) -> T:
         """GET against the API server and decode the JSON response with
@@ -265,28 +269,40 @@ class Connection(integ.Connection):
 
     def _subject(self, ctx: Context, email: str) -> integ.KubernetesSubject:
         """Ask groups_connection, then (eks_aws_auth) the aws-auth ConfigMap
-        for the principals that have no access entry."""
+        for each principal that has no access entry, as EKS falls back to
+        aws-auth per principal on an API_AND_CONFIG_MAP cluster."""
         assert self.groups_source is not None
         subject = self.groups_source.kubernetes_subject(ctx, email, self.eks_cluster)
-        if subject.found:
-            return subject
         tried = ", ".join(subject.tried) or "none"
-        if self.eks_aws_auth:
+        if self.eks_aws_auth and subject.tried:
             from toolpass.integrations.aws.eks import match_aws_auth, merge_mappings
 
             data = self._aws_auth(ctx)
             try:
-                found = match_aws_auth(data, subject.tried) if data is not None else []
+                extra = match_aws_auth(data, subject.tried) if data is not None else []
             except ValueError as e:
                 raise errorf(Code.UPSTREAM_ERROR, str(e)) from None
-            if found:
-                username, groups = merge_mappings(found, email)
-                return integ.KubernetesSubject(username=username, groups=groups, mapped=True, tried=subject.tried)
-            raise user_not_found(f"{email} has no access entry on EKS cluster {self.eks_cluster} and no aws-auth mapping; tried {tried}")
+            if extra:
+                username, groups = merge_mappings(extra, email)
+                if subject.found:
+                    # Access entries and aws-auth rows together: more than one
+                    # mapping, so no single username applies.
+                    username = ""
+                    groups = tuple(dict.fromkeys((*subject.groups, *groups)))
+                rest = tuple(p for p in subject.tried if p not in {m.principal for m in extra})
+                return integ.KubernetesSubject(username=username, groups=groups, mapped=True, tried=rest)
+            if not subject.found:
+                raise user_not_found(f"{email} has no access entry on EKS cluster {self.eks_cluster} and no aws-auth mapping; tried {tried}")
+        if subject.found:
+            return subject
         raise user_not_found(f"{email} has no access entry on EKS cluster {self.eks_cluster}; tried {tried}")
 
     def _aws_auth(self, ctx: Context) -> dict[str, Any] | None:
-        """The aws-auth ConfigMap's data; None when the cluster has none."""
+        """The aws-auth ConfigMap's data, reused for a minute across users;
+        None when the cluster has none."""
+        return self.aws_auth_cache.do(ctx, "aws-auth", lambda ctx: (self._read_aws_auth(ctx), AWS_AUTH_TTL))
+
+    def _read_aws_auth(self, ctx: Context) -> dict[str, Any] | None:
         try:
             cm: Any = self.get(ctx, AWS_AUTH_PATH)
         except NotFoundError:

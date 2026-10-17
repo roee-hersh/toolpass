@@ -69,7 +69,7 @@ caller sends none, so the email alone is enough:
 | `groups_connection` names | What toolpass sends | Fits |
 |---|---|---|
 | [`aws`](aws.md) (with `eks_cluster`) | the `kubernetesGroups` of the EKS access entries of the user's IAM principals (the Identity Center roles of their permission sets, their IAM user, or their `role_map_file` roles), unioned; the entry's `username` when exactly one entry matched | EKS |
-| [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours) | GKE with Google Groups for RBAC |
+| [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours), and the account's primary email as the username | GKE with Google Groups for RBAC |
 | [`microsoft365`](microsoft365.md) | the object ids of the user's Entra groups, lower-cased, transitive | AKS with Entra ID integration |
 | [`okta`](okta.md) | the names of the user's Okta groups | an API server whose OIDC groups claim comes from Okta |
 | `fake` | the `groups` field of the fake connection | tests |
@@ -108,9 +108,15 @@ principal and `{{SessionName}}` / `{{SessionNameRaw}}` with the email (UNVERIFIE
 of an Identity Center role is taken to be the email, with `@` turned into `-` for `{{SessionName}}`);
 any other placeholder leaves the username to `username_template`.
 
-With `eks_aws_auth: "true"`, principals with no access entry are looked up in the `mapRoles` and
-`mapUsers` of the `kube-system/aws-auth` ConfigMap, read with toolpass's own ServiceAccount, which
-then needs one more rule, a Role in `kube-system`:
+A user with several principals (several permission sets) gets the groups of all their entries
+together. A real session is one role at a time, but RBAC only adds permissions, so one action is
+allowed for the union exactly when one of the roles allows it; only bindings to the per-role
+usernames are lost, since no single username applies then.
+
+With `eks_aws_auth: "true"`, each principal with no access entry is also looked up in the `mapRoles`
+and `mapUsers` of the `kube-system/aws-auth` ConfigMap, as EKS falls back to aws-auth per principal.
+The ConfigMap is read with toolpass's own ServiceAccount and reused for a minute across users; the
+ServiceAccount then needs one more rule, a Role in `kube-system`:
 
 ```yaml
 rules:

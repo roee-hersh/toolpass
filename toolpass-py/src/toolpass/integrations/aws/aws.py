@@ -660,25 +660,31 @@ class AWSConnection(IdentityResolver, Connection):
         cluster: the email's IAM principals, as resolve_identity finds them,
         each looked up with eks:DescribeAccessEntry. The groups of every
         matching entry are unioned; the entry's username is used only when
-        exactly one entry matched. found is False when no principal has an
-        entry, so the kubernetes connection can try aws-auth next."""
+        exactly one entry matched. A real session is one principal at a
+        time, but RBAC only adds permissions, so a single action is allowed
+        for the union exactly when some one principal's groups allow it
+        (bindings to the per-role usernames aside). found is False when no
+        principal has an entry; tried names the principals without one, so
+        the kubernetes connection can look them up in aws-auth."""
         validate_eks_cluster(cluster)
         principals, missing = self._kubernetes_principals(ctx, email)
-        tried = tuple(p.arn for p in principals)
         if not principals:
             text = f"{email} has no IAM principal in account {self.account_id} to look up on EKS cluster {cluster}"
             if missing:
                 text += f" (permission set {', '.join(missing)} is assigned but its role is not provisioned)"
             raise user_not_found(text)
         found: list[EKSMapping] = []
+        unmapped: list[str] = []
         for p in principals:
             m = self._access_entry(ctx, cluster, p.arn)
             if m is not None:
                 found.append(m)
+            else:
+                unmapped.append(p.arn)
         if not found:
-            return KubernetesSubject(found=False, mapped=True, tried=tried)
+            return KubernetesSubject(found=False, mapped=True, tried=tuple(unmapped))
         username, groups = merge_mappings(found, email)
-        return KubernetesSubject(username=username, groups=groups, mapped=True, tried=tried)
+        return KubernetesSubject(username=username, groups=groups, mapped=True, tried=tuple(unmapped))
 
     def _kubernetes_principals(self, ctx: Context, email: str) -> tuple[list[Principal], list[str]]:
         if self.mode == "static_map":

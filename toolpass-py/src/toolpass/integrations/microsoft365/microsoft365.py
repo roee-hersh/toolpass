@@ -914,8 +914,6 @@ class Microsoft365Connection(Connection):
             )
         return denied(f"no permission on {what} is granted to {who} or a group they belong to")
 
-    # -- probe --
-
     # -- kubernetes groups --
 
     # kubernetes_subject needs no cluster name.
@@ -948,6 +946,8 @@ class Microsoft365Connection(Connection):
             if g != "" and g not in groups:
                 groups.append(g)
         return KubernetesSubject(groups=tuple(groups))
+
+    # -- probe --
 
     def probe(self, ctx: Context) -> ProbeResult:
         """Fetch a token, read the organization and report the granted

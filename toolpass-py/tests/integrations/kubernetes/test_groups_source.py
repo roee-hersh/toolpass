@@ -193,6 +193,41 @@ def test_aws_auth_fallback(make: Make) -> None:
     itest.expect_code(check(c, dana, "secrets.read", "namespace:payments?name=x"), Code.ALLOWED)
 
 
+def test_aws_auth_for_the_principals_without_an_entry(make: Make) -> None:
+    """EKS falls back to aws-auth per principal: one role has an access
+    entry, the other only an aws-auth row; both count."""
+    sso = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Dev_0123456789abcdef"
+    src = Source(
+        {"dana@example.com": KubernetesSubject(username="dana-entry", groups=("viewers",), mapped=True, tried=(sso,))},
+        kubernetes_needs_cluster=True,
+    )
+    srv, _, c = make(src, {"eks_cluster": "prod", "eks_aws_auth": "true"}, aws_auth=AWS_AUTH)
+    itest.expect_code(check(c, dana, "deployment.create", "namespace:payments"), Code.ALLOWED)
+    spec = last_spec(srv)
+    # Two mappings, so no single username: the template's applies.
+    assert spec["user"] == "dana@example.com" and spec["groups"] == ["viewers", "platform-team", "system:authenticated"], spec
+    # Without eks_aws_auth the entry alone answers.
+    srv, _, c = make(src, {"eks_cluster": "prod"}, aws_auth=AWS_AUTH)
+    itest.expect_code(check(c, dana, "deployment.create", "namespace:payments"), Code.DENIED)
+    assert last_spec(srv)["user"] == "dana-entry"
+    assert not [x for x in srv.calls() if x.path == AWS_AUTH_PATH]
+
+
+def test_aws_auth_is_reused_across_users(make: Make) -> None:
+    role = ("arn:aws:iam::123456789012:role/AWSReservedSSO_Dev_0123456789abcdef",)
+    src = Source(
+        {
+            "dana@example.com": KubernetesSubject(found=False, mapped=True, tried=role),
+            "lee@example.com": KubernetesSubject(found=False, mapped=True, tried=role),
+        },
+        kubernetes_needs_cluster=True,
+    )
+    srv, _, c = make(src, {"eks_cluster": "prod", "eks_aws_auth": "true"}, aws_auth=AWS_AUTH)
+    itest.expect_code(check(c, dana, "deployment.create", "namespace:payments"), Code.ALLOWED)
+    itest.expect_code(check(c, User(email="lee@example.com"), "deployment.create", "namespace:payments"), Code.ALLOWED)
+    assert len([x for x in srv.calls() if x.path == AWS_AUTH_PATH]) == 1
+
+
 def test_aws_auth_user_row_and_no_match(make: Make) -> None:
     ops = User(email="ops@example.com")
     src = Source(

@@ -1112,9 +1112,9 @@ def test_kubernetes_subject_lists_group_emails(env: Env) -> None:
     assert isinstance(c, GoogleWorkspaceConnection)
     s = c.kubernetes_subject(background(), "D.Alias@example.com", "")
     # Every page read, emails lower-cased (GKE RBAC names groups by email),
-    # the username left to the kubernetes connection's template.
+    # the username the primary address, not the alias sent.
     assert s.groups == ("eng@example.com", "ops@example.com", "all@example.com"), s
-    assert s.username == "" and not s.mapped and s.found
+    assert s.username == "dana@example.com" and not s.mapped and s.found
     # The lookup is by the primary email, as the admin, with the group scope.
     assert f.minted.get((ADMIN_EMAIL, SCOPE_DIRECTORY_GROUP_READ)) == 1
     assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ()
@@ -1125,7 +1125,11 @@ def test_kubernetes_subject_gke_security_group(env: Env) -> None:
     assert isinstance(c, GoogleWorkspaceConnection)
     s = c.kubernetes_subject(background(), "dana@example.com", "")
     assert s.groups == ("eng@example.com", "ops@example.com"), "all@example.com is not under gke-security-groups"
+    # The security group's members are reused across users for a minute.
     f.group_groups.clear()
+    assert c.kubernetes_subject(background(), "dana@example.com", "").groups == ("eng@example.com", "ops@example.com")
+    _, f, c = env.setup({"gke_security_group": "missing@example.com"})
+    assert isinstance(c, GoogleWorkspaceConnection)
     with pytest.raises(ToolpassError) as ei:
         c.kubernetes_subject(background(), "dana@example.com", "")
     assert ei.value.code == Code.INVALID_REQUEST and "gke_security_group" in ei.value.text
