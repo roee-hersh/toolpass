@@ -5,7 +5,7 @@
 > The secure-tools API (`Toolkit`, `Session`) is alpha and may still change; the permission
 > engine (`Toolpass`, `guarded`, the adapters) is stable.
 
-The toolpass server's dashboard (`/dashboard/`) shows every run of your secured tools, from every
+The toolpass server's dashboard (`/dashboard/`) shows every run of your toolpass tools, from every
 agent that reports to it: who it ran for, and every request each run made inside GitHub, Jira,
 Slack and the other systems, allowed or refused. A toolkit whose permissions are remote reports
 with nothing else configured; `toolpass.otel` exports each run as a span. See
@@ -20,13 +20,13 @@ nothing; toolpass watches what it does:
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent, secured_tool
+from toolpass import Session, Toolpass, as_agent
 from github import Github                            # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # the github-acme connection, among others
 
 
-@secured_tool()
+@toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     gh = Github(auth=token)
     with as_agent():                                 # the agent may read on its own authority
@@ -50,7 +50,7 @@ from toolpass import permission_check
 toolpass.configure(credentials={"github-bot": github_token}, limits={"destructive": 3})
 
 
-@secured_tool(
+@toolpass.tool(
     effect="write",
     scope={"repo": "acme/gitops-*"},                 # the tool itself can touch nothing else
     authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}"),
@@ -62,13 +62,13 @@ def open_gitops_pr(repo: str, title: str, change: str, *, credential: str) -> st
 
 The decorated function keeps its signature (minus the injected `credential`), so LangChain,
 Pydantic AI, CrewAI, the OpenAI Agents SDK or your own loop can put their own `@tool` on top. No
-adapter is needed. Or let `secured_tool` apply it: `as_tool=` takes the framework's decorator and
+adapter is needed. Or let `toolpass.tool` apply it: `as_tool=` takes the framework's decorator and
 returns that framework's tool, with every check inside.
 
 ```python
 from langchain_core.tools import tool
 
-@secured_tool(effect="read", untrusted_output=True, as_tool=tool)
+@toolpass.tool(effect="read", untrusted_output=True, as_tool=tool)
 def read_email(id: str) -> str: ...
 ```
 
@@ -79,9 +79,9 @@ SDK's `function_tool` answers "An error occurred while running the tool"; LangCh
 why; [the guide](../docs/guides/intercepted-actions.md#through-the-frameworks) lists which
 frameworks need it.
 
-`toolpass.configure(...)` sets up the default behind `secured_tool`; tools declared earlier pick the
+`toolpass.configure(...)` sets up the default behind `toolpass.tool`; tools declared earlier pick the
 settings up at call time. A program that needs two sets of settings makes `Toolkit(...)` objects
-and uses their `secured_tool`.
+and uses their `toolpass.tool`.
 
 ## What a tool can declare
 
@@ -126,13 +126,13 @@ out. Tools already declare which of these they are, so the toolkit tracks the fi
 session and guards the third:
 
 ```python
-@secured_tool(effect="read", reads_private=True)
+@toolpass.tool(effect="read", reads_private=True)
 def read_customers() -> str: ...
 
-@secured_tool(effect="read", untrusted_output=True)
+@toolpass.tool(effect="read", untrusted_output=True)
 def read_email(id: str) -> str: ...
 
-@secured_tool(effect="write", sends_out=True)
+@toolpass.tool(effect="write", sends_out=True)
 def post_slack(channel: str, text: str) -> str: ...
 ```
 
@@ -198,7 +198,7 @@ authorizer instead. The engine also works on its own:
 ## Actions observed at the wire
 
 A declaration is a claim. toolpass can instead watch the requests a tool's body makes: every HTTP
-request that leaves the process while a secured tool runs (PyGithub, slack_sdk, boto3, raw
+request that leaves the process while a toolpass tool runs (PyGithub, slack_sdk, boto3, raw
 `requests`, anything on urllib3, the standard library, httpx or aiohttp) is mapped to the action and
 resource the permission engine answers for, checked, and refused before it is sent. The tool
 declares nothing:
@@ -206,7 +206,7 @@ declares nothing:
 ```python
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))
 
-@secured_tool()
+@toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     gh = Github(auth=token)
     with as_agent():                                       # the agent may read on its own authority
@@ -375,17 +375,18 @@ agent.invoke({"messages": [...]}, context=Context(user_id=user.email))
 # a graph you build yourself: guard.tool_node(tools) is a checked ToolNode
 ```
 
-**MCP servers** (any SDK): no adapter. `secured_tool` on the tool, and the user from the
+**MCP servers** (any SDK): no adapter. `toolpass.tool` on the tool, and the user from the
 `X-Toolpass-User` header the agent sends, which `session_from_header` reads on the server's
 Streamable HTTP app (this machine only, unless given `key=`); for stdio, a `Session` around `run()`
 for the user the host names. A server people sign in to with their own token takes the user from
 that token: `toolpass.configure(session=toolpass.mcp.token_session())`.
 
 ```python
-from toolpass import secured_tool, session_from_header
+import toolpass
+from toolpass import session_from_header
 
 @mcp.tool()
-@secured_tool()
+@toolpass.tool()
 def delete_issue(key: str) -> str: ...
 
 app = session_from_header(mcp.streamable_http_app())   # key=... when the agent runs elsewhere
