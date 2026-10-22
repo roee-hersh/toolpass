@@ -353,8 +353,11 @@ class Toolkit:
     data. ``entitlements`` is the recorded-actions file (or mapping) the
     tools are held to, and ``record`` the file a run writes them to.
     ``strict`` refuses a request to a host the toolkit does not know, and a
-    tool with no entitlements when a file is given. ``intercept=False``
-    turns the hook off for this toolkit.
+    tool with no entitlements when a file is given. ``act_as`` says whose
+    authority a request outside ``as_agent()`` and ``as_user()`` runs on:
+    ``user`` (the default) checks it against the session's user, ``agent``
+    does not. ``intercept=False`` turns the
+    hook off for this toolkit.
     """
 
     def __init__(
@@ -374,6 +377,7 @@ class Toolkit:
         entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
         record: str | os.PathLike[str] | None = None,
         strict: bool = False,
+        act_as: Literal["user", "agent"] = "user",
         intercept: bool = True,
     ) -> None:
         self._lenient = False  # the module-level default may be configured after its tools are declared
@@ -392,6 +396,7 @@ class Toolkit:
             entitlements=entitlements,
             record=record,
             strict=strict,
+            act_as=act_as,
             intercept=intercept,
         )
 
@@ -412,6 +417,7 @@ class Toolkit:
         entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
         record: str | os.PathLike[str] | None = None,
         strict: bool = False,
+        act_as: Literal["user", "agent"] = "user",
         intercept: bool = True,
     ) -> None:
         if exfiltration not in ("refuse", "off"):
@@ -419,6 +425,8 @@ class Toolkit:
             if given == "approve":
                 raise ValueError("exfiltration='approve' was removed: toolpass no longer asks a person; use 'refuse' (the default) or 'off'")
             raise ValueError("exfiltration must be 'refuse' or 'off'")
+        if act_as not in ("user", "agent"):
+            raise ValueError("act_as must be 'user' or 'agent'")
         for effect, cap in (limits or {}).items():
             if effect not in EFFECTS:
                 raise ValueError(f"limits: unknown effect {effect!r}; use one of {', '.join(EFFECTS)}")
@@ -446,6 +454,7 @@ class Toolkit:
         self.entitlements: Entitlements | None = ents
         self.recorder: ActionRecorder | None = ActionRecorder(record) if record is not None else None
         self.strict = bool(strict)
+        self.act_as: Literal["user", "agent"] = act_as
         self.intercept = bool(intercept)
         self._conns: Connections | None = None
         self._conns_key: Any = None
@@ -890,6 +899,7 @@ class Toolkit:
             state.observed,
             ents,
             self.strict,
+            act_as=self.act_as,
             preallowed=preallowed,
         )
         try:

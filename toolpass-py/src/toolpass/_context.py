@@ -6,8 +6,11 @@ The HTTP hook (``_wire``) reads it to attribute each outbound request to
 the call and to record the action it turned out to be.
 
 ``as_agent()`` marks a block of the body as acting on the agent's own
-authority: the requests made inside it are still classified, limited,
-scoped and audited, but not checked against the session's user.
+authority: its requests are not checked against the session's user.
+``as_user()`` marks a block whose requests are. Outside both, the
+toolkit's ``act_as`` setting decides: ``user`` (the default) checks every
+request, ``agent`` only those inside ``as_user()``. Either way the requests
+are still classified, limited, scoped and audited.
 """
 
 from __future__ import annotations
@@ -18,14 +21,14 @@ import dataclasses
 import logging
 import threading
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from toolpass._session import Session
 
 log = logging.getLogger("toolpass.toolkit")
 
-__all__ = ["CallContext", "ObservedAction", "as_agent", "current_call", "in_agent_block"]
+__all__ = ["CallContext", "ObservedAction", "as_agent", "as_user", "checks_user", "current_call"]
 
 
 @dataclasses.dataclass
@@ -82,6 +85,8 @@ class CallContext:
     observed: list[ObservedAction]
     entitlements: Any = None
     strict: bool = False
+    # The toolkit's act_as when the call started: a configure() mid-call does not change it.
+    act_as: Literal["user", "agent"] = "user"
     # Set by the hook when it refuses a request; decides the call's outcome.
     refusal: BaseException | None = None
     # Actions the pre-body checks already allowed for this call: (name, resource).
@@ -92,7 +97,8 @@ class CallContext:
 
 
 _current: contextvars.ContextVar[CallContext | None] = contextvars.ContextVar("toolpass_call", default=None)
-_agent_depth: contextvars.ContextVar[int] = contextvars.ContextVar("toolpass_as_agent", default=0)
+# True inside as_user(), False inside as_agent(), None outside both.
+_as_user: contextvars.ContextVar[bool | None] = contextvars.ContextVar("toolpass_as_user", default=None)
 
 
 def current_call() -> CallContext | None:
@@ -100,8 +106,23 @@ def current_call() -> CallContext | None:
     return _current.get()
 
 
-def in_agent_block() -> bool:
-    return _agent_depth.get() > 0
+def checks_user(act_as: Literal["user", "agent"]) -> bool:
+    """Whether a request made here is checked against the session's user,
+    for a toolkit whose ``act_as`` setting is ``act_as``. The innermost
+    ``as_user()`` or ``as_agent()`` block decides."""
+    marked = _as_user.get()
+    return act_as == "user" if marked is None else marked
+
+
+@contextlib.contextmanager
+def _acting(user: bool, name: str) -> Iterator[None]:
+    if _current.get() is None:
+        log.warning("toolpass: %s() used outside a secured tool's body; it has no effect there", name)
+    token = _as_user.set(user)
+    try:
+        yield
+    finally:
+        _as_user.reset(token)
 
 
 @contextlib.contextmanager
@@ -118,22 +139,38 @@ def as_agent() -> Iterator[None]:
             files = gh.get_repo(repo).get_contents(path)   # the agent may read
         gh.get_repo(repo).create_pull(...)                  # checked against the user
     """
-    if _current.get() is None:
-        log.warning("toolpass: as_agent() used outside a secured tool's body; it has no effect there")
-    token = _agent_depth.set(_agent_depth.get() + 1)
-    try:
+    with _acting(False, "as_agent"):
         yield
-    finally:
-        _agent_depth.reset(token)
+
+
+@contextlib.contextmanager
+def as_user() -> Iterator[None]:
+    """Check the requests made in the block against the session's user.
+
+    The block is how a toolkit configured with ``act_as="agent"`` says
+    which requests the user must be allowed to make; with ``act_as="user"``
+    (the default) every request already is, and the block changes nothing
+    unless it sits inside ``as_agent()``. Outside a tool body the block
+    changes nothing and a warning is logged.
+
+        toolpass.configure(permissions=tp, act_as="agent")
+
+        r = gh.get_repo(repo)                                # the agent's own authority
+        files = r.get_contents(path)
+        with toolpass.as_user():
+            r.create_pull(...)                               # checked against the user
+    """
+    with _acting(True, "as_user"):
+        yield
 
 
 @contextlib.contextmanager
 def running(ctx: CallContext) -> Iterator[None]:
     """Make ``ctx`` the current call for the block (the toolkit, around the body)."""
     token = _current.set(ctx)
-    agent_token = _agent_depth.set(0)  # a nested tool starts outside any as_agent() block
+    as_user_token = _as_user.set(None)  # a nested tool starts outside any as_agent() or as_user() block
     try:
         yield
     finally:
-        _agent_depth.reset(agent_token)
+        _as_user.reset(as_user_token)
         _current.reset(token)

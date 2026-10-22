@@ -68,7 +68,9 @@ Every HTTP request the body makes is mapped to the action it is (`POST /repos/ac
 `pr.create` on `repo:acme/x`), checked against the session's user, and refused before it leaves the
 process when they may not do it. Run the tool once with `configure(record="toolpass-tools.yaml")`
 and toolpass writes down exactly which permissions it needs, from whom; hand that file back with
-`configure(entitlements=...)` and the tool is held to it. A tool can still declare what it does
+`configure(entitlements=...)` and the tool is held to it. `as_agent()` marks the requests that run
+on the agent's own authority; `configure(act_as="agent")` turns that around, and only the requests
+inside `as_user()` are checked against the user. A tool can still declare what it does
 (`effect`, `scope`, `credential`) and the two compose; `as_tool=` hands any framework a
 real tool with the checks inside. [The guide](docs/guides/intercepted-actions.md) has the details.
 An MCP server gets the user the same way: the agent sends it in the `X-Toolpass-User` header, and

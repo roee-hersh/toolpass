@@ -14,7 +14,7 @@ import yaml
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
-from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent
+from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent, as_user
 from toolpass._entitlements import EntitlementsError, _template
 
 
@@ -77,6 +77,23 @@ def test_a_run_records_the_tools_actions_as_templates(gh, engine, events, tmp_pa
     assert yaml.safe_load(path.read_text()) == doc
 
 
+def test_act_as_agent_records_what_as_user_marks(gh, engine, events, tmp_path):
+    path = tmp_path / "toolpass-tools.yaml"
+    tools = Toolkit(audit=events, permissions=engine, record=path, act_as="agent")
+
+    @tools.tool()
+    def propose(repo: str, title: str) -> str:
+        http("GET", f"{gh.url}/api/v3/repos/{repo}/contents/README.md")
+        with as_user():
+            http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": title, "head": "f", "base": "main"})
+        return "opened"
+
+    with Session("admin@example.com").active():
+        assert propose("acme/x", "fix") == "opened"
+    actions = yaml.safe_load(path.read_text())["tools"]["propose"]["actions"]
+    assert [(a["action"], a["as"]) for a in actions] == [("github:repo.read", "agent"), ("github:pr.create", "user")]
+
+
 def test_recorded_entitlements_refuse_before_the_body_runs(gh, engine, events, tmp_path):
     path = tmp_path / "toolpass-tools.yaml"
     recording = Toolkit(audit=events, permissions=engine, record=path)
@@ -100,6 +117,22 @@ def test_recorded_entitlements_refuse_before_the_body_runs(gh, engine, events, t
         assert propose("acme/x", "t") == "opened"
     assert engine.asked == [("admin@example.com", "github-acme", "pr.create", "repo:acme/x")]
     assert [a.get("action") for a in events.last.actions] == ["github:repo.read", "github:pr.create", None]
+
+
+def test_an_as_user_entitlement_is_checked_whatever_act_as_says(gh, engine, events, dana):
+    # A glob resource cannot be checked before the body, so the wire checks it; the file, not act_as, decides.
+    ents = {"tools": {"propose": {"actions": [{"action": "github:pr.create", "resource": "repo:acme/*", "as": "user", "effect": "write"}]}}}
+    tools = Toolkit(audit=events, permissions=engine, entitlements=ents, act_as="agent")
+
+    @tools.tool()
+    def propose(repo: str) -> str:
+        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t", "head": "f", "base": "main"})
+        return "opened"
+
+    with pytest.raises(ActionRefused) as e:
+        propose("acme/x")
+    assert e.value.code == "not_authorized"
+    assert requests_seen(gh) == []
 
 
 def test_an_action_outside_the_entitlements_is_refused_at_the_wire(gh, engine, events):

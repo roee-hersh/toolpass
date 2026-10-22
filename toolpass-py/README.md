@@ -97,7 +97,7 @@ and uses their `toolpass.tool`.
 | Exfiltration guard | `reads_private=True`, `sends_out=True` | Once a session has read private data and seen untrusted content, nothing is sent out |
 | Credential injection | `credential="name"` | The secret is fetched after every check and never enters the model's context; echoes of it in the output are redacted |
 | Audit | `Toolkit(audit=...)` | One event per call, refused or run, with who asked and why it was decided |
-| Observed actions | `Toolkit(permissions=tp)`, no `effect` | Every request the body makes is mapped to an action, checked against the user and refused before it is sent; `as_agent()` marks reads the agent makes on its own authority |
+| Observed actions | `Toolkit(permissions=tp)`, no `effect` | Every request the body makes is mapped to an action, checked against the user and refused before it is sent; `as_agent()` marks reads the agent makes on its own authority, or, with `act_as="agent"`, `as_user()` marks what the user must be allowed to do |
 | Recorded entitlements | `Toolkit(record=...)`, then `entitlements=` | A run records what the tool did; the tool is then held to it, with the user's actions checked before the body runs |
 
 ## The order of checks
@@ -219,7 +219,9 @@ GitHub: `ActionRefused` (a `ToolRefused`) is raised inside PyGithub's call, and 
 even if the body catches it. The audit event lists every request as `actions`.
 `toolpass.configure(record="toolpass-tools.yaml")` writes the actions a run performed to a file, and
 `configure(entitlements="toolpass-tools.yaml")` then checks the recorded user actions before the
-body runs and refuses anything beyond the list. [The guide](../docs/guides/intercepted-actions.md)
+body runs and refuses anything beyond the list. `configure(act_as="agent")` turns the default
+around: only the requests inside `as_user()` are checked against the user, the rest run on the
+agent's authority. [The guide](../docs/guides/intercepted-actions.md)
 has the details; `toolpass routes github` prints what toolpass understands of an API.
 
 ## Limits

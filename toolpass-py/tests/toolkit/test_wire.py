@@ -14,7 +14,7 @@ import pytest
 
 from tests import harness
 from tests.harness.wire import Answer, Engine, http, requests_seen
-from toolpass import ActionRefused, Session, Toolkit, ToolRefused, as_agent
+from toolpass import ActionRefused, Session, Toolkit, ToolRefused, as_agent, as_user
 
 
 @pytest.fixture
@@ -153,6 +153,78 @@ def test_as_agent_does_not_cover_a_nested_tool(gh, engine, events, dana):
     with pytest.raises(ActionRefused) as e:
         outer("acme/x")
     assert e.value.tool == "inner" and e.value.code == "not_authorized"
+
+
+def test_act_as_agent_checks_only_the_requests_inside_as_user(gh, engine, events):
+    tools = Toolkit(audit=events, permissions=engine, act_as="agent")
+    engine.allow[("bob@example.com", "pr.create")] = True  # may open a PR, may not read
+
+    @tools.tool()
+    def propose(repo: str) -> str:
+        http("GET", f"{gh.url}/api/v3/repos/{repo}/contents/README.md")
+        with as_user():
+            http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
+        return "opened"
+
+    with Session("bob@example.com").active():
+        assert propose("acme/x") == "opened"
+    assert engine.asked == [("bob@example.com", "github-acme", "pr.create", "repo:acme/x")]
+    read, pr = events.last.actions
+    assert read["as_agent"] is True
+    assert "as_agent" not in pr
+
+
+def test_act_as_agent_still_refuses_inside_as_user(gh, engine, events, dana):
+    tools = Toolkit(audit=events, permissions=engine, act_as="agent")
+
+    @tools.tool()
+    def propose(repo: str) -> str:
+        with as_user():
+            http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
+        return "opened"
+
+    with pytest.raises(ActionRefused) as e:
+        propose("acme/x")
+    assert e.value.code == "not_authorized"
+    assert requests_seen(gh) == []
+
+
+def test_the_innermost_block_decides(gh, engine, events, dana):
+    tools = Toolkit(audit=events, permissions=engine)
+    engine.allow[("dana@example.com", "pr.create")] = True
+
+    @tools.tool()
+    def propose(repo: str) -> str:
+        with as_agent():
+            http("GET", f"{gh.url}/api/v3/repos/{repo}")
+            with as_user():
+                http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
+        return "opened"
+
+    assert propose("acme/x") == "opened"
+    assert engine.asked == [("dana@example.com", "github-acme", "pr.create", "repo:acme/x")]
+
+
+def test_a_nested_tool_starts_from_the_toolkit_setting(gh, engine, events, dana):
+    tools = Toolkit(audit=events, permissions=engine, act_as="agent")
+
+    @tools.tool()
+    def inner(repo: str) -> str:
+        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
+        return "opened"
+
+    @tools.tool()
+    def outer(repo: str) -> str:
+        with as_user():
+            return inner(repo)
+
+    assert outer("acme/x") == "opened"  # inner's request is outside any block of its own
+    assert engine.asked == []
+
+
+def test_act_as_must_be_user_or_agent():
+    with pytest.raises(ValueError, match="act_as"):
+        Toolkit(act_as="admin")  # type: ignore[arg-type]
 
 
 def test_a_declared_effect_caps_what_the_body_may_do(gh, engine, events, dana):
