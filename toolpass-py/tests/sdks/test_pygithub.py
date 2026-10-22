@@ -10,7 +10,7 @@ import pytest
 
 from tests import harness
 from tests.harness.wire import Engine, requests_seen
-from toolpass import ActionRefused, Session, Toolkit, without_toolpass
+from toolpass import ActionRefused, Session, Toolkit, as_agent, as_user
 
 github = pytest.importorskip("github")
 
@@ -64,14 +64,30 @@ def test_a_denied_pull_request_never_leaves_the_process(gh, engine, events):
     assert requests_seen(gh)[-1] == "POST /api/v3/repos/acme/x/pulls"
 
 
-def test_without_toolpass_reads_then_the_user_writes(gh, engine, events):
+def test_act_as_agent_with_as_user_around_the_write(gh, engine, events):
+    tools = Toolkit(audit=events, permissions=engine, act_as="agent")
+    engine.allow[("bob@example.com", "pr.create")] = True  # may open a PR, may not read
+
+    @tools.tool()
+    def propose(repo: str) -> int:
+        r = client(gh).get_repo(repo)  # GET /repos/acme/x on the agent's authority
+        with as_user():
+            return int(r.create_pull(title="t", body="", head="f", base="main").number)
+
+    with Session("bob@example.com").active():
+        assert propose("acme/x") == 7
+    assert engine.asked == [("bob@example.com", "github-acme", "pr.create", "repo:acme/x")]
+    assert [a.get("as_agent", False) for a in events.last.actions] == [True, False]
+
+
+def test_as_agent_reads_then_the_user_writes(gh, engine, events):
     tools = Toolkit(audit=events, permissions=engine)
     engine.allow[("bob@example.com", "pr.create")] = True
 
     @tools.tool()
     def propose(repo: str) -> int:
         g = client(gh)
-        with without_toolpass():
+        with as_agent():
             readme = g.get_repo(repo, lazy=True).get_contents("README.md")
         assert readme.decoded_content == b"hello"
         return int(g.get_repo(repo, lazy=True).create_pull(title="t", body="", head="f", base="main").number)

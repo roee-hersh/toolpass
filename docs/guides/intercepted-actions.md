@@ -67,7 +67,7 @@ A request the toolkit cannot place is handled by what it knows:
 Requests about the agent's own identity (`GET /user`, `auth.test`), search and rate limits need no
 user permission: they are allowed and audited with no action.
 
-## `as_agent()`
+## `as_agent()` and `as_user()`
 
 Some of a body runs rightly on the agent's own authority: it reads a file the user cannot, then
 opens a pull request the user must be allowed to open. `as_agent()` marks that block. Inside it the
@@ -75,6 +75,30 @@ permission check against the session's user is skipped and nothing else: scope, 
 untrusted-input and exfiltration checks and entitlements still apply, and each action is audited
 with `as_agent`. The block covers only requests made inside it, not a nested toolpass tool. Keep it
 narrow; a whole body inside `as_agent()` is a tool that acts as the agent for everyone.
+
+Where most of a body is the agent's own business and only a few requests act for the user, turn the
+default around: with `act_as="agent"` a request is checked against the user only inside
+`as_user()`.
+
+```python
+toolpass.configure(permissions=tp, act_as="agent")
+
+
+@toolpass.tool()
+def propose_fix(repo: str, path: str, fix: str) -> str:
+    gh = Github(auth=token)
+    r = gh.get_repo(repo)                                    # the agent's own authority
+    current = r.get_contents(path)
+    with toolpass.as_user():                                 # checked against the user
+        pr = r.create_pull(title="fix", body=fix, head="fix", base="main")
+    return f"opened #{pr.number}"
+```
+
+The innermost block decides, so `as_user()` inside `as_agent()` checks again. `act_as="user"`, the
+default, is the safer one: a request you forget to mark is checked. With `act_as="agent"` a forgotten
+`as_user()` is a request no one checks against the user, so record the tool's entitlements and
+review the `as: agent` lines. With entitlements, the file decides: a request that matches an
+`as: user` line is checked against the user even outside `as_user()`.
 
 ## Record what a tool does, then hold it to that
 

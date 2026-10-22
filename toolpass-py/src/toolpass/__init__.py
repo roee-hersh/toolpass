@@ -35,7 +35,7 @@ from toolpass._api import (
 )
 from toolpass._audit import AuditEvent, AuditSink, log_audit
 from toolpass._checks import ScopeRule, Validator
-from toolpass._context import ObservedAction, as_agent, current_call, with_toolpass, without_toolpass
+from toolpass._context import ObservedAction, as_agent, as_user, current_call
 from toolpass._default import configure, default_toolkit, secured_tool, tool
 from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
 from toolpass._permissions import permission_check
@@ -97,6 +97,7 @@ __all__ = [
     "Watch",
     "__version__",
     "as_agent",
+    "as_user",
     "configure",
     "current",
     "current_call",
@@ -115,6 +116,4 @@ __all__ = [
     "spec_of",
     "tool",
     "watch",
-    "with_toolpass",
-    "without_toolpass",
 ]
