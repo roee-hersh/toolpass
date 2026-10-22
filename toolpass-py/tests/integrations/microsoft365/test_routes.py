@@ -82,6 +82,7 @@ def test_every_route_names_a_known_action():
         ("POST", f"/drives/{D}/items/01A/createLink", {"type": "view"}, "", "file.share", f"drive:{D}/item/01A", "write", True),
         ("POST", f"/drives/{D}/items/01A/invite", {"recipients": []}, "", "file.share", f"drive:{D}/item/01A", "write", True),
         ("DELETE", f"/drives/{D}/items/01A/permissions/p1", None, "", "file.share", f"drive:{D}/item/01A", "destructive", False),
+        ("POST", f"/drives/{D}/items/01A/permissions/p1/revokeGrants", {"grantees": []}, "", "file.share", f"drive:{D}/item/01A", "write", False),
         ("PATCH", f"/drives/{D}/items/01A/workbook/worksheets/S1", {"name": "x"}, "", "file.edit", f"drive:{D}/item/01A", "write", False),
         # The item's permissions carry its sharing links: reading them is file.share.
         ("GET", f"/drives/{D}/items/01A/permissions", None, "", "file.share", f"drive:{D}/item/01A", "read", False),

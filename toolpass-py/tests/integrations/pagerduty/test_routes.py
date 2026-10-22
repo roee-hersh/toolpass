@@ -256,7 +256,14 @@ def test_dot_segments_are_not_routed(method, path):
 
 
 def test_writes_without_an_action_are_left_out():
-    for method, path in (("POST", "/incidents"), ("POST", "/incidents/PINC1/notes"), ("PUT", "/incidents/PINC1/merge"), ("PUT", "/session_configurations")):
+    for method, path in (
+        ("POST", "/incidents"),
+        ("POST", "/incidents/PINC1/notes"),
+        ("PUT", "/incidents/PINC1/merge"),
+        ("PUT", "/incidents/PINC1/review"),
+        ("POST", "/incidents/PINC1/review/markers"),
+        ("PUT", "/session_configurations"),
+    ):
         assert ROUTES.match(req(method, path, {})) is None, path
         assert ROUTES.is_unrouted(method, path) is not None, path
 

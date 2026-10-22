@@ -131,7 +131,7 @@ Refused: an incident update that does two of acknowledge, resolve and reassign, 
 else (title, priority, urgency, service, type); moving an alert to another incident; bodies that
 move objects between teams (a service's `escalation_policy`, an escalation policy's `services`, any
 `teams` on an update, v1 or v3) or name several services or teams; creating incidents, notes,
-status updates, merges, incident field values and business service impact, for which the
+status updates, incident reviews, merges, incident field values and business service impact, for which the
 integration has no action; the account's IP allow lists, session settings and OAuth delegations;
 and the Events API (`/v2/enqueue`, `/v2/change/enqueue`, `/integration/...`, `/generic/...`), which
 triggers, acknowledges and resolves incidents with a routing key alone. Bodies are read as

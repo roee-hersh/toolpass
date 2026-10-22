@@ -202,6 +202,8 @@ For toolpass tools, the route table (`toolpass routes bitbucket`) maps requests 
   so a write that lands on a branch must name it: creating or deleting a branch, committing files
   (`POST /src` with one `branch` field; Data Center `PUT /browse/...`). Merging a pull request does
   not name its destination branch, so it is refused rather than checked on write access alone.
+- Workspace reads, code search included (`GET /search/code` and `POST /codesearch`), check
+  `workspace.member`.
 - Opening a pull request, commenting and approving check `repo.read`; a pull request from another
   repository (a fork) is refused. Editing or deleting a comment checks `repo.admin`.
 

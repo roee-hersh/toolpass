@@ -357,6 +357,7 @@ def _cloud() -> list[Route]:
         Route("GET", "/user/{rest+}", None, "", spec=False, description="the agent's own account"),
         _c("POST", "/commits", _RR, effect="read", description="lists commits; the filters are in the body"),
         _c("POST", "/commits/{revision}", _RR, effect="read", description="lists commits; the filters are in the body"),
+        _cw("POST", "/codesearch", _WM, effect="read", description="searches code, as GET /search/code does; the query is in the body"),
         # The repository.
         _c("POST", "", _RC, _cloud_new_repo, resource=_CPROJECT),
         _c("PUT", "", _RA, _without("project"), description="updates (or creates) the repository; moving it to a project is refused"),
