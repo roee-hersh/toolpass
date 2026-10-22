@@ -355,8 +355,8 @@ class Toolkit:
     ``strict`` refuses a request to a host the toolkit does not know, and a
     tool with no entitlements when a file is given. ``act_as`` says whose
     authority a request outside ``as_agent()`` and ``as_user()`` runs on:
-    ``user`` (the default) checks it against the session's user, ``agent``
-    does not. ``intercept=False`` turns the
+    ``agent`` (the default) does not check it against the session's user,
+    ``user`` does. ``intercept=False`` turns the
     hook off for this toolkit.
     """
 
@@ -377,7 +377,7 @@ class Toolkit:
         entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
         record: str | os.PathLike[str] | None = None,
         strict: bool = False,
-        act_as: Literal["user", "agent"] = "user",
+        act_as: Literal["user", "agent"] = "agent",
         intercept: bool = True,
     ) -> None:
         self._lenient = False  # the module-level default may be configured after its tools are declared
@@ -417,7 +417,7 @@ class Toolkit:
         entitlements: str | os.PathLike[str] | Mapping[str, Any] | Entitlements | None = None,
         record: str | os.PathLike[str] | None = None,
         strict: bool = False,
-        act_as: Literal["user", "agent"] = "user",
+        act_as: Literal["user", "agent"] = "agent",
         intercept: bool = True,
     ) -> None:
         if exfiltration not in ("refuse", "off"):

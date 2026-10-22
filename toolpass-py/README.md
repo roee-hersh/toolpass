@@ -20,7 +20,7 @@ nothing; toolpass watches what it does:
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent
+from toolpass import Session, Toolpass, as_user
 from github import Github                            # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # the github-acme connection, among others
@@ -28,11 +28,11 @@ toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # the gi
 
 @toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
-    gh = Github(auth=token)
-    with as_agent():                                 # the agent may read on its own authority
-        current = gh.get_repo(repo).get_contents(path)
-    pr = gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main")
-    return pr.html_url                               # pr.create on repo:acme/x: checked against the user
+    repo_ = Github(auth=token).get_repo(repo)
+    current = repo_.get_contents(path)               # the agent reads on its own authority
+    with as_user():                                  # pr.create on repo:acme/x: checked against the user
+        pr = repo_.create_pull(title="fix", body=fix, head="fix", base="main")
+    return pr.html_url
 
 
 with Session("dana@example.com").active():           # the user your app authenticated
@@ -97,7 +97,7 @@ and uses their `toolpass.tool`.
 | Exfiltration guard | `reads_private=True`, `sends_out=True` | Once a session has read private data and seen untrusted content, nothing is sent out |
 | Credential injection | `credential="name"` | The secret is fetched after every check and never enters the model's context; echoes of it in the output are redacted |
 | Audit | `Toolkit(audit=...)` | One event per call, refused or run, with who asked and why it was decided |
-| Observed actions | `Toolkit(permissions=tp)`, no `effect` | Every request the body makes is mapped to an action, checked against the user and refused before it is sent; `as_agent()` marks reads the agent makes on its own authority, or, with `act_as="agent"`, `as_user()` marks what the user must be allowed to do |
+| Observed actions | `Toolkit(permissions=tp)`, no `effect` | Every request the body makes is mapped to an action, inside `as_user()` checked against the user and refused before it is sent; outside it runs on the agent's authority (`act_as="user"` checks every request but those in `as_agent()`) |
 | Recorded entitlements | `Toolkit(record=...)`, then `entitlements=` | A run records what the tool did; the tool is then held to it, with the user's actions checked before the body runs |
 
 ## The order of checks
@@ -200,18 +200,18 @@ authorizer instead. The engine also works on its own:
 A declaration is a claim. toolpass can instead watch the requests a tool's body makes: every HTTP
 request that leaves the process while a toolpass tool runs (PyGithub, slack_sdk, boto3, raw
 `requests`, anything on urllib3, the standard library, httpx or aiohttp) is mapped to the action and
-resource the permission engine answers for, checked, and refused before it is sent. The tool
-declares nothing:
+resource the permission engine answers for; inside `as_user()` it is checked against the user and
+refused before it is sent. The tool declares nothing:
 
 ```python
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))
 
 @toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
-    gh = Github(auth=token)
-    with as_agent():                                       # the agent may read on its own authority
-        current = gh.get_repo(repo).get_contents(path)
-    return gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main").html_url   # checked against the user
+    repo_ = Github(auth=token).get_repo(repo)
+    current = repo_.get_contents(path)                     # the agent reads on its own authority
+    with as_user():                                        # checked against the user
+        return repo_.create_pull(title="fix", body=fix, head="fix", base="main").html_url
 ```
 
 When the session's user may not open pull requests in that repository, the `POST` never reaches
@@ -219,9 +219,8 @@ GitHub: `ActionRefused` (a `ToolRefused`) is raised inside PyGithub's call, and 
 even if the body catches it. The audit event lists every request as `actions`.
 `toolpass.configure(record="toolpass-tools.yaml")` writes the actions a run performed to a file, and
 `configure(entitlements="toolpass-tools.yaml")` then checks the recorded user actions before the
-body runs and refuses anything beyond the list. `configure(act_as="agent")` turns the default
-around: only the requests inside `as_user()` are checked against the user, the rest run on the
-agent's authority. [The guide](../docs/guides/intercepted-actions.md)
+body runs and refuses anything beyond the list. `configure(act_as="user")` turns the default
+around: every request is checked against the user, except those inside `as_agent()`. [The guide](../docs/guides/intercepted-actions.md)
 has the details; `toolpass routes github` prints what toolpass understands of an API.
 
 ## Limits

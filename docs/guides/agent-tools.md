@@ -250,7 +250,10 @@ toolpass.configure(permissions=tp, on_refuse=str)
 
 @mcp.tool()
 @toolpass.tool()
-def delete_issue(key: str) -> str: ...
+def delete_issue(key: str) -> str:
+    with toolpass.as_user():                            # checked against the user in the header
+        jira.delete_issue(key)
+    return f"deleted {key}"
 
 app = session_from_header(mcp.streamable_http_app())   # FastMCP: mcp.http_app()
 uvicorn.run(app, host="127.0.0.1", port=8000)

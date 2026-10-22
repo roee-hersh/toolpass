@@ -29,7 +29,7 @@ agents in any language call.
   from, and the adapters for Strands, LangChain and LangGraph, the OpenAI Agents SDK, the
   Claude Agent SDK, Google ADK, CrewAI, Pydantic AI, LlamaIndex and the Vercel AI SDK.
 - [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
-  body makes, mapped to actions and checked before they are sent; `as_agent()` and `as_user()`; recording a tool's
+  body makes, mapped to actions and checked before they are sent; `as_user()` and `as_agent()`; recording a tool's
   entitlements and holding it to them.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
@@ -42,7 +42,7 @@ agents in any language call.
 - [Python API](reference/client.md): `Toolpass` in-process and remote, `check`, `require`,
   `guarded`, the framework adapters, and the Node client.
 - [The toolkit's observed actions](reference/toolkit.md): the `permissions`, `entitlements`,
-  `record`, `strict` and `act_as` settings, `as_agent()` and `as_user()`, `ActionRefused`, `ObservedAction`, the
+  `record`, `strict` and `act_as` settings, `as_user()` and `as_agent()`, `ActionRefused`, `ObservedAction`, the
   entitlements file and the route tables.
 - [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`,
   `POST /runs` and `GET /dashboard/`.

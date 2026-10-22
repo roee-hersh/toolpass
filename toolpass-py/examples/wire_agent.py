@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
 
-from toolpass import AuditEvent, Session, Toolkit, ToolRefused, as_agent
+from toolpass import AuditEvent, Session, Toolkit, ToolRefused, as_user
 from toolpass.core.integration import Settings
 from toolpass.integrations.github import INTEGRATION as GITHUB
 
@@ -101,9 +101,9 @@ def main(say: Callable[[str], None] = print) -> list[tuple[str, str]]:
     @tools.tool()  # nothing declared: the actions are observed at the wire
     def propose_replicas(repo: str, replicas: int) -> str:
         """Open a pull request setting a deployment's replica count."""
-        with as_agent():  # the agent may read the file on its own authority
-            current = http("GET", f"{base}/api/v3/repos/{repo}/contents/deploy.yaml")
-        pr = http("POST", f"{base}/api/v3/repos/{repo}/pulls", {"title": f"replicas: {replicas}", "head": "scale", "base": "main", "body": str(current)})
+        current = http("GET", f"{base}/api/v3/repos/{repo}/contents/deploy.yaml")  # the agent reads on its own authority
+        with as_user():  # opening the pull request is checked against the user
+            pr = http("POST", f"{base}/api/v3/repos/{repo}/pulls", {"title": f"replicas: {replicas}", "head": "scale", "base": "main", "body": str(current)})
         return f"opened PR #{pr['number']} in {repo}"
 
     outcomes: list[tuple[str, str]] = []

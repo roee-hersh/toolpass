@@ -7,12 +7,13 @@ GitHub's permission model.
 
 toolpass can instead watch the requests a tool's body makes. Every HTTP request that leaves the
 process while a toolpass tool runs is mapped to the integration action and resource the permission
-engine already answers for (`POST /repos/acme/x/pulls` is `pr.create` on `repo:acme/x`), checked,
-and refused before it is sent when the session's user may not do it. The tool declares nothing:
+engine already answers for (`POST /repos/acme/x/pulls` is `pr.create` on `repo:acme/x`). The
+requests inside `as_user()` are checked and refused before they are sent when the session's user may
+not make them. The tool declares nothing:
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent
+from toolpass import Session, Toolpass, as_user
 from github import Github
 
 tp = Toolpass.from_config("toolpass.yaml")       # the github-acme connection, among others
@@ -21,10 +22,10 @@ toolpass.configure(permissions=tp)
 
 @toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
-    gh = Github(auth=token)
-    with as_agent():                             # the agent may read on its own authority
-        current = gh.get_repo(repo).get_contents(path)
-    pr = gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main")   # checked against the user
+    r = Github(auth=token).get_repo(repo)
+    current = r.get_contents(path)               # the agent reads on its own authority
+    with as_user():                              # checked against the user
+        pr = r.create_pull(title="fix", body=fix, head="fix", base="main")
     return f"opened #{pr.number}"
 
 
@@ -67,38 +68,38 @@ A request the toolkit cannot place is handled by what it knows:
 Requests about the agent's own identity (`GET /user`, `auth.test`), search and rate limits need no
 user permission: they are allowed and audited with no action.
 
-## `as_agent()` and `as_user()`
+## `as_user()` and `as_agent()`
 
-Some of a body runs rightly on the agent's own authority: it reads a file the user cannot, then
-opens a pull request the user must be allowed to open. `as_agent()` marks that block. Inside it the
-permission check against the session's user is skipped and nothing else: scope, limits, the
-untrusted-input and exfiltration checks and entitlements still apply, and each action is audited
-with `as_agent`. The block covers only requests made inside it, not a nested toolpass tool. Keep it
-narrow; a whole body inside `as_agent()` is a tool that acts as the agent for everyone.
+A body mostly runs on the agent's own authority: it reads the file it needs, looks up the default
+branch, and then opens a pull request the user must be allowed to open. `as_user()` marks that last
+part. Inside it, every request is checked against the session's user; outside it, the permission
+check against the user is skipped and nothing else: scope, limits, the untrusted-input and
+exfiltration checks and entitlements still apply, and each action is audited with `as_agent`. The
+block covers only requests made inside it, not a nested toolpass tool, which starts from the
+toolkit's setting again.
 
-Where most of a body is the agent's own business and only a few requests act for the user, turn the
-default around: with `act_as="agent"` a request is checked against the user only inside
-`as_user()`.
+`act_as` sets whose authority a request outside both blocks runs on. `"agent"`, the default, is the
+one above. `"user"` turns it around: every request is checked against the user, and `as_agent()`
+marks the ones that run on the agent's authority.
 
 ```python
-toolpass.configure(permissions=tp, act_as="agent")
+toolpass.configure(permissions=tp, act_as="user")
 
 
 @toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
-    gh = Github(auth=token)
-    r = gh.get_repo(repo)                                    # the agent's own authority
-    current = r.get_contents(path)
-    with toolpass.as_user():                                 # checked against the user
-        pr = r.create_pull(title="fix", body=fix, head="fix", base="main")
+    r = Github(auth=token).get_repo(repo)
+    with as_agent():                             # the agent may read what the user cannot
+        current = r.get_contents(path)
+    pr = r.create_pull(title="fix", body=fix, head="fix", base="main")   # checked against the user
     return f"opened #{pr.number}"
 ```
 
-The innermost block decides, so `as_user()` inside `as_agent()` checks again. `act_as="user"`, the
-default, is the safer one: a request you forget to mark is checked. With `act_as="agent"` a forgotten
-`as_user()` is a request no one checks against the user, so record the tool's entitlements and
-review the `as: agent` lines. With entitlements, the file decides: a request that matches an
-`as: user` line is checked against the user even outside `as_user()`.
+The innermost block decides, so `as_user()` inside `as_agent()` checks again. With the default, a
+request you forget to put inside `as_user()` is one no one checks against the user, so record the
+tool's entitlements and review the `as: agent` lines, or set `act_as="user"` where a forgotten
+`as_agent()` should fail closed instead. With entitlements, the file decides: a request that matches
+an `as: user` line is checked against the user even outside `as_user()`.
 
 ## Record what a tool does, then hold it to that
 

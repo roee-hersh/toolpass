@@ -15,7 +15,7 @@ fits together.
 | `entitlements` | path, mapping or `Entitlements` | The recorded actions the tools are held to. |
 | `record` | path | Write every call's allowed actions to this file (`ActionRecorder`). |
 | `strict` | bool | Refuse requests to unknown hosts, and tools without entitlements when a file is given. |
-| `act_as` | `"user"` (default) or `"agent"` | Whose authority a request outside `as_agent()` and `as_user()` runs on: `user` checks it against the session's user, `agent` does not. |
+| `act_as` | `"agent"` (default) or `"user"` | Whose authority a request outside `as_user()` and `as_agent()` runs on: `agent` does not check it against the session's user, `user` does. |
 | `intercept` | bool, default True | Turn the hook off for this toolkit. |
 
 ## `toolpass.tool(...)`
@@ -31,8 +31,8 @@ fits together.
 
 Context managers for a block of the body. `as_agent()` acts on the agent's own authority: the
 permission check against the session's user is skipped for requests made inside it, nothing else.
-`as_user()` checks them against the session's user; it is how a toolkit with `act_as="agent"`
-marks the requests the user must be allowed to make. The innermost block decides, and a nested
+`as_user()` checks them against the session's user; with the default `act_as="agent"` it is how a
+tool marks the requests the user must be allowed to make. The innermost block decides, and a nested
 toolpass tool starts from the toolkit's `act_as` again. No effect outside a tool body (a warning is
 logged).
 
