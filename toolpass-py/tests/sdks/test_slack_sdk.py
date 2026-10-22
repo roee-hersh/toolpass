@@ -40,7 +40,7 @@ def client(slack: harness.Server) -> Any:
 
 
 def test_a_post_the_user_may_not_make_is_refused(slack, engine, events):
-    tools = Toolkit(audit=events, permissions=engine)
+    tools = Toolkit(audit=events, permissions=engine, act_as="user")
 
     @tools.tool()
     def summarize(channel: str) -> str:

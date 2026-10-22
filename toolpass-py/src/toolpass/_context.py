@@ -5,11 +5,11 @@ is: the toolkit, the spec, the session and what the body has done so far.
 The HTTP hook (``_wire``) reads it to attribute each outbound request to
 the call and to record the action it turned out to be.
 
-``as_agent()`` marks a block of the body as acting on the agent's own
-authority: its requests are not checked against the session's user.
-``as_user()`` marks a block whose requests are. Outside both, the
-toolkit's ``act_as`` setting decides: ``user`` (the default) checks every
-request, ``agent`` only those inside ``as_user()``. Either way the requests
+``as_user()`` marks a block of the body whose requests are checked against
+the session's user; ``as_agent()`` marks a block acting on the agent's own
+authority, whose requests are not. Outside both, the toolkit's ``act_as``
+setting decides: ``agent`` (the default) checks only the requests inside
+``as_user()``, ``user`` every request but those inside ``as_agent()``. Either way the requests
 are still classified, limited, scoped and audited.
 """
 
@@ -132,8 +132,12 @@ def as_agent() -> Iterator[None]:
     Inside a secured tool's body, requests made in the block are not checked
     against the session's user; scope, limits, the untrusted-input and
     exfiltration checks, entitlements and the audit still apply, and each
-    action is recorded with ``as_agent``. Outside a tool body the block
-    changes nothing and a warning is logged.
+    action is recorded with ``as_agent``. With ``act_as="agent"`` (the
+    default) every request outside ``as_user()`` already is, and the block
+    changes nothing unless it sits inside ``as_user()``. Outside a tool body
+    the block changes nothing and a warning is logged.
+
+        toolpass.configure(permissions=tp, act_as="user")
 
         with toolpass.as_agent():
             files = gh.get_repo(repo).get_contents(path)   # the agent may read
@@ -147,13 +151,11 @@ def as_agent() -> Iterator[None]:
 def as_user() -> Iterator[None]:
     """Check the requests made in the block against the session's user.
 
-    The block is how a toolkit configured with ``act_as="agent"`` says
-    which requests the user must be allowed to make; with ``act_as="user"``
-    (the default) every request already is, and the block changes nothing
-    unless it sits inside ``as_agent()``. Outside a tool body the block
-    changes nothing and a warning is logged.
-
-        toolpass.configure(permissions=tp, act_as="agent")
+    With ``act_as="agent"`` (the default) the block is how a tool says which
+    requests the user must be allowed to make; with ``act_as="user"`` every
+    request already is, and the block changes nothing unless it sits inside
+    ``as_agent()``. Outside a tool body the block changes nothing and a
+    warning is logged.
 
         r = gh.get_repo(repo)                                # the agent's own authority
         files = r.get_contents(path)

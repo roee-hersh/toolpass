@@ -99,9 +99,9 @@ def build(connections: list[dict[str, Any]], urls: dict[str, str]) -> list[tuple
     s = Endpoints(urls)
     if os.environ.get("TOOLPASS_URL"):
         # A toolpass server (run.py starts one) answers each permission question and collects the runs.
-        tools = Toolkit(permissions=Toolpass.remote(), connections=connections, audit=None)
+        tools = Toolkit(permissions=Toolpass.remote(), connections=connections, audit=None, act_as="user")
     else:
-        tools = Toolkit(permissions=Toolpass(connections=connections), audit=None)
+        tools = Toolkit(permissions=Toolpass(connections=connections), audit=None, act_as="user")
 
     def say(channel: str, text: str) -> None:
         http("POST", f"{s.slack_api}/chat.postMessage", {"channel": world.SLACK_CHANNELS[channel]["id"], "text": text})

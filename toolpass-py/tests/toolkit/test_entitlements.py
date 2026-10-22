@@ -14,7 +14,7 @@ import yaml
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
-from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent, as_user
+from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_user
 from toolpass._entitlements import EntitlementsError, _template
 
 
@@ -40,9 +40,9 @@ def engine(gh: harness.Server) -> Engine:
 def propose_tool(tools: Toolkit, gh: harness.Server) -> Any:
     @tools.tool()
     def propose(repo: str, title: str) -> str:
-        with as_agent():
-            http("GET", f"{gh.url}/api/v3/repos/{repo}/contents/README.md")
-        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": title, "head": "f", "base": "main"})
+        http("GET", f"{gh.url}/api/v3/repos/{repo}/contents/README.md")
+        with as_user():
+            http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": title, "head": "f", "base": "main"})
         http("GET", f"{gh.url}/elsewhere")
         return "opened"
 
@@ -77,9 +77,9 @@ def test_a_run_records_the_tools_actions_as_templates(gh, engine, events, tmp_pa
     assert yaml.safe_load(path.read_text()) == doc
 
 
-def test_act_as_agent_records_what_as_user_marks(gh, engine, events, tmp_path):
+def test_a_run_records_what_as_user_marks_as_the_user(gh, engine, events, tmp_path):
     path = tmp_path / "toolpass-tools.yaml"
-    tools = Toolkit(audit=events, permissions=engine, record=path, act_as="agent")
+    tools = Toolkit(audit=events, permissions=engine, record=path)
 
     @tools.tool()
     def propose(repo: str, title: str) -> str:
@@ -290,7 +290,8 @@ def test_refused_actions_are_not_recorded(gh, engine, events, tmp_path):
 
     @tools.tool()
     def propose(repo: str) -> str:
-        http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
+        with as_user():
+            http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "t"})
         return "opened"
 
     with Session("dana@example.com").active(), pytest.raises(ActionRefused):

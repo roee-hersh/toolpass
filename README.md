@@ -45,7 +45,7 @@ watches what it does.
 
 ```python
 import toolpass
-from toolpass import Session, Toolpass, as_agent
+from toolpass import Session, Toolpass, as_user
 from github import Github                     # any SDK: PyGithub, slack_sdk, boto3, raw requests
 
 toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # your GitHub, Slack, ... connections
@@ -53,11 +53,11 @@ toolpass.configure(permissions=Toolpass.from_config("toolpass.yaml"))   # your G
 
 @toolpass.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
-    gh = Github(auth=token)
-    with as_agent():                          # the agent may read on its own authority
-        current = gh.get_repo(repo).get_contents(path)
-    pr = gh.get_repo(repo).create_pull(title="fix", body=fix, head="fix", base="main")
-    return pr.html_url                        # pr.create: checked against the user, before it is sent
+    repo_ = Github(auth=token).get_repo(repo)
+    current = repo_.get_contents(path)        # the agent reads on its own authority
+    with as_user():                           # pr.create: checked against the user, before it is sent
+        pr = repo_.create_pull(title="fix", body=fix, head="fix", base="main")
+    return pr.html_url
 
 
 with Session("dana@example.com").active():   # the user your app authenticated, never the model
@@ -65,12 +65,13 @@ with Session("dana@example.com").active():   # the user your app authenticated, 
 ```
 
 Every HTTP request the body makes is mapped to the action it is (`POST /repos/acme/x/pulls` is
-`pr.create` on `repo:acme/x`), checked against the session's user, and refused before it leaves the
-process when they may not do it. Run the tool once with `configure(record="toolpass-tools.yaml")`
+`pr.create` on `repo:acme/x`). Inside `as_user()` it is checked against the session's user and
+refused before it leaves the process when they may not do it; outside, it runs on the agent's own
+authority, still scoped, limited and audited. Run the tool once with `configure(record="toolpass-tools.yaml")`
 and toolpass writes down exactly which permissions it needs, from whom; hand that file back with
-`configure(entitlements=...)` and the tool is held to it. `as_agent()` marks the requests that run
-on the agent's own authority; `configure(act_as="agent")` turns that around, and only the requests
-inside `as_user()` are checked against the user. A tool can still declare what it does
+`configure(entitlements=...)` and the tool is held to it. `configure(act_as="user")` turns the
+default around: every request is checked against the user, except inside `as_agent()`. A tool can
+still declare what it does
 (`effect`, `scope`, `credential`) and the two compose; `as_tool=` hands any framework a
 real tool with the checks inside. [The guide](docs/guides/intercepted-actions.md) has the details.
 An MCP server gets the user the same way: the agent sends it in the `X-Toolpass-User` header, and
@@ -112,7 +113,7 @@ you can run with no network and no model:
 | **Exfiltration guard** | Once a session has read private data and seen untrusted content, nothing leaves |
 | **Credential injection** | Secrets are fetched after every check and redacted from anything the tool echoes |
 | **Audit** | One event per call, refused or run, with who asked and why it was decided |
-| **Observed actions** | Leave `effect` out and every request the body makes (PyGithub, slack_sdk, boto3, ...) is mapped to an action, checked against the user and refused before it is sent; a run can record them as the tool's entitlements |
+| **Observed actions** | Leave `effect` out and every request the body makes (PyGithub, slack_sdk, boto3, ...) is mapped to an action; inside `as_user()` it is checked against the user and refused before it is sent; a run can record them as the tool's entitlements |
 
 Every call goes through these in a fixed order, and anything that cannot be evaluated (an
 authorizer that is down, a validator that crashes) refuses the call. The

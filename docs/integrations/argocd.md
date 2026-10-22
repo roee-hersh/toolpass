@@ -105,7 +105,7 @@ unknown and neither denies.
 
 With `url` set, the [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a
 tool's body sends to the Argo CD REST API to the action and object Argo CD's RBAC checks, and
-checks it for the session's user (`toolpass routes argocd` prints the table).
+checks the ones inside `as_user()` for the session's user (`toolpass routes argocd` prints the table).
 
 Argo CD's paths name an application but not its project, and toolpass checks applications under
 their project. A request about an application must name the project: `?project=` on reads,
