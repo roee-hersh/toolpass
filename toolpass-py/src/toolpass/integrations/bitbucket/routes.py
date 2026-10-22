@@ -544,6 +544,7 @@ ROUTES = BitbucketRoutes(
     _cloud() + _data_center(),
     claims=("/repositories/{workspace}", "/workspaces/{workspace}"),
     unrouted={
+        ("POST", _W + "/codesearch"): "searches code across every repository of the workspace; toolpass checks one repository per request",
         ("POST", _R + "/forks"): "a fork lands in a workspace and project named in the body; toolpass checks one target per request",
         ("*", _R + "/properties/{app_key}/{property_name}"): _APP,
         ("*", _R + "/commit/{commit}/properties/{app_key}/{property_name}"): _APP,

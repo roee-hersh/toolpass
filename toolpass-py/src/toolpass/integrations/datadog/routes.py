@@ -450,6 +450,9 @@ def _routes() -> list[Route]:
         ("DELETE", "/api/v2/metrics/tag-indexing-rules/{id}", "metric_tags_write"),
         ("POST", "/api/v2/metrics/{metric_name}/tag-indexing-rule-exemptions", "metric_tags_write"),
         ("DELETE", "/api/v2/metrics/{metric_name}/tag-indexing-rule-exemptions", "metric_tags_write"),
+        ("POST", "/api/v2/metrics/derived-metrics", "metric_tags_write"),
+        ("PUT", "/api/v2/metrics/derived-metrics/{metric_name}", "metric_tags_write"),
+        ("DELETE", "/api/v2/metrics/derived-metrics/{metric_name}", "metric_tags_write"),
         ("POST", "/api/v2/metrics/historical-metrics-configurations", "late_metrics_config_write"),
         ("DELETE", "/api/v2/metrics/historical-metrics-configurations/{metric_name}", "late_metrics_config_write"),
     ):
