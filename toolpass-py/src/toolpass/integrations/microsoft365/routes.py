@@ -346,6 +346,7 @@ def _drive_routes() -> list[Route]:
             ("PATCH", "/permissions/{permission_id}", sh, it, {"sends_out": True}),
             ("DELETE", "/permissions/{permission_id}", sh, it, {}),
             ("POST", "/permissions/{permission_id}/grant", sh, it, {"sends_out": True}),
+            ("POST", "/permissions/{permission_id}/revokeGrants", sh, it, {}),
             ("POST", "/checkin", ed, it, {}),
             ("POST", "/checkout", ed, it, {}),
             ("POST", "/discardCheckout", ed, it, {}),
