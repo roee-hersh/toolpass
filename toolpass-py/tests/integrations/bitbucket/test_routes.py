@@ -100,6 +100,7 @@ def _parses(action: str, resource: str, data_center: bool) -> None:
         ("POST", R + "/branch-restrictions", {"kind": "push"}, "repo.admin", "repo:api", "write"),
         ("PUT", R + "/permissions-config/users/x", {"permission": "write"}, "repo.admin", "repo:api", "write"),
         ("POST", R + "/commits", None, "repo.read", "repo:api", "read"),
+        ("POST", "/2.0/workspaces/acme/codesearch", {"search_query": "x"}, "workspace.member", "workspace", "read"),
         ("POST", "/2.0/workspaces/acme/projects", {"key": "NEW"}, "workspace.admin", "workspace", "write"),
         ("PUT", "/2.0/workspaces/acme/projects/APP", {"name": "x"}, "project.admin", "project:APP", "write"),
         ("POST", "/2.0/workspaces/acme/hooks", {"url": "https://x"}, "workspace.admin", "workspace", "write"),

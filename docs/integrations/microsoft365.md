@@ -148,7 +148,8 @@ microsoft365` prints it. The connection's `url` is the host (a national cloud's 
 | `GET /drives/{drive-id}/items/{item-id}` (or `/root`), its content, versions, workbook, its list item's fields and versions | `file.read` on `drive:<drive id>/item/<item id>` |
 | change, upload, check in or out, restore, label, `POST .../children` | `file.edit` on the item (a new child: on its folder) |
 | `PUT .../items/{parent-id}:/{name}:/content` with `@microsoft.graph.conflictBehavior=fail` or `rename` | `file.edit` on the folder |
-| `createLink`, `invite`, changing the item's permissions | `file.share` on the item, sends out |
+| `createLink`, `invite`, adding or changing the item's permissions | `file.share` on the item, sends out |
+| removing a permission, or people from a sharing link (`revokeGrants`) | `file.share` on the item |
 | reading the item's permissions (they carry its sharing links) | `file.share` on the item |
 | `DELETE` the item, `permanentDelete` | `file.delete` on the item |
 | `GET /teams/{guid}`, its members, channel list, apps, tags; the General channel | `team.member` on `team:<guid>` |
