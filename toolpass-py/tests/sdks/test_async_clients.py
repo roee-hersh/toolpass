@@ -55,7 +55,7 @@ def engine(gh: harness.Server) -> RemoteLikeEngine:
 
 
 def test_httpx_sync(gh, engine, events):
-    tools = Toolkit(audit=events, permissions=engine)
+    tools = Toolkit(audit=events, permissions=engine, act_as="user")
 
     @tools.tool()
     def propose(repo: str) -> int:

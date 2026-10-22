@@ -94,7 +94,7 @@ def test_wire_hook_through_the_server(wire_gh: harness.Server) -> None:
     for word in REFUSAL_WORDS:
         assert word in text(refused), text(refused)
     assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never left the process"
-    assert [a[2] for a in engine.asked] == ["repo.read", "pr.create"]
+    assert [a[2] for a in engine.asked] == ["pr.create"]
 
     with Session(ADMIN).active():
         [opened] = run(server, [("propose_fix", {"repo": REPO})])
@@ -186,7 +186,7 @@ def test_http_user_from_header(wire_gh: harness.Server) -> None:
         assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never left the process"
         [opened] = call_http(url, {"X-Toolpass-User": ADMIN}, [("propose_fix", {"repo": REPO})])
         assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
-        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "repo.read"), (DANA, "pr.create"), (ADMIN, "repo.read"), (ADMIN, "pr.create")]
+        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "pr.create"), (ADMIN, "pr.create")]
 
 
 def test_http_one_session_per_conversation(wire_gh: harness.Server) -> None:
@@ -323,7 +323,7 @@ def test_http_user_from_access_token(wire_gh: harness.Server) -> None:
             assert word in text(refused), text(refused)
         [opened] = call_http(url, bearer("admin-token"), [("propose_fix", {"repo": REPO})])
         assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
-        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "repo.read"), (DANA, "pr.create"), (ADMIN, "repo.read"), (ADMIN, "pr.create")]
+        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "pr.create"), (ADMIN, "pr.create")]
         for nobody in ("no-email-token", "unverified-token"):
             [res] = call_http(url, bearer(nobody), [("propose_fix", {"repo": REPO})])
             assert "no_session" in text(res), (nobody, text(res))

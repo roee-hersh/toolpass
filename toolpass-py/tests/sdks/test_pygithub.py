@@ -43,7 +43,7 @@ def client(gh: harness.Server) -> Any:
 
 
 def test_a_denied_pull_request_never_leaves_the_process(gh, engine, events):
-    tools = Toolkit(audit=events, permissions=engine)
+    tools = Toolkit(audit=events, permissions=engine, act_as="user")
 
     @tools.tool()
     def propose(repo: str, title: str) -> int:
@@ -64,8 +64,8 @@ def test_a_denied_pull_request_never_leaves_the_process(gh, engine, events):
     assert requests_seen(gh)[-1] == "POST /api/v3/repos/acme/x/pulls"
 
 
-def test_act_as_agent_with_as_user_around_the_write(gh, engine, events):
-    tools = Toolkit(audit=events, permissions=engine, act_as="agent")
+def test_by_default_as_user_around_the_write(gh, engine, events):
+    tools = Toolkit(audit=events, permissions=engine)
     engine.allow[("bob@example.com", "pr.create")] = True  # may open a PR, may not read
 
     @tools.tool()
@@ -81,7 +81,7 @@ def test_act_as_agent_with_as_user_around_the_write(gh, engine, events):
 
 
 def test_as_agent_reads_then_the_user_writes(gh, engine, events):
-    tools = Toolkit(audit=events, permissions=engine)
+    tools = Toolkit(audit=events, permissions=engine, act_as="user")
     engine.allow[("bob@example.com", "pr.create")] = True
 
     @tools.tool()

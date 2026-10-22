@@ -165,7 +165,7 @@ delegation is a broad grant. The summary names the service account and the admin
 
 The integration's route table (`toolpass routes googleworkspace`) maps the requests a toolpass tool
 sends to Google's APIs to an action and a resource, so the toolkit checks the session's user before
-each request leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
+each request inside `as_user()` leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
 `admin`, `docs`, `sheets` and `slides` hosts under `googleapis.com`, and `api_url` when it names
 another endpoint. It also claims Drive's web hosts, `docs.google.com`, `drive.google.com` and
 `drive.usercontent.google.com`, and refuses every request to them: their export and download links

@@ -149,7 +149,8 @@ list forms) are parsed. Heredocs and other syntax answer `unsupported`.
 
 The [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a tool's body sends
 to `<url>/v1/...` to the capability Vault itself checks on the path, whatever engine is mounted
-there, and checks it for the session's user (`toolpass routes vault` prints the table):
+there, and checks the ones inside `as_user()` for the session's user (`toolpass routes vault` prints
+the table):
 
 | Request | Action | Effect |
 |---|---|---|
@@ -173,8 +174,8 @@ operator named need both, since such a mount may be KV v1, where every path has 
 Name the namespace in the `X-Vault-Namespace` header rather than the path for this to apply inside
 one: `team/sys/...` may be a mount named `team`. A policy that grants only `update` on a path that
 needs both (a KV write, `transit/encrypt`, which creates a missing key, or `pki/issue`, whose mount
-toolpass cannot tell from a KV mount) answers unknown: grant `create` too or make the call inside
-`as_agent()`. `auth/token/lookup-self`, `sys/capabilities-self`, `sys/internal/ui/resultant-acl`
+toolpass cannot tell from a KV mount) answers unknown: grant `create` too or make the call outside
+`as_user()`, on the agent's authority. `auth/token/lookup-self`, `sys/capabilities-self`, `sys/internal/ui/resultant-acl`
 (the agent's own token) and `sys/health`, `sys/seal-status`, `sys/leader` need no user permission.
 
 Refused, at any depth of the path, since a leading part may be a namespace (`team/cubbyhole/x`):
@@ -195,7 +196,7 @@ Refused, at any depth of the path, since a leading part may be a namespace (`tea
   a query Go would read differently, a namespace header that is not a namespace path.
 
 A tool that logs in (`auth/<mount>/login`) is checked like any other `POST`, so users' policies
-rarely allow it: log in before the tool runs, or inside `as_agent()`.
+rarely allow it: log in before the tool runs, or outside `as_user()`.
 
 ## Decisions
 

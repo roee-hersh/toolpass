@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
+from toolpass import as_user
 
 ADMIN = "admin@example.com"
 DANA = "dana@example.com"
@@ -47,7 +48,9 @@ def wire_engine(gh: harness.Server) -> Engine:
 
 
 def propose_body(gh: harness.Server, repo: str) -> str:
-    """What the secured tool's body does: a read, then a pull request, with the standard library."""
+    """What the secured tool's body does: a read on the agent's authority, then a pull request
+    checked against the user, with the standard library."""
     http("GET", f"{gh.url}/api/v3/repos/{repo}")
-    pr = http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "fix", "head": "fix", "base": "main"})
+    with as_user():
+        pr = http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": "fix", "head": "fix", "base": "main"})
     return f"opened #{pr['number']} in {repo}"

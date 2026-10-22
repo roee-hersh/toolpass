@@ -151,7 +151,7 @@ unknown email is answered as deny rather than `user_not_found`.
 
 The integration's route table (`toolpass routes googlecloud`) maps the REST requests a toolpass tool
 sends to Google Cloud to the IAM permission each needs on the resource in its path, so the toolkit
-asks the troubleshooter about the session's user before the request leaves. A request uses the
+asks the troubleshooter about the session's user before a request inside `as_user()` leaves. A request uses the
 named action when one asks exactly that permission (`storage.read`, `secret.read`, `compute.start`,
 `gke.access`, `iam.set`), and `raw:<permission>` otherwise.
 

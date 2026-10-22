@@ -86,7 +86,7 @@ class CallContext:
     entitlements: Any = None
     strict: bool = False
     # The toolkit's act_as when the call started: a configure() mid-call does not change it.
-    act_as: Literal["user", "agent"] = "agent"
+    act_as: Literal["user", "agent"] = "user"
     # Set by the hook when it refuses a request; decides the call's outcome.
     refusal: BaseException | None = None
     # Actions the pre-body checks already allowed for this call: (name, resource).
