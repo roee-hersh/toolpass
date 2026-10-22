@@ -5,9 +5,13 @@ is: the toolkit, the spec, the session and what the body has done so far.
 The HTTP hook (``_wire``) reads it to attribute each outbound request to
 the call and to record the action it turned out to be.
 
-``as_agent()`` marks a block of the body as acting on the agent's own
-authority: the requests made inside it are still classified, limited,
-scoped and audited, but not checked against the session's user.
+``without_toolpass()`` marks a block of the body whose requests are not
+checked against the session's user (they act on the agent's own
+authority); ``with_toolpass()`` marks a block whose requests are. Which one
+applies outside both is the toolkit's ``checks`` setting: ``always`` (the
+default) checks every request, ``manual`` only those inside
+``with_toolpass()``. Either way the requests are still classified, limited,
+scoped and audited.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("toolpass.toolkit")
 
-__all__ = ["CallContext", "ObservedAction", "as_agent", "current_call", "in_agent_block"]
+__all__ = ["CallContext", "ObservedAction", "as_agent", "checks_user", "current_call", "with_toolpass", "without_toolpass"]
 
 
 @dataclasses.dataclass
@@ -92,7 +96,8 @@ class CallContext:
 
 
 _current: contextvars.ContextVar[CallContext | None] = contextvars.ContextVar("toolpass_call", default=None)
-_agent_depth: contextvars.ContextVar[int] = contextvars.ContextVar("toolpass_as_agent", default=0)
+# True inside with_toolpass(), False inside without_toolpass(), None outside both.
+_marked: contextvars.ContextVar[bool | None] = contextvars.ContextVar("toolpass_checked", default=None)
 
 
 def current_call() -> CallContext | None:
@@ -100,12 +105,44 @@ def current_call() -> CallContext | None:
     return _current.get()
 
 
-def in_agent_block() -> bool:
-    return _agent_depth.get() > 0
+def checks_user(checks: str) -> bool:
+    """Whether a request made here is checked against the session's user,
+    for a toolkit whose ``checks`` setting is ``checks``. The innermost
+    ``with_toolpass()`` or ``without_toolpass()`` block decides."""
+    marked = _marked.get()
+    return checks == "always" if marked is None else marked
 
 
 @contextlib.contextmanager
-def as_agent() -> Iterator[None]:
+def _mark(checked: bool, name: str) -> Iterator[None]:
+    if _current.get() is None:
+        log.warning("toolpass: %s() used outside a secured tool's body; it has no effect there", name)
+    token = _marked.set(checked)
+    try:
+        yield
+    finally:
+        _marked.reset(token)
+
+
+def with_toolpass() -> contextlib.AbstractContextManager[None]:
+    """Check the requests made in the block against the session's user.
+
+    The block is how a toolkit configured with ``checks="manual"`` says
+    which requests the user must be allowed to make; with ``checks="always"``
+    (the default) every request already is, and the block changes nothing
+    unless it sits inside ``without_toolpass()``. Outside a tool body the
+    block changes nothing and a warning is logged.
+
+        toolpass.configure(permissions=tp, checks="manual")
+
+        files = gh.get_repo(repo).get_contents(path)        # the agent's own authority
+        with toolpass.with_toolpass():
+            gh.get_repo(repo).create_pull(...)               # checked against the user
+    """
+    return _mark(True, "with_toolpass")
+
+
+def without_toolpass() -> contextlib.AbstractContextManager[None]:
     """Run the block on the agent's own authority.
 
     Inside a secured tool's body, requests made in the block are not checked
@@ -114,26 +151,25 @@ def as_agent() -> Iterator[None]:
     action is recorded with ``as_agent``. Outside a tool body the block
     changes nothing and a warning is logged.
 
-        with toolpass.as_agent():
+        with toolpass.without_toolpass():
             files = gh.get_repo(repo).get_contents(path)   # the agent may read
         gh.get_repo(repo).create_pull(...)                  # checked against the user
     """
-    if _current.get() is None:
-        log.warning("toolpass: as_agent() used outside a secured tool's body; it has no effect there")
-    token = _agent_depth.set(_agent_depth.get() + 1)
-    try:
-        yield
-    finally:
-        _agent_depth.reset(token)
+    return _mark(False, "without_toolpass")
+
+
+def as_agent() -> contextlib.AbstractContextManager[None]:
+    """``without_toolpass()``, under its earlier name; kept so existing code keeps working."""
+    return _mark(False, "as_agent")
 
 
 @contextlib.contextmanager
 def running(ctx: CallContext) -> Iterator[None]:
     """Make ``ctx`` the current call for the block (the toolkit, around the body)."""
     token = _current.set(ctx)
-    agent_token = _agent_depth.set(0)  # a nested tool starts outside any as_agent() block
+    marked_token = _marked.set(None)  # a nested tool starts outside any with_toolpass() or without_toolpass() block
     try:
         yield
     finally:
-        _agent_depth.reset(agent_token)
+        _marked.reset(marked_token)
         _current.reset(token)

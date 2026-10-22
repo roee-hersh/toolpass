@@ -10,7 +10,7 @@ import pytest
 
 from tests import harness
 from tests.harness.wire import Engine, requests_seen
-from toolpass import ActionRefused, Session, Toolkit, as_agent
+from toolpass import ActionRefused, Session, Toolkit, without_toolpass
 
 github = pytest.importorskip("github")
 
@@ -64,14 +64,14 @@ def test_a_denied_pull_request_never_leaves_the_process(gh, engine, events):
     assert requests_seen(gh)[-1] == "POST /api/v3/repos/acme/x/pulls"
 
 
-def test_as_agent_reads_then_the_user_writes(gh, engine, events):
+def test_without_toolpass_reads_then_the_user_writes(gh, engine, events):
     tools = Toolkit(audit=events, permissions=engine)
     engine.allow[("bob@example.com", "pr.create")] = True
 
     @tools.tool()
     def propose(repo: str) -> int:
         g = client(gh)
-        with as_agent():
+        with without_toolpass():
             readme = g.get_repo(repo, lazy=True).get_contents("README.md")
         assert readme.decoded_content == b"hello"
         return int(g.get_repo(repo, lazy=True).create_pull(title="t", body="", head="f", base="main").number)

@@ -33,7 +33,7 @@ import urllib.parse
 from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from toolpass._context import CallContext, ObservedAction, current_call, in_agent_block
+from toolpass._context import CallContext, ObservedAction, checks_user, current_call
 from toolpass._toolkit import ToolRefused
 from toolpass.core.routes import Request, RouteTable, effect_of_method, host_key, rank
 
@@ -242,7 +242,7 @@ def _check(ctx: CallContext, request: Request, key: str) -> None:
     if found.unresolved is not None:
         raise _refuse(ctx, key, obs, ActionRefused(tool, "unresolved_resource", f"{request.describe()}: {found.unresolved}", obs))
 
-    agent = in_agent_block()
+    agent = not checks_user(tk.checks)
     ent = None
     if ents is not None and found.action is not None:
         ent = ents.find(obs.name or "", found.resource, ctx.call.arguments)

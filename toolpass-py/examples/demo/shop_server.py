@@ -43,7 +43,7 @@ import fake_slack
 import mcpstdio
 import world
 
-from toolpass import Session, Toolkit, Toolpass, as_agent
+from toolpass import Session, Toolkit, Toolpass, without_toolpass
 
 
 class Systems:
@@ -109,7 +109,7 @@ def build(connections: list[dict[str, Any]], urls: dict[str, str]) -> list[tuple
     @tools.tool()
     def open_pr(repo: str, branch: str, title: str, issue: str) -> str:
         """Open a pull request from branch, link it on the Jira issue, move the issue to In Review and tell #shop-dev."""
-        with as_agent():  # reading the repository is the agent's own business
+        with without_toolpass():  # reading the repository is the agent's own business
             http("GET", f"{s.gh}/repos/{repo}")
         pr = http("POST", f"{s.gh}/repos/{repo}/pulls", {"title": title, "head": branch, "base": "main", "body": f"Fixes {issue}"})
         http("POST", f"{s.jira_api}/issue/{issue}/comment", {"body": f"Pull request: {pr['html_url']}"})

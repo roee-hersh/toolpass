@@ -14,7 +14,7 @@ import yaml
 
 from tests import harness
 from tests.harness.wire import Engine, http, requests_seen
-from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, as_agent
+from toolpass import ActionRefused, Entitlement, Entitlements, Session, Toolkit, ToolRefused, without_toolpass
 from toolpass._entitlements import EntitlementsError, _template
 
 
@@ -40,7 +40,7 @@ def engine(gh: harness.Server) -> Engine:
 def propose_tool(tools: Toolkit, gh: harness.Server) -> Any:
     @tools.tool()
     def propose(repo: str, title: str) -> str:
-        with as_agent():
+        with without_toolpass():
             http("GET", f"{gh.url}/api/v3/repos/{repo}/contents/README.md")
         http("POST", f"{gh.url}/api/v3/repos/{repo}/pulls", {"title": title, "head": "f", "base": "main"})
         http("GET", f"{gh.url}/elsewhere")
