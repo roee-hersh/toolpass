@@ -376,6 +376,6 @@ def test_a_config_file_cannot_name_the_in_code_placeholder() -> None:
     from toolpass.integrations import registry
 
     for guess in ("<given in code>", IN_CODE.split(" ")[0] + ">"):
-        doc = f"connections:\n  - id: gh\n    integration: github\n    organization: acme\n    token: env:T\n    identity: \"{guess}\"\n"
+        doc = f'connections:\n  - id: gh\n    integration: github\n    organization: acme\n    token: env:T\n    identity: "{guess}"\n'
         with pytest.raises((ConfigErrors, ValueError), match="given in code"):
             parse("t.yaml", doc, registry(), require_api_key=False)
