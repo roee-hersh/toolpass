@@ -48,6 +48,7 @@ Without a wrapper:
 ```ts
 const d = await tp.check("dana@example.com", "jira-main", "DELETE_ISSUES", "issue:PAY-123");
 d.decision, d.reason;   // "deny", "denied: ..."
+d.identity;             // the account the email resolved to (a GitHub login), "" if none
 await tp.require(...);  // rejects with PermissionDenied unless allow
 ```
 

@@ -934,7 +934,7 @@ def test_identity_saml_no_provider_and_errors(gh: Harness) -> None:
     e = gh.setup()
     e.api.with_(lambda: setattr(e.api, "saml", False))
     d = e.check(DANA, "repo.read", "repo:acme/api")
-    expect_text(d, Code.UNSUPPORTED, "no SAML identity provider")
+    expect_text(d, Code.NOT_CONFIGURED, "no SAML identity provider")
 
     e.api.with_(lambda: setattr(e.api, "saml", True))
     cases: list[tuple[list[dict[str, Any]], Code]] = [

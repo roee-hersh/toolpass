@@ -195,12 +195,13 @@ is refused.
 
 `toolpass.fence(payload, label=..., source=...)` returns `(block, frames)`: the payload between two
 tags whose id is minted after the payload was fetched, a preamble telling the model that everything
-inside is data, and a fixed closing line (`toolpass.FENCE_END`) after which trusted text resumes.
-Fence tags carrying any other id, and the closing line, are replaced in the payload with
+inside is data (it starts with `toolpass.FENCE_START`), and a fixed closing line
+(`toolpass.FENCE_END`) after which trusted text resumes. Fence tags carrying any other id, and the
+closing line, are replaced in the payload with
 `[forged fence tag]`, and the preamble says how many. Frames borrowed from other trust systems
-(`<system-reminder>`, `function_calls` / `function_results`, `"type": "tool_result"`, a `Human:`,
-`Assistant:` or `System:` line, ChatML markers) are counted after NFKC, logged and left as they
-are; `frames` is that count. The label (often a path the model chose) is clipped to 300 characters,
+(`<system-reminder>` and other tags of that family, `"type": "tool_result"` / `"tool_use"`, a
+`Human:`, `Assistant:` or `System:` turn, ChatML and Llama markers) are counted after NFKC, logged
+and left as they are; `frames` is that count. The label (often a path the model chose) is clipped to 300 characters,
 kept to one line and JSON-quoted. `label` and `source` are keyword-only.
 
 ```python
@@ -209,7 +210,9 @@ prompt = f"Review requested by {requester} for {event.ref}.\n{block}"
 ```
 
 It works on text no tool produced (a chat thread's earlier messages, a CI event's diff) and on part
-of a result. `untrusted_output=True` fences a tool's whole string output with the same function,
+of a result. `toolpass.neutralize(text, limit=300)` gives text that is shown outside any fence (a
+path the model chose, in a PR body or a log line) the label's treatment: tags and the closing line
+replaced, one line, clipped. `untrusted_output=True` fences a tool's whole string output with the same function,
 unless the body already fenced its untrusted part itself (a whole block, minted during the call).
 
 ## Permission checks in tools

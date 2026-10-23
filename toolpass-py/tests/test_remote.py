@@ -151,3 +151,35 @@ def test_package_ships_type_information() -> None:
 
 def test_token_repr_hides_the_value() -> None:
     assert "s3cr3t" not in repr(Token(value="s3cr3t", expiry=1.0))
+
+
+def test_the_resolved_identity_crosses_the_wire(running: list[Running]) -> None:
+    from toolpass.core.decision import allowed, denied
+    from toolpass.core.engine import Result
+
+    class WithIdentity(StubChecker):
+        def check(self, ctx: Any, req: Any) -> Result:
+            self.last = req
+            if req.user == "a@x.com":
+                return Result(allowed("ok").with_(identity="a-gh"), 200)
+            return Result(denied("no"), 200)
+
+    tp = remote(start(running, WithIdentity(), secret.literal(KEY)))
+    assert tp.check("a@x.com", "c", "thing.read", "thing:1").identity == "a-gh"
+    assert tp.check("b@x.com", "c", "thing.read", "thing:1").identity == ""
+
+
+@pytest.mark.parametrize(("body", "want"), [({"identity": "dana"}, "dana"), ({"identity": 42}, ""), ({"identity": None}, ""), ({}, "")])
+def test_an_identity_that_is_not_a_string_is_ignored(body: dict[str, Any], want: str) -> None:
+    from toolpass._api import _parse
+
+    d = _parse(200, json.dumps({"decision": "deny", "reason": "denied: x", **body}).encode())
+    assert (d.decision, d.identity) == ("deny", want)
+
+
+def test_the_server_omits_an_empty_identity() -> None:
+    from toolpass.core.decision import allowed
+    from toolpass.server import decision_body
+
+    assert json.loads(decision_body(allowed("ok"))) == {"decision": "allow", "reason": "allowed: ok"}
+    assert json.loads(decision_body(allowed("ok").with_(identity="dana"))) == {"decision": "allow", "reason": "allowed: ok", "identity": "dana"}
