@@ -18,12 +18,15 @@ from toolpass.authx.util import StructDict, go_json_loads, go_json_marshal, pem_
 from toolpass.core.errors import go_quote
 
 __all__ = [
+    "ASYMMETRIC_ALGS",
     "PS256",
     "RS256",
     "CryptoMissing",
     "Header",
+    "b64url_decode",
     "cert_thumbprint_sha256",
     "decode_jwt_claims",
+    "jwk_public_key",
     "new_jti",
     "parse_certificate",
     "parse_rsa_private_key",
@@ -31,6 +34,7 @@ __all__ = [
     "sign_jwt",
     "standard_claims",
     "verify",
+    "verify_jws",
 ]
 
 RS256 = "RS256"  # RSASSA-PKCS1-v1_5 with SHA-256 (GitHub Apps, Google, Salesforce)
@@ -39,7 +43,7 @@ PS256 = "PS256"  # RSASSA-PSS with SHA-256 (Microsoft Entra certificate credenti
 
 class CryptoMissing(RuntimeError):
     def __init__(self) -> None:
-        super().__init__('signing with a private key needs the cryptography package: pip install "toolpass[crypto]"')
+        super().__init__('signing and verifying with a key needs the cryptography package: pip install "toolpass[crypto]"')
 
 
 def _crypto() -> Any:
@@ -50,6 +54,16 @@ def _crypto() -> Any:
     except ImportError:
         raise CryptoMissing() from None
     return hashes, serialization, padding, rsa, x509
+
+
+def _asymmetric() -> Any:
+    """The elliptic-curve and signature helpers, after _crypto."""
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+    except ImportError:
+        raise CryptoMissing() from None
+    return ec, utils, InvalidSignature
 
 
 def _der_elements(der: bytes, n: int) -> list[int]:
@@ -228,19 +242,76 @@ def sign(key: Any, alg: str, data: bytes) -> bytes:
 
 def verify(pub: Any, alg: str, data: bytes, sig: bytes) -> None:
     """Check a signature made by sign; raise on failure."""
-    from cryptography.exceptions import InvalidSignature
-
-    hashes, _, padding, _, _ = _crypto()
-    if alg == RS256:
-        pad: Any = padding.PKCS1v15()
-    elif alg == PS256:
-        pad = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
-    else:
+    if alg not in (RS256, PS256):
         raise ValueError(f"unsupported algorithm {go_quote(alg)}")
+    verify_jws(pub, alg, data, sig)
+
+
+_JWS_HASHES = {"256": "SHA256", "384": "SHA384", "512": "SHA512"}
+# The signature algorithms an identity provider signs ID tokens with and
+# verify_jws accepts: RSA (PKCS#1 v1.5 and PSS) and ECDSA. "none" and the
+# HMAC family are never accepted: they need no key, or the provider's secret.
+ASYMMETRIC_ALGS = frozenset({"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"})
+
+
+def verify_jws(pub: Any, alg: str, data: bytes, sig: bytes) -> None:
+    """Check the signature of a compact JWS made with alg by the holder of
+    pub (an RSA or EC public key); raise ValueError on failure or for an
+    algorithm outside ASYMMETRIC_ALGS."""
+    hashes, _, padding, rsa, _ = _crypto()
+    ec, utils, invalid_signature = _asymmetric()
+    if alg not in ASYMMETRIC_ALGS:
+        raise ValueError(f"unsupported algorithm {go_quote(alg)}")
+    h = getattr(hashes, _JWS_HASHES[alg[2:]])()
     try:
-        pub.verify(sig, data, pad, hashes.SHA256())
-    except InvalidSignature:
-        raise ValueError("crypto/rsa: verification error") from None
+        if alg.startswith("ES"):
+            if not isinstance(pub, ec.EllipticCurvePublicKey):
+                raise ValueError(f"{alg} needs an EC key")
+            n = (pub.curve.key_size + 7) // 8
+            if len(sig) != 2 * n:
+                raise ValueError("ecdsa: signature has the wrong length")
+            der = utils.encode_dss_signature(int.from_bytes(sig[:n], "big"), int.from_bytes(sig[n:], "big"))
+            pub.verify(der, data, ec.ECDSA(h))
+            return
+        if not isinstance(pub, rsa.RSAPublicKey):
+            raise ValueError(f"{alg} needs an RSA key")
+        pad: Any = padding.PKCS1v15() if alg.startswith("RS") else padding.PSS(mgf=padding.MGF1(h), salt_length=h.digest_size)
+        pub.verify(sig, data, pad, h)
+    except invalid_signature:
+        raise ValueError("crypto/ecdsa: verification error" if alg.startswith("ES") else "crypto/rsa: verification error") from None
+
+
+_JWK_CURVES = {"P-256": "SECP256R1", "P-384": "SECP384R1", "P-521": "SECP521R1"}
+
+
+def jwk_public_key(jwk: Any) -> Any:
+    """The public key of a JWK (RFC 7517): an RSA key from n and e, an EC
+    key from crv, x and y. Anything else (a symmetric key, an unknown
+    curve, a malformed member) is a ValueError."""
+    _, _, _, rsa, _ = _crypto()
+    ec, _, _ = _asymmetric()
+
+    if not isinstance(jwk, dict):
+        raise ValueError("jwk is not an object")
+    kty = jwk.get("kty")
+
+    def num(name: str) -> int:
+        v = jwk.get(name)
+        if not isinstance(v, str) or v == "":
+            raise ValueError(f"jwk {kty} key lacks {name}")
+        return int.from_bytes(_b64url_decode(v), "big")
+
+    if kty == "RSA":
+        n, e = num("n"), num("e")
+        if n < (1 << 2047) or e < 3:
+            raise ValueError("jwk RSA key is too small")
+        return rsa.RSAPublicNumbers(e, n).public_key()
+    if kty == "EC":
+        curve = _JWK_CURVES.get(str(jwk.get("crv")))
+        if curve is None:
+            raise ValueError(f"jwk EC key has unsupported curve {go_quote(str(jwk.get('crv')))}")
+        return ec.EllipticCurvePublicNumbers(num("x"), num("y"), getattr(ec, curve)()).public_key()
+    raise ValueError(f"jwk key type {go_quote(str(kty))} is not an asymmetric signing key")
 
 
 def standard_claims(
@@ -267,6 +338,11 @@ def standard_claims(
         merged.update(extra)
         return merged
     return out
+
+
+def b64url_decode(s: str) -> bytes:
+    """_b64url_decode for other packages: base64url without padding."""
+    return _b64url_decode(s)
 
 
 def decode_jwt_claims(token: str) -> Any:

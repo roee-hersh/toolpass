@@ -4,6 +4,10 @@ Argo CD has no API to ask "may user X do Y" for another user, so toolpass
 reads the policy (argocd-rbac-cm, argocd-cm and AppProjects) through a
 kubernetes connection and evaluates it with the same rules as the Argo CD
 API server (see the rbac subpackage).
+
+Argo CD reads a user's groups from the identity provider's groups claim.
+When the caller sends none, the oidc_* keys let the connection read them
+from the user's own ID token sent with the check (core.oidc).
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from toolpass.core import integration as integ
-from toolpass.core import jsonx
+from toolpass.core import jsonx, oidc
 from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
@@ -67,6 +71,7 @@ class Integration(integ.Integration):
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
             integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
+            *oidc.oidc_fields(),
         ]
 
     def routes(self) -> RouteTable | None:
@@ -103,7 +108,9 @@ class Integration(integ.Integration):
         kc = d.connection(s.get("kubernetes_connection"))
         if not isinstance(kc, kubernetes.Connection):
             raise ValueError(f"kubernetes_connection {go_quote(s.get('kubernetes_connection'))} is not a kubernetes connection")
-        return Connection(kc, s.get("namespace"), s.get("rbac_configmap"), s.get("user_subject"), d.now)
+        c = Connection(kc, s.get("namespace"), s.get("rbac_configmap"), s.get("user_subject"), d.now)
+        c.oidc = oidc.Verifier.from_settings(s, d)
+        return c
 
 
 @dataclass
@@ -191,6 +198,8 @@ class Connection(integ.Connection):
         # Holds the one policy bundle under the key ().
         self.policies: TTL[tuple[()], Bundle] = TTL(1)
         self.policies.set_clock(now)
+        # Set when the groups come from the user's ID token.
+        self.oidc: oidc.Verifier | None = None
 
     def load(self, ctx: Context) -> Bundle:
         """The cached policy bundle, or one fetch shared with concurrent
@@ -268,9 +277,14 @@ class Connection(integ.Connection):
         return b
 
     def resolve_identity(self, ctx: Context, u: integ.User) -> integ.Identity:
-        """Map the caller to an Argo CD subject and group values."""
+        """Map the caller to an Argo CD subject and group values: the
+        caller's groups or, when the caller sends none and oidc_issuer is
+        set, the groups claim of the user's ID token."""
         subject = u.email if self.user_subject == "email" else ""
-        return integ.Identity(id=subject, display=u.email, groups=tuple(u.groups))
+        groups = tuple(u.groups)
+        if not groups and self.oidc is not None:
+            groups = self.oidc.token_groups(ctx, u)
+        return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:
         """Evaluate the request against the loaded policy."""
@@ -351,6 +365,10 @@ class Connection(integ.Connection):
                 lines += 1
         summary = f"{lines} policy lines, {len(b.projects)} projects, match mode {b.match_mode}, default role {go_quote(b.default_role)}"
         warnings: list[str] = []
+        if self.oidc is not None:
+            line, warn = self.oidc.probe(ctx)
+            summary += "; " + line
+            warnings.extend(warn)
         if b.user_err is not None:
             warnings.append("the RBAC policy is invalid and every check will answer unknown: " + str(b.user_err))
         if not b.argocd_cm_seen:

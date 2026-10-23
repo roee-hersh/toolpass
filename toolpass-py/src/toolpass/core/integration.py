@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "COMMON_FIELDS",
     "DEFAULT_TIMEOUT",
+    "MAX_TOKEN",
     "CheckRequest",
     "Connection",
     "Deps",
@@ -54,6 +55,9 @@ __all__ = [
 
 # The per-check budget when a connection sets none.
 DEFAULT_TIMEOUT = 8.0
+# The longest token a check may carry: an ID token with a long groups
+# claim is a few KiB.
+MAX_TOKEN = 16 << 10
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,10 @@ class User:
 
     email: str
     groups: tuple[str, ...] = ()
+    # The user's own token from their login (an OIDC ID token), for an
+    # integration that reads the groups from it (core.oidc). Never logged,
+    # so not in the repr either.
+    token: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)

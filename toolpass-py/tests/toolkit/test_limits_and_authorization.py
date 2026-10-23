@@ -223,7 +223,7 @@ class FakeToolpass:
         self.allowed = allowed
         self.calls = []
 
-    def check(self, user, connection, action, resource, groups=None, *, fresh=False):
+    def check(self, user, connection, action, resource, groups=None, *, fresh=False, token=None):
         self.calls.append((user, connection, action, resource, groups, fresh))
 
         class D:

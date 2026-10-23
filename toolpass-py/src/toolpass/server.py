@@ -29,7 +29,7 @@ from toolpass._runs import MAX_RUNS_BODY, RunLog, decode_runs
 MAX_REQUEST_BODY = 64 << 10
 _MAX_HEADER_BYTES = 16 << 10
 _HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
-_FIELDS = ("user", "groups", "connection", "action", "resource", "fresh")
+_FIELDS = ("user", "groups", "connection", "action", "resource", "fresh", "token")
 
 
 class Checker(Protocol):
@@ -52,6 +52,8 @@ def check_body(req: Request) -> dict[str, Any]:
     out.update(connection=req.connection, action=req.action, resource=req.resource)
     if req.fresh:
         out["fresh"] = True
+    if req.token:
+        out["token"] = req.token
     return out
 
 
@@ -131,6 +133,13 @@ def _decode(body: bytes) -> dict[str, Any]:
         out["fresh"] = f
     else:
         raise _BadRequest("wrong type for field fresh")
+    t = v.get("token")
+    if t is None:
+        out["token"] = ""
+    elif isinstance(t, str):
+        out["token"] = t
+    else:
+        raise _BadRequest("wrong type for field token")
     return out
 
 
@@ -252,6 +261,7 @@ class Server:
                 action=v["action"],
                 resource=v["resource"],
                 fresh=v["fresh"],
+                token=v["token"],
                 remote=remote,
             ),
         )

@@ -173,6 +173,7 @@ class Toolpass:
         groups: Iterable[str] | None = None,
         *,
         fresh: bool = False,
+        token: str | None = None,
     ) -> Decision:
         """Ask. Never raises for a failed lookup: every failure becomes an
         ``unknown`` decision.
@@ -180,28 +181,31 @@ class Toolpass:
         ``fresh=True`` asks for an answer straight from the upstream system,
         skipping the caches. It narrows the window between the check and the
         action to the time between the two; it does not close it.
+
+        ``token`` is the user's own login token (an OIDC ID token), for a
+        connection that reads the groups from it (``oidc_issuer``).
         """
         grp = None if groups is None else _group_list(groups)
-        return self._backend.check(user, connection, action, resource, grp, fresh)
+        return self._backend.check(user, connection, action, resource, grp, fresh, _token(token))
 
-    def allowed(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False) -> bool:
+    def allowed(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False, token: str | None = None) -> bool:
         """True only when the answer was ``allow``."""
-        return self.check(user, connection, action, resource, groups, fresh=fresh).allowed
+        return self.check(user, connection, action, resource, groups, fresh=fresh, token=token).allowed
 
-    def require(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False) -> Decision:
+    def require(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False, token: str | None = None) -> Decision:
         """Return the decision when it is ``allow``; raise ``PermissionDenied`` otherwise."""
-        d = self.check(user, connection, action, resource, groups, fresh=fresh)
+        d = self.check(user, connection, action, resource, groups, fresh=fresh, token=token)
         if not d.allowed:
             raise PermissionDenied(d, user, connection, action, resource)
         return d
 
-    async def acheck(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False) -> Decision:
+    async def acheck(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False, token: str | None = None) -> Decision:
         """``check`` for async code; the lookup runs in a worker thread."""
-        return await asyncio.to_thread(self.check, user, connection, action, resource, groups, fresh=fresh)
+        return await asyncio.to_thread(self.check, user, connection, action, resource, groups, fresh=fresh, token=token)
 
-    async def arequire(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False) -> Decision:
+    async def arequire(self, user: str, connection: str, action: str, resource: str, groups=None, *, fresh: bool = False, token: str | None = None) -> Decision:
         """``require`` for async code."""
-        return await asyncio.to_thread(self.require, user, connection, action, resource, groups, fresh=fresh)
+        return await asyncio.to_thread(self.require, user, connection, action, resource, groups, fresh=fresh, token=token)
 
     def probe(self) -> list[tuple[str, bool, str]]:
         """Verify every connection's credential (in-process only): a list
@@ -229,7 +233,7 @@ class Toolpass:
 
 
 class _Backend:
-    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool) -> Decision:
+    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool, token: str = "") -> Decision:
         raise NotImplementedError
 
 
@@ -257,14 +261,15 @@ class _Local(_Backend):
             ),
         )
 
-    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool) -> Decision:
+    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool, token: str = "") -> Decision:
         from toolpass.core.engine import Request
 
         for name, v in (("user", user), ("connection", connection), ("action", action), ("resource", resource)):
             if not isinstance(v, str):
                 raise TypeError(f"{name} must be a string")
         res = self.engine.check(
-            None, Request(user=user, connection=connection, action=action, resource=resource, groups=groups, fresh=fresh, remote="in-process")
+            None,
+            Request(user=user, connection=connection, action=action, resource=resource, groups=groups, fresh=fresh, token=token, remote="in-process"),
         )
         return Decision(res.decision.outcome.value, res.decision.reason(), res.status, res.decision.identity)
 
@@ -309,12 +314,14 @@ class _Remote(_Backend):
             handlers.append(urllib.request.ProxyHandler({}))
         self._opener = urllib.request.build_opener(*handlers)
 
-    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool) -> Decision:
+    def check(self, user: str, connection: str, action: str, resource: str, groups: list[str] | None, fresh: bool, token: str = "") -> Decision:
         body: dict[str, Any] = {"user": user, "connection": connection, "action": action, "resource": resource}
         if groups is not None:
             body["groups"] = groups
         if fresh:
             body["fresh"] = True
+        if token:
+            body["token"] = token
         try:
             req = urllib.request.Request(
                 self.url + "/check",
@@ -357,6 +364,14 @@ def _validate_url(url: str) -> str:
         if is_loopback_host(u.hostname):
             return url.rstrip("/")
     raise ValueError(f"toolpass url {url!r} must start with https:// (http:// only for localhost)")
+
+
+def _token(token: str | None) -> str:
+    if token is None:
+        return ""
+    if not isinstance(token, str):
+        raise TypeError("token must be a string")
+    return token
 
 
 def _group_list(groups: Iterable[str]) -> list[str]:

@@ -16,6 +16,7 @@ const { Toolpass, PermissionDenied, guarded } = await import(mod);
 
 let server;
 let tp;
+let lastBody;
 
 before(async () => {
   server = createServer((req, res) => {
@@ -23,6 +24,7 @@ before(async () => {
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
       const body = JSON.parse(raw);
+      lastBody = body;
       const ok = req.headers.authorization === "Bearer k" && body.user === "admin@example.com";
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ decision: ok ? "allow" : "deny", reason: ok ? "allowed: x" : "denied: x" }));
@@ -36,6 +38,15 @@ after(() => server.close());
 test("allow and deny", async () => {
   assert.equal((await tp.check("admin@example.com", "demo", "thing.write", "thing:1")).decision, "allow");
   await assert.rejects(tp.require("dana@example.com", "demo", "thing.write", "thing:1"), PermissionDenied);
+});
+
+test("token and groups travel in the body", async () => {
+  await tp.check("admin@example.com", "demo", "thing.write", "thing:1", { groups: ["sre"], token: "eyJ.a.b" });
+  assert.deepEqual(lastBody.groups, ["sre"]);
+  assert.equal(lastBody.token, "eyJ.a.b");
+  await tp.check("admin@example.com", "demo", "thing.write", "thing:1", { token: null });
+  assert.equal("token" in lastBody, false);
+  await assert.rejects(tp.check("admin@example.com", "demo", "thing.write", "thing:1", { token: 1 }), TypeError);
 });
 
 test("unreachable is unknown", async () => {

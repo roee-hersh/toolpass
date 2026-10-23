@@ -235,7 +235,8 @@ plain functions under `toolpass.tool`, and the server only needs the user. The a
 user in the `X-Toolpass-User` header of every request, set once on its MCP client from the login
 the agent already did; `session_from_header` wraps the server's Streamable HTTP app and runs each
 request under a `Session` for that user (`X-Toolpass-Groups`, comma-separated, names the user's
-groups). The requests of one conversation share one `Session`, so a tool's limits, the
+groups; `X-Toolpass-Token` carries their ID token for a system whose groups toolpass reads from
+it). The requests of one conversation share one `Session`, so a tool's limits, the
 untrusted-input check and the exfiltration guard hold across its calls: the agent names the
 conversation in `X-Toolpass-Session` (its own chat or thread id), or else the MCP session is the
 conversation (a sessionless client has none, and then each request is a session of its own). A
@@ -274,8 +275,10 @@ A server people connect to directly from their own client (Claude Desktop, Claud
 each signing in with their own account, takes the user from the access token the SDK verified
 instead: `toolpass.configure(session=token_session())` with `from toolpass.mcp import token_session`.
 The user is the token's `email` claim (`user_claim="sub"` for its subject; a token whose
-`email_verified` is false names no one), `groups_claim=` reads the groups, and the calls made with
-one token share one session. The header never speaks for such a caller: a request with both an
+`email_verified` is false names no one), `groups_claim=` reads the groups, the token itself goes
+with every check (a connection with `oidc_issuer` reads the groups from it when its
+`oidc_audience` is the audience of the MCP server's tokens), and the calls made with one token
+share one session. The header never speaks for such a caller: a request with both an
 `Authorization` header and `X-Toolpass-User` is refused with 400.
 
 Upgrading from `toolpass.mcp.guard` (0.10 and earlier): put `@toolpass.tool()` (with

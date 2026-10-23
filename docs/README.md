@@ -31,6 +31,8 @@ agents in any language call.
 - [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
   body makes, mapped to actions and checked before they are sent; `as_user()` and `as_agent()`; recording a tool's
   entitlements and holding it to them.
+- [Groups from the user's token](guides/groups.md): the systems that grant by group, the `groups`
+  field, and the `oidc_*` keys that read the groups from the user's own ID token, with any provider.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
 - [The dashboard](guides/dashboard.md): every run of your toolpass tools, from every agent and MCP

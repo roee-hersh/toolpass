@@ -39,6 +39,8 @@ connections:
   #   kubernetes_connection: k8s-prod-eu
   #   namespace: argocd
   #   user_subject: none                              # or email, when the IdP subject is the email
+  #   oidc_issuer: https://sso.example.com            # optional: read the groups from the user's ID token
+  #   oidc_audience: argo-cd                          #   (the issuer and client id in Argo CD's oidc.config)
   #   url: https://argocd.example.com                 # optional: the API server, for observed actions
 
   # - id: gitlab-main

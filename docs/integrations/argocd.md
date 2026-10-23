@@ -38,6 +38,8 @@ rules:
     namespace: argocd              # default
     rbac_configmap: argocd-rbac-cm # default
     user_subject: none             # default; or email
+    # oidc_issuer: https://sso.example.com   # read the groups from the user's ID token
+    # oidc_audience: argo-cd                 #   (Argo CD's oidc.config issuer and clientID)
     # url: https://argocd.example.com   # the API server, for observed actions
 ```
 
@@ -46,7 +48,8 @@ rules:
 | `kubernetes_connection` | id of the kubernetes connection for the cluster Argo CD runs in |
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
-| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the caller's groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | optional: read the user's groups from the ID token sent with the check when the caller sends none; the issuer and client id of Argo CD's `oidc.config`. See [Groups from the user's token](../guides/groups.md) |
 | `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
@@ -63,8 +66,10 @@ Exactly as in Argo CD:
 3. Effect: some matching `allow` and no matching `deny`.
 4. Order: `policy.default` role first, then the subject, then each group that appears as the first
    element of some `g` line.
-5. Group values are the caller's `groups`. When `scopes` in `argocd-rbac-cm` includes `email`, the
-   email is a group value too.
+5. Group values are the caller's `groups` or, when the caller sends none and `oidc_issuer` is set,
+   the groups claim of the user's ID token, verified against the provider ([Groups from the user's
+   token](../guides/groups.md)). When `scopes` in `argocd-rbac-cm` includes `email`, the email is a
+   group value too.
 6. `server.rbac.disableApplicationFineGrainedRBACInheritance` in `argocd-cm` (default true since v3):
    when true `app.update` does not imply `app.update/<resource>`; when false the top-level verb is
    checked first.
@@ -167,6 +172,7 @@ Refused:
 | The policy is invalid (Argo CD would refuse it too) | unknown (`unsupported`) |
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
 | The ServiceAccount may not read the config maps or projects | unknown (`credential_rejected`) |
+| `oidc_issuer` is set, the caller sent no groups, and no token or one that does not verify | unknown (`invalid_request`) |
 
 ## What it cannot see
 

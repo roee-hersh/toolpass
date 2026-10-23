@@ -27,7 +27,9 @@ class Session:
     """One user's conversation with an agent.
 
     ``user`` is the identity the application authenticated; ``groups`` are
-    optional group names passed to authorization. ``ngram`` is how many
+    optional group names passed to authorization, and ``token`` the user's
+    own login token (an OIDC ID token) for a system whose groups toolpass
+    reads from it. ``ngram`` is how many
     consecutive words of untrusted output an argument must repeat to count as
     carrying it.
 
@@ -41,14 +43,18 @@ class Session:
         user: str,
         *,
         groups: Iterable[str] | None = None,
+        token: str | None = None,
         id: str | None = None,
         ngram: int = DEFAULT_NGRAM,
         untrusted_capacity: int = DEFAULT_CAPACITY,
     ) -> None:
         if not isinstance(user, str) or not user.strip():
             raise ValueError("user must be a non-empty string")
+        if token is not None and not isinstance(token, str):
+            raise ValueError("token must be a string")
         self.user = user
         self.groups: tuple[str, ...] | None = None if groups is None else tuple(groups)
+        self.token: str | None = token or None
         self.id = id or uuid.uuid4().hex
         self._lock = threading.Lock()
         self._untrusted = UntrustedText(ngram, untrusted_capacity)
@@ -127,6 +133,7 @@ USER_HEADER = "X-Toolpass-User"
 GROUPS_HEADER = "X-Toolpass-Groups"
 SESSION_HEADER = "X-Toolpass-Session"
 KEY_HEADER = "X-Toolpass-Key"
+TOKEN_HEADER = "X-Toolpass-Token"
 _REMEMBERED = 4096  # MCP sessions a wrapper keeps a Session for; the least recently used goes first
 
 _Scope = MutableMapping[str, Any]
@@ -147,7 +154,9 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
     The agent that calls the server sets the header to the user it
     authenticated (an SSO session, the Slack user who wrote the message),
     once, on its MCP client; ``X-Toolpass-Groups``, comma-separated, names
-    the user's groups for the systems that grant by group. Every
+    the user's groups for the systems that grant by group, and
+    ``X-Toolpass-Token`` carries the user's own login token (an OIDC ID
+    token) for a system whose groups toolpass reads from it. Every
     ``toolpass.tool`` the server runs then checks that user. The requests of
     one conversation share one ``Session``, so its limits, its
     untrusted-input check and its exfiltration guard hold across the tool
@@ -183,17 +192,21 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
     remembered: collections.OrderedDict[_SessionKey, Session] = collections.OrderedDict()
     lock = threading.Lock()
 
-    def session_for(user: str, groups: tuple[str, ...] | None, sid: bytes | None) -> Session:
+    def session_for(user: str, groups: tuple[str, ...] | None, token: str | None, sid: bytes | None) -> Session:
         if sid is None:
-            return Session(user, groups=groups)
+            return Session(user, groups=groups, token=token)
+        # A refreshed token mid-conversation keeps the conversation's
+        # Session (its limits and guards) and carries the new token.
         k = (user, groups, sid)
         with lock:
             session = remembered.get(k)
             if session is None:
-                session = remembered[k] = Session(user, groups=groups)
+                session = remembered[k] = Session(user, groups=groups, token=token)
                 while len(remembered) > _REMEMBERED:
                     remembered.popitem(last=False)
             else:
+                if token is not None and session.token != token:
+                    session.token = token
                 remembered.move_to_end(k)
             return session
 
@@ -245,12 +258,17 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
             await refuse(400, "toolpass: the request carries more than one X-Toolpass-Groups header")
             return
         groups = tuple(g.strip() for g in _text(group_headers[0]).split(",") if g.strip()) if group_headers else None
+        token_headers = values(b"x-toolpass-token")
+        if len(token_headers) > 1:
+            await refuse(400, "toolpass: the request carries more than one X-Toolpass-Token header")
+            return
+        user_token = _text(token_headers[0]).strip() or None if token_headers else None
         named, mcp = values(b"x-toolpass-session"), values(b"mcp-session-id")
         if len(named) > 1:
             await refuse(400, "toolpass: the request carries more than one X-Toolpass-Session header")
             return
         sid = b"named:" + named[0] if named and named[0].strip() else b"mcp:" + mcp[0] if len(mcp) == 1 else None
-        session = session_for(user, groups, sid)
+        session = session_for(user, groups, user_token, sid)
         try:
             with session.active():
                 await app(scope, receive, send)

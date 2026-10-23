@@ -128,6 +128,7 @@ by toolpass alone.
 | `identity_store_id` | `identity_center`: `d-` + 10 hex digits |
 | `sso_instance_arn` | `identity_center`: `arn:aws:sso:::instance/ssoins-...` |
 | `role_map_file` | `static_map`: the map file, see below |
+| `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | `static_map`: read the user's groups from the ID token sent with the check when the caller sends none; see [Groups from the user's token](../guides/groups.md) |
 | `context_entries` | condition keys for the simulation: `key=type:value;key=type:value`; types `string`, `stringList` (comma-separated values), `numeric`, `boolean`, `ip`, `binary`, `date` |
 | `implicit_deny_as` | what "no statement matched" (and, for `identity_center`, "no permission set assigned") answers: `deny` (default) or `unknown` |
 | `session_name` | `RoleSessionName`, default `toolpass` |
@@ -145,7 +146,7 @@ SigV4-signed POST, except the EKS `GET`.
 | Mode | Lookup | Principals |
 |---|---|---|
 | `identity_center` | `identitystore:GetUserId` by `emails.value`, then by `userName`; `DescribeUser`; `ListGroupMembershipsForMember`; `sso:ListAccountAssignmentsForPrincipal` for the user and for each group, filtered to `account_id`; `sso:DescribePermissionSet` for the names; `iam:ListRoles` under `/aws-reserved/sso.amazonaws.com/` | the account's `AWSReservedSSO_<PermissionSet>_<16 hex>` role of every assigned permission set. The name match is anchored, so `Admin` never matches permission set `Adm` |
-| `static_map` | `role_map_file`, matched case-insensitively against the email and the request's groups | every mapped role ARN, union |
+| `static_map` | `role_map_file`, matched case-insensitively against the email and the groups (the request's, or the ID token's when it sent none and `oidc_issuer` is set) | every mapped role ARN, union |
 | `iam_user` | `iam:GetUser` with the email's local part, then the full email | the IAM user |
 
 `identity_center`: a user with no permission set assigned in the account has nothing to simulate; that
@@ -168,7 +169,8 @@ platform-team           arn:aws:iam::123456789012:role/ReadOnly
 ```
 
 The file must exist and parse when toolpass starts and is re-read at most every 60 seconds; a broken
-re-read keeps the last good map and logs a warning. Groups come from the caller's `groups` field.
+re-read keeps the last good map and logs a warning. Groups come from the caller's `groups` field or,
+when it sends none and `oidc_issuer` is set, from the user's ID token.
 
 ## Resources
 

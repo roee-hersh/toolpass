@@ -8,9 +8,11 @@ and asks the API server whether that subject may perform the verb on the
 resource. The API server evaluates RBAC and every configured authorizer;
 nothing is persisted.
 
-Kubernetes has no user directory, so when the caller sends no groups a
-groups_connection (an aws connection for EKS, a directory such as Google
-Workspace, Microsoft 365 or Okta) can name them from the email instead.
+Kubernetes has no user directory, so when the caller sends no groups the
+oidc_* keys read them from the user's own ID token sent with the check
+(core.oidc, any provider), or a groups_connection (an aws connection for
+EKS, a directory such as Google Workspace, Microsoft 365 or Okta) names them
+from the email.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from toolpass.core import integration as integ
-from toolpass.core import jsonx
+from toolpass.core import jsonx, oidc
 from toolpass.core.cache import TTL, is_panic_type
 from toolpass.core.catalog import Action, go_bytes, go_decode
 from toolpass.core.context import Context
@@ -88,6 +90,7 @@ class Integration(integ.Integration):
                 validate=_validate_eks_cluster,
                 description="the EKS cluster name, required when groups_connection is an aws connection",
             ),
+            *oidc.oidc_fields(),
             integ.Field(
                 name="eks_aws_auth",
                 default="false",
@@ -164,6 +167,9 @@ class Integration(integ.Integration):
             c.groups_source = src
         elif c.eks_cluster != "" or c.eks_aws_auth:
             raise ValueError("eks_cluster and eks_aws_auth need groups_connection set to an aws connection")
+        c.oidc = oidc.Verifier.from_settings(s, d)
+        if c.oidc is not None and ref != "":
+            raise ValueError("oidc_issuer and groups_connection both name where groups come from; set one")
         return c
 
 
@@ -196,6 +202,8 @@ class Connection(integ.Connection):
         self.prefix = prefix
         self.add_auth = add_auth
         self.groups_source: integ.KubernetesSubjectSource | None = None
+        # Set when the groups come from the user's ID token.
+        self.oidc: oidc.Verifier | None = None
         self.eks_cluster = ""
         self.eks_aws_auth = False
         self.aws_auth_cache: TTL[str, dict[str, Any] | None] = TTL(1)
@@ -224,10 +232,15 @@ class Connection(integ.Connection):
 
     def resolve_identity(self, ctx: Context, u: integ.User) -> integ.Identity:
         """A string transform of the email; the groups are the caller's or,
-        when the caller sends none, groups_connection's."""
+        when the caller sends none, the ID token's (oidc_issuer) or
+        groups_connection's."""
         name = self.username(u.email)
         groups: list[str] = []
-        if not u.groups and self.groups_source is not None:
+        if not u.groups and self.oidc is not None:
+            # The token's groups are what the API server sees in its own
+            # OIDC authentication, before its group prefix.
+            groups.extend(self._prefixed(self.oidc.token_groups(ctx, u), " from the token"))
+        elif not u.groups and self.groups_source is not None:
             subject = self._subject(ctx, u.email)
             if subject.username != "":
                 name = subject.username

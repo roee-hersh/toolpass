@@ -40,7 +40,7 @@ from toolpass._default import configure, default_toolkit, secured_tool, tool
 from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
 from toolpass._fence import FENCE_END, FENCE_START, Fenced, fence, neutralize
 from toolpass._permissions import permission_check
-from toolpass._session import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, USER_HEADER, Session, current_session, session_from_header
+from toolpass._session import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, TOKEN_HEADER, USER_HEADER, Session, current_session, session_from_header
 from toolpass._toolkit import (
     EFFECTS,
     AuthDecision,
@@ -69,6 +69,7 @@ __all__ = [
     "GROUPS_HEADER",
     "KEY_HEADER",
     "SESSION_HEADER",
+    "TOKEN_HEADER",
     "UNKNOWN",
     "USER_HEADER",
     "ActionRecorder",

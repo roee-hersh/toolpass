@@ -51,6 +51,11 @@ class Connection(ABC):
   literal. A `*_connection` field names another connection, which `d.connection(id)` returns. Its
   `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), any of which is
   accepted.
+- An integration whose system grants by the groups of the user's login declares
+  `*oidc_fields("<the system>")` and builds `core.oidc.Verifier.from_settings(s, d)` in `new`; in
+  `resolve_identity`, when the caller sent no groups and the verifier is set, `token_groups(ctx, u)`
+  reads them from the ID token the check carries (`User.token`). argocd shows the pattern. Nothing
+  provider-specific belongs there: the issuer, audience and claim names are the connection's settings.
 - A directory or cloud account that knows a user's groups can implement
   `KubernetesSubjectSource` (`kubernetes_subject(ctx, email, cluster)` and the
   `kubernetes_needs_cluster` attribute), so a kubernetes connection can name it as its

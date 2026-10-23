@@ -11,11 +11,13 @@ resolution and check is recorded as evidence on the decision and in the log.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from toolpass.authx import jwt
 from toolpass.core import evidence
 from toolpass.core.cache import TTL, PanicError, is_panic_type, panic_stack
 from toolpass.core.catalog import ResourceError, parse_resource, validate_action_name
@@ -32,7 +34,7 @@ from toolpass.core.decision import (
 )
 from toolpass.core.declog import DecisionLog, Entry
 from toolpass.core.errors import as_error
-from toolpass.core.integration import CheckRequest, Connection, Deps, Identity, Integration, ProbeResult, Settings, User
+from toolpass.core.integration import MAX_TOKEN, CheckRequest, Connection, Deps, Identity, Integration, ProbeResult, Settings, User
 from toolpass.core.log import Logger
 
 if TYPE_CHECKING:
@@ -50,6 +52,10 @@ class Request:
     action: str
     resource: str
     groups: list[str] | tuple[str, ...] | None = None
+    # The user's own token from their login (an OIDC ID token), for a
+    # connection that reads the groups from it (oidc_issuer). Never logged
+    # or cached in clear, so not in the repr either.
+    token: str = field(default="", repr=False)
     # An answer straight from the upstream system: the decision cache, the
     # identity cache and the lookups integrations cache themselves are not
     # consulted, and what the request learns replaces their entries.
@@ -241,6 +247,7 @@ class Engine:
         try:
             validate_user(req.user)
             _validate_groups(groups_in)
+            _validate_token(req.token)
             if req.connection == "":
                 raise ValueError("connection is empty")
             validate_action_name(req.action)
@@ -257,9 +264,12 @@ class Engine:
             return Result(unknown_decision(Code.UNKNOWN_ACTION, f'integration {c.settings.integration} has no action "{req.action}"'), 400)
 
         groups = _normalize_groups(groups_in)
-        user = User(email=req.user, groups=tuple(groups))
-        dec_key = "\x00".join([req.connection, req.user, "\x01".join(groups), req.action, req.resource])
+        user = User(email=req.user, groups=tuple(groups), token=req.token)
+        dec_key = "\x00".join([req.connection, req.user, "\x01".join(groups), _token_key(req.token), req.action, req.resource])
         started = self._now()
+        # What a token says never outlives the token: the caches that hold
+        # the groups read from it end with it.
+        token_ttl = _token_remaining(req.token, started)
         if self._dec_ttl > 0 and not req.fresh:
             d, ok = self._decs.get(dec_key)
             if ok and d is not None:
@@ -271,7 +281,7 @@ class Engine:
             if req.fresh:
                 cctx = evidence.with_fresh(cctx)
             try:
-                identity = self._identity(cctx, c, user)
+                identity = self._identity(cctx, c, user, token_ttl)
             except Exception as e:  # noqa: BLE001 - every failure is an unknown decision
                 if is_panic_type(e):
                     # A crash outside the identity cache (it is off): logged
@@ -298,7 +308,7 @@ class Engine:
                 o = rec.oldest()
                 if o is not None and o < inputs:
                     inputs = o
-                self._decs.store(dec_key, d, self._dec_ttl, inputs, started)
+                self._decs.store(dec_key, d, min(self._dec_ttl, token_ttl), inputs, started)
             return Result(d, 200)
         finally:
             cancel()
@@ -311,14 +321,15 @@ class Engine:
         if pe is not None and pe.first_report():
             self._logger.error("lookup panicked", connection=connection, action=action, type=type(pe.value).__name__, stack=pe.stack)
 
-    def _identity(self, ctx: Context, c: _Conn, u: User) -> Identity:
+    def _identity(self, ctx: Context, c: _Conn, u: User, max_ttl: float = float("inf")) -> Identity:
         """Resolve u through the identity cache, which also carries the
-        evidence of the lookup to every check it serves."""
+        evidence of the lookup to every check it serves. max_ttl caps how
+        long the entry lives (a token's remaining life)."""
         key = _identity_key(c.settings.id, u)
 
         def fill(fctx: Context) -> tuple[_IdEntry, float]:
             try:
-                return _IdEntry(id=c.c.resolve_identity(fctx, u)), self._id_ttl
+                return _IdEntry(id=c.c.resolve_identity(fctx, u)), min(self._id_ttl, max_ttl)
             except Exception as e:
                 ie = as_error(e, ToolpassError)
                 # A connection that cannot resolve anyone as configured fails
@@ -397,6 +408,41 @@ def _validate_groups(gs: list[str]) -> None:
                 raise ValueError("group contains a control character")
 
 
+def _validate_token(t: str) -> None:
+    """A token is sent as it was issued: printable ASCII without spaces, at
+    most _MAX_TOKEN bytes (an ID token with a long groups claim is a few
+    KiB)."""
+    if not isinstance(t, str):
+        raise ValueError("token must be a string")
+    if len(t) > MAX_TOKEN:
+        raise ValueError(f"token is longer than {MAX_TOKEN} bytes")
+    for ch in t:
+        if not 0x21 <= ord(ch) <= 0x7E:
+            raise ValueError("token contains whitespace, a control character or a non-ASCII character")
+
+
+def _token_remaining(t: str, now: float) -> float:
+    """How long the token's own exp claim says it has left, read without
+    verification: it can only shorten a cache, never extend one, and a
+    token with no readable expiry is refused by whoever verifies it."""
+    if t == "":
+        return float("inf")
+    try:
+        claims = jwt.decode_jwt_claims(t)
+        exp = claims.get("exp") if isinstance(claims, dict) else None
+    except ValueError:
+        return float("inf")
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+        return float("inf")
+    return max(float(exp) - now, 0.0)
+
+
+def _token_key(t: str) -> str:
+    """How a token takes part in a cache key: a digest, so the caches never
+    hold it in clear, and "" without one."""
+    return hashlib.sha256(t.encode("ascii")).hexdigest() if t else ""
+
+
 def _normalize_groups(gs: list[str]) -> list[str]:
     """Sorted and deduplicated, so the same set looks the same to the
     integration and to both caches. Sorted by UTF-8 bytes, as Go sorts."""
@@ -411,4 +457,4 @@ def _identity_key(conn_id: str, u: User) -> str:
     the integrations' own folding differ, and two users that one of them
     tells apart must never share an Identity."""
     email = u.email.lower() if u.email.isascii() else u.email
-    return "\x00".join([conn_id, email, *u.groups])
+    return "\x00".join([conn_id, email, _token_key(u.token), *u.groups])

@@ -50,6 +50,8 @@ const d = await tp.check("dana@example.com", "jira-main", "DELETE_ISSUES", "issu
 d.decision, d.reason;   // "deny", "denied: ..."
 d.identity;             // the account the email resolved to (a GitHub login), "" if none
 await tp.require(...);  // rejects with PermissionDenied unless allow
+// The fifth argument: the user's groups, or { groups, fresh, token } (token: the user's own
+// ID token, for a connection that reads the groups from it: oidc_issuer).
 ```
 
 Framework examples: [examples/agent-ts](https://github.com/roee-hersh/toolpass/tree/main/examples/agent-ts).

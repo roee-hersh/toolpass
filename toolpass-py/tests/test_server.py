@@ -99,6 +99,12 @@ def test_check(running: list[Running]) -> None:
     assert res.status == 200 and out["decision"] == "allow" and c.last.fresh, f"fresh: {res.status} {out} {c.last}"
     res, out = h.post("Bearer " + KEY, '{"user":"a@x.com","fresh":"yes"}', "")
     assert res.status == 400 and "wrong type for field fresh" in out["reason"], f"fresh wrong type: {res.status} {out}"
+    # "token" reaches the engine and never the log.
+    res, out = h.post(
+        "Bearer " + KEY, '{"user":"a@x.com","connection":"c","action":"thing.read","resource":"thing:1","token":"eyJ.secret.sig"}', "application/json"
+    )
+    assert res.status == 200 and c.last.token == "eyJ.secret.sig", f"token: {res.status} {out} {c.last}"
+    assert "secret" not in logs.getvalue(), f"token leaked: {logs.getvalue()}"
 
 
 def test_auth(running: list[Running], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,6 +125,7 @@ def test_auth(running: list[Running], monkeypatch: pytest.MonkeyPatch) -> None:
     ("body", "ct", "status", "reason"),
     [
         ('{"user":1}', "", 400, "wrong type for field user"),
+        ('{"user":"a@x.com","token":1}', "", 400, "wrong type for field token"),
         ('{"usr":"a"}', "", 400, 'unknown field "usr"'),
         ("{", "", 400, "syntax error"),
         ("", "", 400, "empty body"),
@@ -127,7 +134,7 @@ def test_auth(running: list[Running], monkeypatch: pytest.MonkeyPatch) -> None:
     ],
     # Short ids: pytest puts the id in an environment variable, which
     # Windows limits to 32767 characters.
-    ids=["wrong-type", "unknown-field", "syntax", "empty", "trailing", "too-large"],
+    ids=["wrong-type", "token-wrong-type", "unknown-field", "syntax", "empty", "trailing", "too-large"],
 )
 def test_bad_requests(running: list[Running], body: str, ct: str, status: int, reason: str) -> None:
     h = start(running, StubChecker(), secret.literal(KEY))

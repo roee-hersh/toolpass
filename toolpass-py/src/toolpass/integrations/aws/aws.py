@@ -31,6 +31,7 @@ from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unkn
 from toolpass.core.errors import go_lower, go_quote, go_trim_space, path_error_text
 from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, KubernetesSubject, ProbeResult, Settings, User, credential_field
 from toolpass.core.log import Logger
+from toolpass.core.oidc import Verifier, oidc_fields
 from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret
 from toolpass.integrations.aws.actions import arn_field, catalog_actions, match_action, parse_resource, resolve_action
@@ -196,6 +197,7 @@ class AWS(Integration):
                 description="identity_center: the Identity Center instance ARN",
             ),
             Field(name="role_map_file", description='static_map: file of "<email-or-group> <role-arn>" lines, # comments; re-read every 60 s'),
+            *oidc_fields(),
             Field(
                 name="context_entries",
                 validate=_validate_context_entries,
@@ -324,6 +326,9 @@ class AWS(Integration):
             pass
         else:
             raise ValueError(f"identity_mode {go_quote(c.mode)} is not one of identity_center, static_map, iam_user")
+        c.oidc = Verifier.from_settings(s, d)
+        if c.oidc is not None and c.mode != "static_map":
+            raise ValueError("oidc_issuer is used only with identity_mode static_map, whose role map is keyed by group")
         c.roles = TTL(1)
         c.roles.set_clock(now)
         c.ps_names = TTL(0)
@@ -481,6 +486,7 @@ class AWSConnection(IdentityResolver, Connection):
         self.identity_store_id = ""
         self.sso_instance_arn = ""
         self.role_map: RoleMap | None = None
+        self.oidc: Verifier | None = None
         # The engine caches resolved identities (identity_cache_seconds); the
         # connection only caches what identities are built from.
         self.roles: TTL[str, list[SSORole]]
@@ -506,7 +512,7 @@ class AWSConnection(IdentityResolver, Connection):
         missing: list[str] = []
         if self.mode == "static_map":
             assert self.role_map is not None
-            arns = self.role_map.lookup(r.user.email, r.user.groups)
+            arns = self.role_map.lookup(r.user.email, r.identity.groups)
             if not arns:
                 raise user_not_found(f"{r.user.email} and its groups are not in role_map_file")
             principals = [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns]

@@ -130,8 +130,10 @@ export class Toolpass {
   /**
    * Ask toolpass. Never rejects on transport: every failure becomes an
    * `unknown` decision. The fifth argument is the user's groups, or an
-   * options object: `{ groups, fresh }`. Groups left out or null are
-   * omitted from the request.
+   * options object: `{ groups, fresh, token }`. Groups left out or null are
+   * omitted from the request. `token` is the user's own login token (an
+   * OIDC ID token), for a connection that reads the groups from it
+   * (`oidc_issuer`).
    *
    * `fresh: true` asks for an answer straight from the upstream system,
    * skipping toolpass's caches. Use it for destructive actions. It narrows
@@ -145,13 +147,16 @@ export class Toolpass {
     resource: string,
     options?: readonly string[] | null | CheckOptions,
   ): Promise<Decision> {
-    const { groups, fresh } = checkOptions(options);
+    const { groups, fresh, token } = checkOptions(options);
     const body: Record<string, unknown> = { user, connection, action, resource };
     if (groups != null) {
       body.groups = groupList(groups);
     }
     if (fresh) {
       body.fresh = true;
+    }
+    if (token) {
+      body.token = token;
     }
     let response: Response;
     let raw: string;
@@ -251,34 +256,41 @@ function isLoopback(hostname: string): boolean {
 export interface CheckOptions {
   /** The user's groups; left out or null, none are sent. */
   groups?: readonly string[] | null;
+  /** The user's own login token (an OIDC ID token); left out or null, none is sent. */
+  token?: string | null;
   /** Skip toolpass's caches and ask the upstream system now. */
   fresh?: boolean;
 }
 
-function checkOptions(o: readonly string[] | null | CheckOptions | undefined): { groups: readonly string[] | null; fresh: boolean } {
+function checkOptions(
+  o: readonly string[] | null | CheckOptions | undefined,
+): { groups: readonly string[] | null; fresh: boolean; token: string } {
   if (o == null) {
-    return { groups: null, fresh: false };
+    return { groups: null, fresh: false, token: "" };
   }
   if (Array.isArray(o)) {
-    return { groups: o as readonly string[], fresh: false };
+    return { groups: o as readonly string[], fresh: false, token: "" };
   }
   if (typeof o === "boolean") {
-    throw new TypeError("the fifth argument is the groups array or { groups, fresh }; pass { fresh: true } for a fresh check");
+    throw new TypeError("the fifth argument is the groups array or { groups, fresh, token }; pass { fresh: true } for a fresh check");
   }
   if (typeof o !== "object" || Symbol.iterator in o) {
     // A Set or another iterable of groups is not an array of them.
     throw new TypeError("groups must be an array of strings");
   }
   for (const key of Object.keys(o)) {
-    if (key !== "groups" && key !== "fresh") {
-      throw new TypeError(`unknown check option ${JSON.stringify(key)}; the options are groups and fresh`);
+    if (key !== "groups" && key !== "fresh" && key !== "token") {
+      throw new TypeError(`unknown check option ${JSON.stringify(key)}; the options are groups, fresh and token`);
     }
   }
   const opts = o as CheckOptions;
   if (opts.fresh !== undefined && typeof opts.fresh !== "boolean") {
     throw new TypeError("fresh must be a boolean");
   }
-  return { groups: opts.groups ?? null, fresh: opts.fresh === true };
+  if (opts.token != null && typeof opts.token !== "string") {
+    throw new TypeError("token must be a string");
+  }
+  return { groups: opts.groups ?? null, fresh: opts.fresh === true, token: opts.token ?? "" };
 }
 
 function groupList(groups: readonly string[]): string[] {
