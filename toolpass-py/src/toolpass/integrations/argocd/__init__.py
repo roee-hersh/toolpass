@@ -4,6 +4,10 @@ Argo CD has no API to ask "may user X do Y" for another user, so toolpass
 reads the policy (argocd-rbac-cm, argocd-cm and AppProjects) through a
 kubernetes connection and evaluates it with the same rules as the Argo CD
 API server (see the rbac subpackage).
+
+Argo CD reads a user's groups from the identity provider's groups claim. When
+the caller sends none, a groups_connection (an Okta directory) can name them
+from the email instead.
 """
 
 from __future__ import annotations
@@ -43,6 +47,11 @@ POLICY_CACHE_TTL = 30.0
 # The resources whose objects carry an application namespace.
 _NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
+# The integrations a groups_connection may name: directories whose groups are
+# what an OIDC groups claim carries. Each connection implements
+# integration.KubernetesSubjectSource, of which only the groups are used.
+GROUP_SOURCES = "okta|fake"
+
 
 class Integration(integ.Integration):
     """The argocd product."""
@@ -65,6 +74,12 @@ class Integration(integ.Integration):
                 default="none",
                 enum=("none", "email"),
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
+            ),
+            integ.connection_ref_field(
+                "groups_connection",
+                GROUP_SOURCES,
+                False,
+                "where the user's groups come from when the caller sends none: the directory behind Argo CD's OIDC login",
             ),
             integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
         ]
@@ -103,7 +118,14 @@ class Integration(integ.Integration):
         kc = d.connection(s.get("kubernetes_connection"))
         if not isinstance(kc, kubernetes.Connection):
             raise ValueError(f"kubernetes_connection {go_quote(s.get('kubernetes_connection'))} is not a kubernetes connection")
-        return Connection(kc, s.get("namespace"), s.get("rbac_configmap"), s.get("user_subject"), d.now)
+        c = Connection(kc, s.get("namespace"), s.get("rbac_configmap"), s.get("user_subject"), d.now)
+        ref = s.get("groups_connection")
+        if ref != "":
+            src = d.connection(ref)
+            if not isinstance(src, integ.KubernetesSubjectSource) or src.kubernetes_needs_cluster:
+                raise ValueError(f"groups_connection {go_quote(ref)} cannot look up the groups of an OIDC login")
+            c.groups_source = src
+        return c
 
 
 @dataclass
@@ -188,6 +210,7 @@ class Connection(integ.Connection):
         self.rbac_cm = rbac_cm
         self.user_subject = user_subject
         self.now = now
+        self.groups_source: integ.KubernetesSubjectSource | None = None
         # Holds the one policy bundle under the key ().
         self.policies: TTL[tuple[()], Bundle] = TTL(1)
         self.policies.set_clock(now)
@@ -268,9 +291,15 @@ class Connection(integ.Connection):
         return b
 
     def resolve_identity(self, ctx: Context, u: integ.User) -> integ.Identity:
-        """Map the caller to an Argo CD subject and group values."""
+        """Map the caller to an Argo CD subject and group values: the
+        caller's groups or, when the caller sends none, groups_connection's.
+        A user the directory does not know, or a deactivated one, cannot log
+        in to Argo CD and is answered user_not_found."""
         subject = u.email if self.user_subject == "email" else ""
-        return integ.Identity(id=subject, display=u.email, groups=tuple(u.groups))
+        groups = tuple(u.groups)
+        if not groups and self.groups_source is not None:
+            groups = self.groups_source.kubernetes_subject(ctx, u.email, "").groups
+        return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:
         """Evaluate the request against the loaded policy."""

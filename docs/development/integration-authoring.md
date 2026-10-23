@@ -54,7 +54,9 @@ class Connection(ABC):
 - A directory or cloud account that knows a user's groups can implement
   `KubernetesSubjectSource` (`kubernetes_subject(ctx, email, cluster)` and the
   `kubernetes_needs_cluster` attribute), so a kubernetes connection can name it as its
-  `groups_connection`; add the integration to the kubernetes `GROUP_SOURCES`.
+  `groups_connection`; add the integration to the kubernetes `GROUP_SOURCES`. When its groups are
+  what an OIDC groups claim carries and it needs no cluster name, add it to the argocd
+  `GROUP_SOURCES` too.
 - Pattern actions (`raw:<verb>:<resource>`) are listed with `pattern=True` and matched by
   `match_action`.
 

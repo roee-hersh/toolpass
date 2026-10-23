@@ -38,6 +38,7 @@ rules:
     namespace: argocd              # default
     rbac_configmap: argocd-rbac-cm # default
     user_subject: none             # default; or email
+    # groups_connection: okta-main   # where groups come from when the caller sends none
     # url: https://argocd.example.com   # the API server, for observed actions
 ```
 
@@ -47,9 +48,39 @@ rules:
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
 | `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the caller's groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `groups_connection` | optional: the id of an `okta` (or `fake`) connection that names the user's groups when the caller sends none. See [Groups from the email](#groups-from-the-email) |
 | `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
+
+## Groups from the email
+
+When users log in to Argo CD with OIDC (single sign-on), Argo CD reads their groups from the
+identity provider's groups claim, and the `g, <group>, role:...` lines of the policy match those
+names. toolpass never sees that token, so the groups are whatever the caller sends.
+
+With `groups_connection` set to an [okta](okta.md) connection, toolpass asks Okta for the user's
+groups whenever the caller sends none, so the email alone is enough. It uses the names of the user's
+Okta groups, which is what an Okta OIDC app's groups claim carries, whether Argo CD talks to Okta
+directly (`oidc.config` in `argocd-cm`) or through Dex. Groups the caller sends win: Okta is not
+asked. A user Okta does not know, or one who cannot sign in (staged, suspended, deprovisioned), is
+answered `user_not_found`, a deny. A user in no group gets the `policy.default` role (and the email,
+when `scopes` includes `email`).
+
+```yaml
+  - id: okta-main
+    integration: okta
+    url: https://acme.okta.com
+    credential: env:OKTA_API_TOKEN
+
+  - id: argocd-prod
+    integration: argocd
+    kubernetes_connection: k8s-prod-eu
+    groups_connection: okta-main
+```
+
+Okta's `sub` is the Okta user id, not the email, so keep `user_subject: none` unless your Okta app
+was set up to put the email in `sub`.
 
 ## How the evaluation works
 
@@ -167,12 +198,17 @@ Refused:
 | The policy is invalid (Argo CD would refuse it too) | unknown (`unsupported`) |
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
 | The ServiceAccount may not read the config maps or projects | unknown (`credential_rejected`) |
+| `groups_connection` has no active user with the email | deny (`user_not_found`) |
 
 ## What it cannot see
 
 - Policies bound to opaque identity provider subjects (Dex `sub`, `federated_claims.user_id`).
   Use `user_subject: email` only when the subject really is the email.
 - Local Argo CD accounts, project JWT tokens.
+- With `groups_connection`: an Okta app's groups claim is usually filtered (a regex or a prefix in
+  the claim's settings). toolpass uses every group the user is in, so a `g` line naming a group the
+  claim leaves out reads as allowed here while Argo CD denies it. Write the policy only with groups
+  the claim carries.
 - Sync windows, project source/destination restrictions, and anything else enforced outside RBAC.
 - Applications in other namespaces are addressed as `<project>/<namespace>/<name>`; toolpass does not
   look the application up to find its project.

@@ -2,8 +2,9 @@
 
 toolpass authenticates with an Okta API token (SSWS), finds the user by
 login (the email) and lists the groups the user belongs to. The same list
-is what an Okta OIDC app's groups claim carries, so a kubernetes connection
-can use an okta connection as its groups_connection. Nothing is written.
+is what an Okta OIDC app's groups claim carries, so a kubernetes or argocd
+connection can use an okta connection as its groups_connection. Nothing is
+written.
 """
 
 from __future__ import annotations

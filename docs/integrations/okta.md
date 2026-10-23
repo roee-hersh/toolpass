@@ -2,8 +2,9 @@
 
 One connection is one Okta org. toolpass authenticates with an Okta API token, finds the user by
 login (the email) and lists the groups the user belongs to. It answers one action, `group.member`,
-and serves as a [kubernetes](kubernetes.md#groups-from-the-email) connection's `groups_connection`
-for an API server whose OIDC groups claim comes from Okta. Nothing is written.
+and serves as the `groups_connection` of a [kubernetes](kubernetes.md#groups-from-the-email) or
+[argocd](argocd.md#groups-from-the-email) connection whose OIDC groups claim comes from Okta.
+Nothing is written.
 
 ## Credential
 
@@ -58,11 +59,11 @@ another login, is `user_not_found`. Groups sent by the caller are ignored.
 | 401, 403 | unknown (`credential_rejected`) |
 | 429, 5xx, a next link off the org | unknown (`upstream_rate_limited`, `upstream_error`) |
 
-## Kubernetes groups
+## Kubernetes and Argo CD groups
 
-As a kubernetes `groups_connection`, the connection returns the names of the user's groups, which is
-what an Okta OIDC app's groups claim carries. A user who cannot sign in (staged, provisioned,
-suspended, deprovisioned) is `user_not_found`.
+As a kubernetes or argocd `groups_connection`, the connection returns the names of the user's groups,
+which is what an Okta OIDC app's groups claim carries. A user who cannot sign in (staged,
+provisioned, suspended, deprovisioned) is `user_not_found`.
 The Kubernetes username stays the kubernetes connection's `username_template`.
 
 ## Requests a tool makes
@@ -76,7 +77,7 @@ sees, untrusted.
 
 - An app's groups claim is usually filtered (a regex or a prefix in the claim's settings); toolpass
   returns every group, so a binding to a group the claim leaves out reads as allowed here while the
-  cluster denies it.
+  cluster (or Argo CD) denies it.
 - Group rules and app assignments that are pending are not in the user's list until Okta applies them.
 
 ## Unverified

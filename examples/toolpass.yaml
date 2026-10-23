@@ -34,11 +34,17 @@ connections:
   #   username_template: "oidc:{email}"
   #   group_prefix: "oidc:"
 
+  # - id: okta-main
+  #   integration: okta
+  #   url: https://acme.okta.com
+  #   credential: env:OKTA_API_TOKEN                  # API token created by a Read-only Administrator
+
   # - id: argocd-prod
   #   integration: argocd
   #   kubernetes_connection: k8s-prod-eu
   #   namespace: argocd
   #   user_subject: none                              # or email, when the IdP subject is the email
+  #   groups_connection: okta-main                    # optional: the user's Okta groups when the caller sends none
   #   url: https://argocd.example.com                 # optional: the API server, for observed actions
 
   # - id: gitlab-main
