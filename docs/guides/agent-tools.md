@@ -276,8 +276,8 @@ each signing in with their own account, takes the user from the access token the
 instead: `toolpass.configure(session=token_session())` with `from toolpass.mcp import token_session`.
 The user is the token's `email` claim (`user_claim="sub"` for its subject; a token whose
 `email_verified` is false names no one), `groups_claim=` reads the groups, the token itself goes
-with every check for an `oidc` `groups_connection`, and the calls made with one token share one
-session. The header never speaks for such a caller: a request with both an
+with every check for a connection that reads the groups from it (`oidc_issuer`), and the calls made
+with one token share one session. The header never speaks for such a caller: a request with both an
 `Authorization` header and `X-Toolpass-User` is refused with 400.
 
 Upgrading from `toolpass.mcp.guard` (0.10 and earlier): put `@toolpass.tool()` (with

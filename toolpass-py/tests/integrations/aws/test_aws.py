@@ -590,14 +590,14 @@ def servers() -> Iterator[list[itest.Server]]:
 
 @pytest.fixture
 def setup(servers: list[itest.Server], monkeypatch: pytest.MonkeyPatch) -> Setup:
-    def make(values: dict[str, str] | None = None, cred: Secret | None = None, connection: Callable[[str], Connection] | None = None) -> Env:
+    def make(values: dict[str, str] | None = None, cred: Secret | None = None) -> Env:
         srv = itest.Server()
         servers.append(srv)
         srv.use_spec(aws_spec(), aws_spec_options())
         f = FakeAWS()
         srv.handle("", "/*", f.handler)
         e = Env(srv, f)
-        deps, _ = itest.deps(srv, now=e.clock, connection=connection)
+        deps, _ = itest.deps(srv, now=e.clock)
         monkeypatch.setattr(
             aws_mod, "TEST_ENDPOINTS", {"sts": srv.url, "iam": srv.url, "identitystore": srv.url, "sso": srv.url, "eks": srv.url, "imds": srv.url}
         )
@@ -1410,35 +1410,36 @@ def test_aliases_listed() -> None:
         assert RAW_ACTION_RE.fullmatch(a.action), f"alias {a.name} expands to {a.action!r}, not an IAM action"
 
 
-def test_static_map_groups_connection(setup: Setup, tmp_path: Any) -> None:
-    from toolpass.core.integration import Settings
-    from toolpass.integrations.fake import Fake
+def test_static_map_groups_from_the_token(setup: Setup, tmp_path: Any) -> None:
+    pytest.importorskip("cryptography")
+    from tests.core.test_oidc import AUD, Provider
 
-    path = os.path.join(tmp_path, "roles.txt")
-    with open(path, "w") as fh:
-        fh.write("platform-team arn:aws:iam::123456789012:role/PlatformAdmin\n")
-    directory = Fake().new(
-        background(),
-        Settings("dir", "fake", {"users": "bob@example.com", "groups": "dana@example.com=platform-team"}),
-        None,  # type: ignore[arg-type]
-    )
-    static = {
-        "identity_mode": "static_map",
-        "role_map_file": path,
-        "identity_center_role_arn": "",
-        "identity_center_region": "",
-        "identity_store_id": "",
-        "sso_instance_arn": "",
-        "groups_connection": "dir",
-    }
-    e = setup(static, connection=lambda _id: directory)
-    d = check(e, User(email="dana@example.com"), "s3.read", "all")
-    itest.expect_code(d, Code.ALLOWED)
-    assert "role PlatformAdmin" in d.text, d.text
-    # A directory user in no mapped group, and one the directory does not know.
-    itest.expect_code(check(e, User(email="bob@example.com"), "s3.read", "all"), Code.USER_NOT_FOUND)
-    itest.expect_code(check(e, User(email="nobody@example.com"), "s3.read", "all"), Code.USER_NOT_FOUND)
-    # Groups the caller sends win: the directory is not asked.
-    itest.expect_code(check(e, User(email="nobody@example.com", groups=("platform-team",)), "s3.read", "all"), Code.ALLOWED)
-    with pytest.raises(ValueError, match="only with identity_mode static_map"):
-        setup({"groups_connection": "dir"}, connection=lambda _id: directory)
+    sso = itest.Server()
+    try:
+        p = Provider(sso)
+        path = os.path.join(tmp_path, "roles.txt")
+        with open(path, "w") as fh:
+            fh.write("platform-team arn:aws:iam::123456789012:role/PlatformAdmin\n")
+        static = {
+            "identity_mode": "static_map",
+            "role_map_file": path,
+            "identity_center_role_arn": "",
+            "identity_center_region": "",
+            "identity_store_id": "",
+            "sso_instance_arn": "",
+            "oidc_issuer": p.issuer,
+            "oidc_audience": AUD,
+        }
+        e = setup(static)
+        dana = User(email="dana@example.com", token=p.token(groups=["platform-team"]))
+        d = check(e, dana, "s3.read", "all")
+        itest.expect_code(d, Code.ALLOWED)
+        assert "role PlatformAdmin" in d.text, d.text
+        itest.expect_code(check(e, User(email="dana@example.com", token=p.token(groups=["other"])), "s3.read", "all"), Code.USER_NOT_FOUND)
+        itest.expect_code(check(e, User(email="dana@example.com"), "s3.read", "all"), Code.INVALID_REQUEST)
+        # Groups the caller sends win: the token is not read.
+        itest.expect_code(check(e, User(email="dana@example.com", groups=("platform-team",), token="not.a.token"), "s3.read", "all"), Code.ALLOWED)
+        with pytest.raises(ValueError, match="only with identity_mode static_map"):
+            setup({"oidc_issuer": p.issuer, "oidc_audience": AUD})
+    finally:
+        sso.close()

@@ -2,8 +2,8 @@
 
 One connection is one Okta org. toolpass authenticates with an Okta API token, finds the user by
 login (the email) and lists the groups the user belongs to. It answers one action, `group.member`,
-and serves as a [`groups_connection`](../guides/groups.md) for the integrations that grant by
-group, when their OIDC groups claim comes from Okta. Nothing is written.
+and serves as a [kubernetes](kubernetes.md#groups-from-the-email) connection's `groups_connection`
+for an API server whose OIDC groups claim comes from Okta. Nothing is written.
 
 ## Credential
 
@@ -58,13 +58,12 @@ another login, is `user_not_found`. Groups sent by the caller are ignored.
 | 401, 403 | unknown (`credential_rejected`) |
 | 429, 5xx, a next link off the org | unknown (`upstream_rate_limited`, `upstream_error`) |
 
-## As a groups source
+## Kubernetes groups
 
-As a [`groups_connection`](../guides/groups.md), the connection returns the names of the user's
-groups, which is what an Okta OIDC app's groups claim carries. A user who cannot sign in (staged,
-provisioned, suspended, deprovisioned) is `user_not_found`, and a user in more than 100 groups, for
-whom Okta leaves the claim out of the token, is unknown (`unsupported`). For kubernetes the username
-stays the connection's `username_template`.
+As a kubernetes `groups_connection`, the connection returns the names of the user's groups, which is
+what an Okta OIDC app's groups claim carries. A user who cannot sign in (staged, provisioned,
+suspended, deprovisioned) is `user_not_found`.
+The Kubernetes username stays the kubernetes connection's `username_template`.
 
 ## Requests a tool makes
 
@@ -77,7 +76,7 @@ sees, untrusted.
 
 - An app's groups claim is usually filtered (a regex or a prefix in the claim's settings); toolpass
   returns every group, so a binding to a group the claim leaves out reads as allowed here while the
-  system denies it.
+  cluster denies it.
 - Group rules and app assignments that are pending are not in the user's list until Okta applies them.
 
 ## Unverified
@@ -85,7 +84,7 @@ sees, untrusted.
 Marked `# UNVERIFIED:` in the code:
 
 - That the groups claim of an Okta OIDC app carries the groups' `profile.name`, as Okta documents
-  for the default claim, and that it is left out above 100 groups.
+  for the default claim.
 
 ## Test
 

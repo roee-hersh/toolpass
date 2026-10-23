@@ -1219,26 +1219,27 @@ def test_actions_listed() -> None:
     assert len(Microsoft365().actions()) == 18, f"{len(Microsoft365().actions())} actions"
 
 
-# -- groups_connection ----------------------------------------------------------------
+# -- kubernetes groups_connection ----------------------------------------------------
 
 
-def test_user_groups_member_group_ids(env: Env) -> None:
+def test_kubernetes_subject_member_group_ids(env: Env) -> None:
     srv, f, c = env.setup()
     assert isinstance(c, Microsoft365Connection)
     f.groups[DANA_ID] = [GROUP_A, GROUP_B, GROUP_A.upper()]
-    # Lower-cased object ids, once each: what an Entra groups claim carries.
-    assert c.user_groups(background(), User(email="dana@example.com")) == (GROUP_A, GROUP_B)
+    s = c.kubernetes_subject(background(), "dana@example.com", "")
+    # Lower-cased object ids, once each: what AKS's Entra RBAC binds to.
+    assert s.groups == (GROUP_A, GROUP_B), s
+    assert s.username == "" and not s.mapped and s.found
     last = srv.last_call()
     assert last.method == "POST" and last.path == "/v1.0/users/" + DANA_ID + "/getMemberGroups", f"{last.method} {last.path}"
     assert last.json() == {"securityEnabledOnly": False}
-    assert c.user_groups(background(), User(email="bob@example.com")) == ()
-    assert c.groups_claim_limit == 200
+    assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ()
 
 
-def test_user_groups_unknown_and_disabled(env: Env) -> None:
+def test_kubernetes_subject_unknown_and_disabled(env: Env) -> None:
     _, _, c = env.setup()
     assert isinstance(c, Microsoft365Connection)
     for email, want in (("nobody@example.com", "no Entra user"), ("off@example.com", "disabled")):
         with pytest.raises(ToolpassError) as ei:
-            c.user_groups(background(), User(email=email))
+            c.kubernetes_subject(background(), email, "")
         assert ei.value.code == Code.USER_NOT_FOUND and want in ei.value.text, ei.value

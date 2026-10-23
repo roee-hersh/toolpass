@@ -31,8 +31,8 @@ agents in any language call.
 - [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
   body makes, mapped to actions and checked before they are sent; `as_user()` and `as_agent()`; recording a tool's
   entitlements and holding it to them.
-- [Groups from the email](guides/groups.md): the systems that grant by group, the `groups` field,
-  and `groups_connection`, where a directory names a user's groups when the caller sends none.
+- [Groups from the user's token](guides/groups.md): the systems that grant by group, the `groups`
+  field, and the `oidc_*` keys that read the groups from the user's own ID token, with any provider.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
 - [The dashboard](guides/dashboard.md): every run of your toolpass tools, from every agent and MCP
@@ -52,7 +52,7 @@ agents in any language call.
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,
   and `gateway off`.
-- [Integrations](integrations/README.md): the twenty-three systems, their status, and one page each.
+- [Integrations](integrations/README.md): the twenty-two systems, their status, and one page each.
 - [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
   the chart, and how they are released.
 - [Helm chart values](../deploy/helm/toolpass/README.md).

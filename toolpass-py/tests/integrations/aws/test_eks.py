@@ -25,7 +25,7 @@ DEV_SHORT = "arn:aws:iam::123456789012:role/AWSReservedSSO_Developer_fedcba98765
 
 
 def subject(e: Env, email: str, cluster: str = "prod") -> KubernetesSubject:
-    return e.c.kubernetes_subject(background(), User(email=email), cluster)
+    return e.c.kubernetes_subject(background(), email, cluster)
 
 
 def code_of(e: Env, email: str, cluster: str = "prod") -> tuple[Code, str]:

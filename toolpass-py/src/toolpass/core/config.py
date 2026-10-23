@@ -565,10 +565,8 @@ def _resolve(ld: _Loader_, pending: list[tuple[Settings, _Node, dict[str, str]]]
             if tp is None:
                 ld.errf(node, f"connection {go_quote(s.id)}: {fld} refers to unknown connection {go_quote(target)}")
                 continue
-            if tp[0].integration not in ref_integrations(want, ld.reg):
-                ld.errf(
-                    node, f"connection {go_quote(s.id)}: {fld} must name a {ref_text(want, ld.reg)} connection, but {go_quote(target)} is {tp[0].integration}"
-                )
+            if tp[0].integration not in ref_integrations(want):
+                ld.errf(node, f"connection {go_quote(s.id)}: {fld} must name a {ref_text(want)} connection, but {go_quote(target)} is {tp[0].integration}")
             if target == s.id:
                 ld.errf(node, f"connection {go_quote(s.id)}: {fld} refers to itself")
     if ld.errs:

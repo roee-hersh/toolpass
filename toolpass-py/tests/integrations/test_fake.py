@@ -100,20 +100,19 @@ def test_fake_groups_source() -> None:
     s = Settings("dir", "fake", {"users": "bob@example.com", "groups": "Dana@Example.com=platform-team, ops ;eve@example.com=", "groups_mapped": "false"})
     c = Fake().new(background(), s, deps)  # type: ignore[arg-type]
     assert isinstance(c, FakeConnection) and c.kubernetes_needs_cluster is False
-    assert c.user_groups(background(), "dana@example.com") == ("platform-team", "ops")
-    sub = c.kubernetes_subject(background(), User(email="dana@example.com"), "")
+    sub = c.kubernetes_subject(background(), "dana@example.com", "")
     assert sub.groups == ("platform-team", "ops") and not sub.mapped and sub.found
-    assert c.kubernetes_subject(background(), User(email="eve@example.com"), "").groups == ()
-    assert c.kubernetes_subject(background(), User(email="bob@example.com"), "").groups == ()
+    assert c.kubernetes_subject(background(), "eve@example.com", "").groups == ()
+    assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ()
     with pytest.raises(ToolpassError) as ei:
-        c.kubernetes_subject(background(), User(email="nobody@example.com"), "")
+        c.kubernetes_subject(background(), "nobody@example.com", "")
     assert ei.value.code == Code.USER_NOT_FOUND
     mapped = Fake().new(background(), Settings("dir", "fake", {"groups": "ops@example.com=system:masters", "groups_mapped": "true"}), deps)  # type: ignore[arg-type]
-    assert isinstance(mapped, FakeConnection) and mapped.kubernetes_subject(background(), User(email="ops@example.com"), "").mapped
+    assert isinstance(mapped, FakeConnection) and mapped.kubernetes_subject(background(), "ops@example.com", "").mapped
     for bad in ("dana", "=x", "dana@example.com=a;dana@example.com=b"):
         with pytest.raises(ValueError):
             _validate_groups(bad)
     failing = Fake().new(background(), Settings("dir", "fake", {"fail": "upstream_error"}), deps)  # type: ignore[arg-type]
     with pytest.raises(ToolpassError) as ei:
-        failing.kubernetes_subject(background(), User(email="dana@example.com"), "")  # type: ignore[attr-defined]
+        failing.kubernetes_subject(background(), "dana@example.com", "")  # type: ignore[attr-defined]
     assert ei.value.code == Code.UPSTREAM_ERROR

@@ -8,9 +8,11 @@ and asks the API server whether that subject may perform the verb on the
 resource. The API server evaluates RBAC and every configured authorizer;
 nothing is persisted.
 
-Kubernetes has no user directory, so when the caller sends no groups a
-groups_connection (an aws connection for EKS, a directory such as Google
-Workspace, Microsoft 365 or Okta) can name them from the email instead.
+Kubernetes has no user directory, so when the caller sends no groups the
+oidc_* keys read them from the user's own ID token sent with the check
+(core.oidc, any provider), or a groups_connection (an aws connection for
+EKS, a directory such as Google Workspace, Microsoft 365 or Okta) names them
+from the email.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from toolpass.core import integration as integ
-from toolpass.core import jsonx
+from toolpass.core import jsonx, oidc
 from toolpass.core.cache import TTL, is_panic_type
 from toolpass.core.catalog import Action, go_bytes, go_decode
 from toolpass.core.context import Context
@@ -44,6 +46,10 @@ SELF_RULES_PATH = "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews"
 # Marks the groups the API server assigns itself (system:masters,
 # system:authenticated, system:nodes, ...).
 RESERVED_GROUP_PREFIX = "system:"
+
+# The integrations a groups_connection may name: each connection implements
+# integration.KubernetesSubjectSource.
+GROUP_SOURCES = "aws|googleworkspace|microsoft365|okta|fake"
 
 AWS_AUTH_PATH = "/api/v1/namespaces/kube-system/configmaps/aws-auth"
 # How long the aws-auth ConfigMap is reused across users.
@@ -73,15 +79,18 @@ class Integration(integ.Integration):
                 enum=("true", "false"),
                 description="also send system:authenticated, as the API server would",
             ),
-            integ.groups_connection_field(
+            integ.connection_ref_field(
+                "groups_connection",
+                GROUP_SOURCES,
+                False,
                 "where the user's groups come from when the caller sends none: an aws connection (EKS access entries) or a directory",
-                ref=f"@{integ.CAP_KUBERNETES_SUBJECT}|@{integ.CAP_GROUPS}",
             ),
             integ.Field(
                 name="eks_cluster",
                 validate=_validate_eks_cluster,
                 description="the EKS cluster name, required when groups_connection is an aws connection",
             ),
+            *oidc.oidc_fields("the API server"),
             integ.Field(
                 name="eks_aws_auth",
                 default="false",
@@ -145,22 +154,22 @@ class Integration(integ.Integration):
         c.eks_aws_auth = s.bool("eks_aws_auth", False)
         c.aws_auth_cache.set_clock(d.now)
         if ref != "":
-            conn = d.connection(ref)
-            if isinstance(conn, integ.KubernetesSubjectSource):
-                c.groups_source = conn
-            elif isinstance(conn, integ.GroupsSource):
-                c.directory = conn
-            else:
+            src = d.connection(ref)
+            if not isinstance(src, integ.KubernetesSubjectSource):
                 raise ValueError(f"groups_connection {go_quote(ref)} cannot look up Kubernetes groups")
-            needs_cluster = c.groups_source is not None and bool(c.groups_source.kubernetes_needs_cluster)
+            needs_cluster = bool(src.kubernetes_needs_cluster)
             if needs_cluster and c.eks_cluster == "":
                 raise ValueError("eks_cluster is required when groups_connection is an aws connection")
             if not needs_cluster and c.eks_cluster != "":
                 raise ValueError("eks_cluster is used only when groups_connection is an aws connection")
             if not needs_cluster and c.eks_aws_auth:
                 raise ValueError("eks_aws_auth is used only when groups_connection is an aws connection")
+            c.groups_source = src
         elif c.eks_cluster != "" or c.eks_aws_auth:
             raise ValueError("eks_cluster and eks_aws_auth need groups_connection set to an aws connection")
+        c.oidc = oidc.Verifier.from_settings(s, d)
+        if c.oidc is not None and ref != "":
+            raise ValueError("oidc_issuer and groups_connection both name where groups come from; set one")
         return c
 
 
@@ -192,11 +201,9 @@ class Connection(integ.Connection):
         self.template = template
         self.prefix = prefix
         self.add_auth = add_auth
-        # One of: a source of Kubernetes subjects (EKS access entries, GKE's
-        # security group) or a plain directory whose groups are treated like
-        # groups a caller sent.
         self.groups_source: integ.KubernetesSubjectSource | None = None
-        self.directory: integ.GroupsSource | None = None
+        # Set when the groups come from the user's ID token.
+        self.oidc: oidc.Verifier | None = None
         self.eks_cluster = ""
         self.eks_aws_auth = False
         self.aws_auth_cache: TTL[str, dict[str, Any] | None] = TTL(1)
@@ -225,13 +232,16 @@ class Connection(integ.Connection):
 
     def resolve_identity(self, ctx: Context, u: integ.User) -> integ.Identity:
         """A string transform of the email; the groups are the caller's or,
-        when the caller sends none, groups_connection's."""
+        when the caller sends none, the ID token's (oidc_issuer) or
+        groups_connection's."""
         name = self.username(u.email)
         groups: list[str] = []
-        if not u.groups and self.directory is not None:
-            groups.extend(self._prefixed(integ.claimed_groups(self.directory, ctx, u), " from groups_connection"))
+        if not u.groups and self.oidc is not None:
+            # The token's groups are what the API server sees in its own
+            # OIDC authentication, before its group prefix.
+            groups.extend(self._prefixed(self.oidc.token_groups(ctx, u), " from the token"))
         elif not u.groups and self.groups_source is not None:
-            subject = self._subject(ctx, u)
+            subject = self._subject(ctx, u.email)
             if subject.username != "":
                 name = subject.username
             if subject.mapped:
@@ -270,13 +280,12 @@ class Connection(integ.Connection):
             out.append(self.prefix + g)
         return out
 
-    def _subject(self, ctx: Context, u: integ.User) -> integ.KubernetesSubject:
+    def _subject(self, ctx: Context, email: str) -> integ.KubernetesSubject:
         """Ask groups_connection, then (eks_aws_auth) the aws-auth ConfigMap
         for each principal that has no access entry, as EKS falls back to
         aws-auth per principal on an API_AND_CONFIG_MAP cluster."""
         assert self.groups_source is not None
-        email = u.email
-        subject = self.groups_source.kubernetes_subject(ctx, u, self.eks_cluster)
+        subject = self.groups_source.kubernetes_subject(ctx, email, self.eks_cluster)
         tried = ", ".join(subject.tried) or "none"
         if self.eks_aws_auth and subject.tried:
             from toolpass.integrations.aws.eks import match_aws_auth, merge_mappings

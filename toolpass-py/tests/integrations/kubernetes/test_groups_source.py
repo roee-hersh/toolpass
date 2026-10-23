@@ -45,11 +45,11 @@ class Source:
     kubernetes_needs_cluster: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
-        self.calls.append((user.email, cluster))
-        s = self.subjects.get(user.email)
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        self.calls.append((email, cluster))
+        s = self.subjects.get(email)
         if s is None:
-            raise user_not_found(f"no account for {user.email}")
+            raise user_not_found(f"no account for {email}")
         return s
 
 
@@ -302,34 +302,6 @@ def test_source_must_implement_the_protocol(make: Make) -> None:
         make(object())
 
 
-@dataclass
-class Directory:
-    """A plain GroupsSource: group names, no username, no mapping."""
-
-    groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    groups_claim_limit: int | None = None
-
-    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
-        g = self.groups.get(user.email)
-        if g is None:
-            raise user_not_found(f"no account for {user.email}")
-        return g
-
-
-def test_plain_groups_source(make: Make) -> None:
-    srv, _, c = make(Directory({"dana@example.com": ("platform-team",), "eve@example.com": ("system:masters",)}))
-    itest.expect_code(check(c, dana, "deployment.create", "namespace:payments"), Code.ALLOWED)
-    assert last_spec(srv)["groups"] == ["platform-team", "system:authenticated"]
-    # Directory groups are treated like groups a caller sent.
-    itest.expect_code(check(c, User(email="eve@example.com"), "raw:delete:nodes", "cluster"), Code.INVALID_REQUEST)
-    itest.expect_code(check(c, User(email="nobody@example.com"), "raw:get:pods", "namespace:payments"), Code.USER_NOT_FOUND)
-    with pytest.raises(ValueError, match="eks_cluster is used only"):
-        make(Directory(), {"eks_cluster": "prod"})
-    capped = Directory({"dana@example.com": ("a", "b", "c")}, groups_claim_limit=2)
-    _, _, c = make(capped)
-    itest.expect_code(check(c, dana, "raw:get:pods", "namespace:payments"), Code.UNSUPPORTED)
-
-
 def test_protocol_implementations() -> None:
     from toolpass.integrations.aws import AWSConnection
 
@@ -346,7 +318,7 @@ def test_config_accepts_every_source_and_rejects_others() -> None:
     cfg = parse_config("t.yaml", ok, registry())
     assert [s.id for s in cfg.connections] == ["d", "k"], "the source must be built first"
     bad = base + "    groups_connection: j\n  - id: j\n    integration: jira\n    url: https://x.atlassian.net\n    credential: env:J\n    username: a@b.c\n"
-    with pytest.raises(Exception, match=r"groups_connection must name a aws, fake, googleworkspace, microsoft365, oidc, okta connection, but \"j\" is jira"):
+    with pytest.raises(Exception, match=r"groups_connection must name a aws, googleworkspace, microsoft365, okta, fake connection, but \"j\" is jira"):
         parse_config("t.yaml", bad, registry())
 
 

@@ -560,7 +560,7 @@ def catalog(args: list[str], stdout: IO[str], stderr: IO[str]) -> int:
         if f.secret:
             flags.append("secret: env:NAME or file:/path")
         if f.ref:
-            flags.append(f"id of a {ref_text(f.ref, reg)} connection")
+            flags.append(f"id of a {ref_text(f.ref)} connection")
         if f.default:
             flags.append(f"default {f.default}")
         if f.enum:

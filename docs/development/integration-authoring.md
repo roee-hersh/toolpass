@@ -49,17 +49,17 @@ class Connection(ABC):
   `Settings.object(name)` (None when absent); it cannot be secret, required or defaulted. The rest
   are strings (`Settings.get`, `Settings.bool`). Never declare `url`, `credential` and the like through both a helper and a
   literal. A `*_connection` field names another connection, which `d.connection(id)` returns. Its
-  `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), or a capability
-  (`"@groups"`): any integration whose `provides()` includes it is accepted.
-- A directory that knows a user's groups, or a source that reads them from the user's token
-  (`User.token`), implements `GroupsSource` (`user_groups(ctx, user)` and `groups_claim_limit`) and
-  returns `{CAP_GROUPS}` from `provides()`; every integration with a `groups_connection`
-  (`groups_connection_field`) then accepts it. A source with cluster-specific rules (EKS access
-  entries, GKE's security group) implements `KubernetesSubjectSource` (`kubernetes_subject(ctx,
-  user, cluster)` and `kubernetes_needs_cluster`) with `CAP_KUBERNETES_SUBJECT`, which only the
-  kubernetes connection takes. An integration that grants by group declares
-  `groups_connection_field` and, in `resolve_identity`, asks the source when the caller sent no
-  groups; see argocd for the pattern.
+  `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), any of which is
+  accepted.
+- An integration whose system grants by the groups of the user's login declares
+  `*oidc_fields("<the system>")` and builds `core.oidc.Verifier.from_settings(s, d)` in `new`; in
+  `resolve_identity`, when the caller sent no groups and the verifier is set, `token_groups(ctx, u)`
+  reads them from the ID token the check carries (`User.token`). argocd shows the pattern. Nothing
+  provider-specific belongs there: the issuer, audience and claim names are the connection's settings.
+- A directory or cloud account that knows a user's groups can implement
+  `KubernetesSubjectSource` (`kubernetes_subject(ctx, email, cluster)` and the
+  `kubernetes_needs_cluster` attribute), so a kubernetes connection can name it as its
+  `groups_connection`; add the integration to the kubernetes `GROUP_SOURCES`.
 - Pattern actions (`raw:<verb>:<resource>`) are listed with `pattern=True` and matched by
   `match_action`.
 

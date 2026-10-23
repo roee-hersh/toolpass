@@ -131,15 +131,15 @@ def test_resolve_identity(setup: Setup) -> None:
         assert ei.value.code == code, (email, ei.value)
 
 
-def test_user_groups(setup: Setup) -> None:
+def test_kubernetes_subject(setup: Setup) -> None:
     _, _, c = setup()
     assert isinstance(c, OktaConnection)
-    assert c.user_groups(background(), User(email="dana@example.com")) == ("Everyone", "platform-team", "viewers")
-    assert c.user_groups(background(), User(email="bob@example.com")) == ("viewers",)
-    assert c.groups_claim_limit == 100
+    s = c.kubernetes_subject(background(), "dana@example.com", "")
+    assert s.groups == ("Everyone", "platform-team", "viewers") and not s.mapped and s.username == "", s
+    assert c.kubernetes_subject(background(), "bob@example.com", "").groups == ("viewers",)
     for email in ("off@example.com", "gone@example.com", "new@example.com", "nobody@example.com"):
         with pytest.raises(ToolpassError) as ei:
-            c.user_groups(background(), User(email=email))
+            c.kubernetes_subject(background(), email, "")
         assert ei.value.code == Code.USER_NOT_FOUND, (email, ei.value)
 
 

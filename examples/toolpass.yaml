@@ -34,22 +34,13 @@ connections:
   #   username_template: "oidc:{email}"
   #   group_prefix: "oidc:"
 
-  # - id: sso                                         # any OpenID Connect provider, as a groups_connection
-  #   integration: oidc
-  #   issuer: https://acme.okta.com/oauth2/default    # as in the system's OIDC settings
-  #   audience: argo-cd                               # the client id the system logs in with
-
-  # - id: okta-main
-  #   integration: okta
-  #   url: https://acme.okta.com
-  #   credential: env:OKTA_API_TOKEN                  # API token created by a Read-only Administrator
-
   # - id: argocd-prod
   #   integration: argocd
   #   kubernetes_connection: k8s-prod-eu
   #   namespace: argocd
   #   user_subject: none                              # or email, when the IdP subject is the email
-  #   groups_connection: sso                          # optional: groups from the user's token (or okta-main, from the email)
+  #   oidc_issuer: https://sso.example.com            # optional: read the groups from the user's ID token
+  #   oidc_audience: argo-cd                          #   (the issuer and client id in Argo CD's oidc.config)
   #   url: https://argocd.example.com                 # optional: the API server, for observed actions
 
   # - id: gitlab-main

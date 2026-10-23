@@ -29,22 +29,9 @@ from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unknown_decision, unsupported, user_not_found
 from toolpass.core.errors import go_lower, go_quote, go_trim_space, path_error_text
-from toolpass.core.integration import (
-    CAP_KUBERNETES_SUBJECT,
-    CheckRequest,
-    Connection,
-    Deps,
-    Field,
-    GroupsSource,
-    Integration,
-    KubernetesSubject,
-    ProbeResult,
-    Settings,
-    User,
-    credential_field,
-    groups_connection_field,
-)
+from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, KubernetesSubject, ProbeResult, Settings, User, credential_field
 from toolpass.core.log import Logger
+from toolpass.core.oidc import Verifier, oidc_fields
 from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret
 from toolpass.integrations.aws.actions import arn_field, catalog_actions, match_action, parse_resource, resolve_action
@@ -160,9 +147,6 @@ class AWS(Integration):
     def name(self) -> str:
         return "aws"
 
-    def provides(self) -> frozenset[str]:
-        return frozenset({CAP_KUBERNETES_SUBJECT})
-
     def fields(self) -> list[Field]:
         return [
             Field(
@@ -213,7 +197,7 @@ class AWS(Integration):
                 description="identity_center: the Identity Center instance ARN",
             ),
             Field(name="role_map_file", description='static_map: file of "<email-or-group> <role-arn>" lines, # comments; re-read every 60 s'),
-            groups_connection_field("static_map: where the user's groups come from when the caller sends none (a directory)"),
+            *oidc_fields("the role map's users"),
             Field(
                 name="context_entries",
                 validate=_validate_context_entries,
@@ -302,9 +286,6 @@ class AWS(Integration):
         eks_region = s.get("eks_region") or c.region
         c.eks = AWSClient(c.plain, _endpoint("eks", regional_endpoint(c.partition, "eks", eks_region)), eks_region, "eks", c.account_creds)
 
-        groups_ref = s.get("groups_connection")
-        if groups_ref != "" and c.mode != "static_map":
-            raise ValueError("groups_connection is used only with identity_mode static_map")
         if c.mode == "identity_center":
             ic_role = s.get("identity_center_role_arn")
             ic_region = s.get("identity_center_region")
@@ -341,15 +322,13 @@ class AWS(Integration):
             except (OSError, ValueError) as e:
                 raise ValueError(f"role_map_file: {path_error_text('stat', path, e)}") from e
             c.role_map = RoleMap(path, now, logger.warn)
-            if groups_ref != "":
-                src = d.connection(groups_ref)
-                if not isinstance(src, GroupsSource):
-                    raise ValueError(f"groups_connection {go_quote(groups_ref)} cannot look up a user's groups")
-                c.groups_source = src
         elif c.mode == "iam_user":
             pass
         else:
             raise ValueError(f"identity_mode {go_quote(c.mode)} is not one of identity_center, static_map, iam_user")
+        c.oidc = Verifier.from_settings(s, d)
+        if c.oidc is not None and c.mode != "static_map":
+            raise ValueError("oidc_issuer is used only with identity_mode static_map, whose role map is keyed by group")
         c.roles = TTL(1)
         c.roles.set_clock(now)
         c.ps_names = TTL(0)
@@ -507,7 +486,7 @@ class AWSConnection(IdentityResolver, Connection):
         self.identity_store_id = ""
         self.sso_instance_arn = ""
         self.role_map: RoleMap | None = None
-        self.groups_source: GroupsSource | None = None
+        self.oidc: Verifier | None = None
         # The engine caches resolved identities (identity_cache_seconds); the
         # connection only caches what identities are built from.
         self.roles: TTL[str, list[SSORole]]
@@ -682,7 +661,7 @@ class AWSConnection(IdentityResolver, Connection):
             raise errorf(Code.UPSTREAM_ERROR, "SimulatePrincipalPolicy returned an unknown decision")
         return out
 
-    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
         """The Kubernetes groups (and username) EKS gives the user on
         cluster: the email's IAM principals, as resolve_identity finds them,
         each looked up with eks:DescribeAccessEntry. The groups of every
@@ -694,8 +673,7 @@ class AWSConnection(IdentityResolver, Connection):
         principal has an entry; tried names the principals without one, so
         the kubernetes connection can look them up in aws-auth."""
         validate_eks_cluster(cluster)
-        email = user.email
-        principals, missing = self._kubernetes_principals(ctx, user)
+        principals, missing = self._kubernetes_principals(ctx, email)
         if not principals:
             text = f"{email} has no IAM principal in account {self.account_id} to look up on EKS cluster {cluster}"
             if missing:
@@ -714,21 +692,17 @@ class AWSConnection(IdentityResolver, Connection):
         username, groups = merge_mappings(found, email)
         return KubernetesSubject(username=username, groups=groups, mapped=True, tried=tuple(unmapped))
 
-    def _kubernetes_principals(self, ctx: Context, user: User) -> tuple[list[Principal], list[str]]:
-        """The user's principals, as for a check of a user who sent no
-        groups (the kubernetes connection asks only when it got none); the
-        token travels, for an oidc groups_connection of this connection."""
-        user = User(email=user.email, token=user.token)
+    def _kubernetes_principals(self, ctx: Context, email: str) -> tuple[list[Principal], list[str]]:
         if self.mode == "static_map":
             assert self.role_map is not None
-            email = go_trim_space(user.email)
+            email = go_trim_space(email)
             if email == "" or "@" not in email:
                 raise user_not_found(f"{go_quote(email)} is not an email address")
-            arns = self.role_map.lookup(email, self._static_groups(ctx, user))
+            arns = self.role_map.lookup(email, [])
             if not arns:
-                raise user_not_found(f"{email} and its groups are not in role_map_file")
+                raise user_not_found(f"{email} is not in role_map_file")
             return [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns], []
-        ident = self.resolve_identity(ctx, user)
+        ident = self.resolve_identity(ctx, User(email=email))
         if ident.attr("user_status") == "DISABLED":
             raise user_not_found(f"{ident.display} is disabled in IAM Identity Center")
         nat = ident.native if isinstance(ident.native, Native) else None

@@ -1,121 +1,87 @@
-# Groups from the email
+# Groups from the user's token
 
 Some systems grant access by group: Kubernetes RBAC binds roles to the groups in the user's login,
 Argo CD's policy matches `g, <group>, role:...` lines against them, and an aws `static_map` maps
-groups to IAM roles. Those systems read the groups from the user's login token, which the identity
-provider (Okta, Entra ID, Google, Keycloak, Dex, ...) fills from its groups claim. toolpass never
-sees that token, so for these systems a check needs the user's groups as well as the email.
-
-There are three ways to supply them, and they combine: groups the caller sends always win, a
-`groups_connection` fills in when it sends none.
+groups to IAM roles. Those systems read the groups from the token the user logged in with, which the
+identity provider fills from its groups claim. toolpass never sees that login, so for these systems
+a check needs the user's groups as well as the email. There are two ways to supply them, and they
+combine: groups the caller sends always win.
 
 ## The caller sends the groups
 
 The `groups` field of a check ([HTTP API](../reference/api.md), [Python client](../reference/client.md))
 carries the user's groups as the system sees them. This works with any identity provider: the
 application that authenticated the user has their login and its groups claim, and passes the names
-along. Groups the caller sends are always used as they are; the connection does not look further.
+along.
 
-## `groups_connection`: any OIDC provider, from the user's token
+## The caller sends the token: `oidc_issuer`
 
-When the caller sends no groups, a connection that grants by group asks its `groups_connection`.
-The provider-independent one is an [oidc](../integrations/oidc.md) connection: the check carries
-the user's own ID token (the one the system logged them in with) in its `token` field, toolpass
-verifies it against the provider's published keys, issuer and audience, exactly as the system did,
-and reads the groups claim. It works with every provider that speaks OIDC (Okta, Entra ID, Google,
-Keycloak, Auth0, Dex, ...), needs no credential and no provider API, and sees exactly the groups
-the system saw, including whatever the provider filtered out of the claim.
+When the caller sends no groups, an integration that grants by group can read them from the user's
+own ID token, the one the system logged them in with, sent in the check's `token` field. The
+connection names the issuer and the client id the system uses, as they stand in the system's own
+OIDC settings:
 
 ```yaml
 connections:
-  - id: sso
-    integration: oidc
-    issuer: https://acme.okta.com/oauth2/default   # as in the system's OIDC settings
-    audience: argo-cd                              # the client id the system logs in with
-
   - id: argocd-prod
     integration: argocd
     kubernetes_connection: k8s-prod-eu
-    groups_connection: sso
+    oidc_issuer: https://sso.example.com      # Argo CD's oidc.config issuer
+    oidc_audience: argo-cd                    # Argo CD's oidc.config clientID
+    # oidc_groups_claim: groups               # default
+    # oidc_email_claim: email                 # default
 ```
 
-The caller then sends the token with the check: the `token` field of `POST /check`, `token=` on
-the Python client, `{ token }` on the Node client, `Session(user, token=...)` or the
-`X-Toolpass-Token` header for the toolkit, and `toolpass.mcp.token_session` passes the token the
-MCP caller signed in with. Without a token the answer is unknown (`invalid_request`), never a deny
-or an allow.
+The same four keys go on every integration that grants by group: [argocd](../integrations/argocd.md),
+[kubernetes](../integrations/kubernetes.md) and [aws](../integrations/aws.md) with
+`identity_mode: static_map`. They work with every provider that publishes an OpenID Connect
+discovery document, with no credential and no provider API, and see exactly the groups the system
+saw, including whatever the provider filtered out of the claim. Nothing in toolpass knows one
+provider from another.
 
-## `groups_connection`: a directory, from the email
+### How the token is checked
 
-When the caller has only the email, a directory connection can name the groups instead. Every
-integration that grants by group takes the same key:
+Exactly as the system checked it when the user logged in:
 
-```yaml
-connections:
-  - id: okta-main
-    integration: okta
-    url: https://acme.okta.com
-    credential: env:OKTA_API_TOKEN
+1. `GET <issuer>/.well-known/openid-configuration`; its `issuer` must equal `oidc_issuer` and its
+   `jwks_uri` must be `https://`. Reused for an hour.
+2. `GET <jwks_uri>`: the signing keys (`use` absent or `sig`, RSA or EC) by `kid`. Reused for an
+   hour; a token with a `kid` the set lacks fetches them again, at most once a minute (a key
+   rollover).
+3. The token must be a compact JWS signed with an RSA or ECDSA algorithm (`RS256`, `RS384`,
+   `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`); `none` and the HMAC family are
+   refused. The key is the one named by `kid`, or the provider's only key of the algorithm's type.
+4. `iss` equals `oidc_issuer` (a trailing `/` aside); `aud` (a string or a list) carries
+   `oidc_audience`; `exp` is present and not past, `nbf` not future, each with a minute of
+   tolerance; `oidc_email_claim` equals the check's user (ASCII case folded), so a token cannot be
+   paired with someone else's email.
+5. The groups are `oidc_groups_claim`, a list of strings, each once; an absent claim is no groups.
 
-  - id: argocd-prod
-    integration: argocd
-    kubernetes_connection: k8s-prod-eu
-    groups_connection: okta-main       # the user's Okta groups when the caller sends none
+A token that fails any of these, or no token at all, is `invalid_request`: nothing about the user
+is known from it, so the answer is unknown, never a deny or an allow. A groups claim the provider
+carries by reference (a distributed claim, `_claim_names`) is unknown (`unsupported`), since the
+system fetched the groups itself.
 
-  - id: k8s-prod-eu
-    integration: kubernetes
-    url: https://10.20.0.5:6443
-    credential: file:/secrets/k8s-prod-eu-token
-    groups_connection: okta-main       # the same directory serves every integration
-```
+### Sending the token
 
-### Which integrations take it
-
-| Integration | What the groups are matched against |
+| Where | How |
 |---|---|
-| [kubernetes](../integrations/kubernetes.md#groups-from-the-email) | the groups of the `SubjectAccessReview`, with `group_prefix` in front; also accepts an aws connection, which names EKS access entries instead |
-| [argocd](../integrations/argocd.md#groups-from-the-email) | the group values of the RBAC policy |
-| [aws](../integrations/aws.md#identity-modes) with `identity_mode: static_map` | the group rows of `role_map_file` |
+| `POST /check` | the `token` field: printable ASCII without spaces, at most 16 KiB |
+| Python client | `check(..., token=...)`, and `require`, `allowed`, `acheck`, `arequire` |
+| Node client | `{ token }` in the options |
+| The toolkit | `Session(user, token=...)`; `session_from_header` reads `X-Toolpass-Token`; `toolpass.mcp.token_session` passes the token the MCP caller signed in with |
 
-### Which connections can be one
-
-Any connection whose integration can name a user's groups; `toolpass catalog <integration>` lists
-the accepted ones for the key, and `toolpass validate` refuses any other.
-
-| `groups_connection` names | What it returns | Matches the groups claim of |
-|---|---|---|
-| [oidc](../integrations/oidc.md) | the groups claim of the user's verified ID token (needs the check's `token`) | the provider itself, exactly |
-| [okta](../integrations/okta.md) | the names of the user's Okta groups (unknown above 100) | an Okta OIDC app |
-| [microsoft365](../integrations/microsoft365.md) | the object ids of the user's Entra ID groups, lower-cased, transitive (unknown above 200) | Entra ID |
-| [googleworkspace](../integrations/googleworkspace.md) | the email addresses of the user's Google groups | Google (through Dex or another broker); for GKE, see [kubernetes](../integrations/kubernetes.md#groups-from-the-email) |
-| [aws](../integrations/aws.md#eks-access-entries) | the `kubernetesGroups` of the user's EKS access entries; kubernetes connections only | EKS |
-| `fake` | the `groups` field of the fake connection | tests |
-
-### How it behaves
-
-- Groups the caller sends win; the source is not asked.
-- The lookup is part of the identity, so it is cached with it (`identity_cache_seconds`, per
-  connection, email and caller-sent groups), not on every check.
-- A user the directory does not know, or one who cannot sign in (an Okta user who is staged,
-  provisioned, suspended or deprovisioned; a disabled Entra ID account; a suspended or archived
-  Google account), is `user_not_found`, a deny: such a user could not log in to the system either.
-- A user in no group is checked as a user in no group, which is what the system would see.
-- Argo CD and Kubernetes treat directory groups like groups a caller sent: in Kubernetes
-  `group_prefix` is put in front and a `system:` group is refused without one.
+The token is never logged; toolpass keys its caches on a digest of it.
 
 ### What it cannot see
 
-A provider's groups claim carries only so many groups: Okta leaves it out of the token for a user in
-more than 100 groups, and Entra ID replaces it with an "overage" claim above 200 (UNVERIFIED, both).
-Such a user is answered unknown (`unsupported`) rather than evaluated against groups the system
-never saw. Google's claim has no documented cap.
+- Whether the token has been revoked, or the user signed out or been deactivated since it was
+  issued: a token is good until `exp`, as it is to the system.
+- A groups claim the provider did not put in the token (a scope the system did not request, or a
+  distributed claim): then the token carries none, or toolpass answers unknown.
 
-An app's groups claim is often filtered: an Okta claim's regex or prefix, an Entra ID app's "groups
-assigned to the application", a Dex connector's group allow-list. toolpass returns every group the
-user is in, so a binding to a group the claim leaves out reads as allowed here while the system
-denies it. Write the bindings only with groups the claim carries.
+## Kubernetes only: groups from the email
 
-These limits are the directories'. OIDC has no standard way to ask a provider for another user's
-groups, so a provider toolpass has no directory integration for (Keycloak, Auth0, LDAP, a Dex
-connector such as GitHub) is served by the [oidc](../integrations/oidc.md) connection from the
-user's token, or by the caller sending the groups.
+A kubernetes connection can also take a `groups_connection` that names the groups from the email
+alone: an aws connection for EKS access entries, which are not in any token, or a directory. See
+[kubernetes](../integrations/kubernetes.md#groups-from-the-email).

@@ -33,7 +33,9 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
     username_template: "oidc:{email}"          # optional, default {email}
     group_prefix: "oidc:"                      # optional
     add_authenticated_group: "true"            # optional, default true
-    groups_connection: okta-main               # optional: where groups come from when the caller sends none
+    oidc_issuer: https://sso.example.com       # optional: read the groups from the user's ID token
+    oidc_audience: kubernetes                  #   (the API server's --oidc-issuer-url and --oidc-client-id)
+    # groups_connection: aws-prod              # or: EKS access entries / a directory, from the email
 ```
 
 | Key | Meaning |
@@ -43,7 +45,8 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
 | `username_template` | How the API server names your users. Placeholders `{email}`, `{local}`, `{domain}`. Must contain `{email}` or `{local}`. A name that comes out starting with `system:` (Kubernetes' own ServiceAccounts and components) is refused (`invalid_request`). `{local}` drops the domain, so it suits a single-domain directory |
 | `group_prefix` | Prefix the API server puts on groups from your identity provider. Without it a caller group starting with `system:` is rejected (`invalid_request`), since it would name a built-in group such as `system:masters` |
 | `add_authenticated_group` | Also send `system:authenticated`, as the API server would for any logged-in user |
-| `groups_connection` | The id of a connection that names the user's groups when the caller sends none: an `oidc` connection (from the user's token), an `aws` connection (EKS access entries) or a directory (`okta`, `microsoft365`, `googleworkspace`). See [Groups from the email](#groups-from-the-email) |
+| `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | Read the user's groups from the ID token sent with the check when the caller sends none: the API server's `--oidc-issuer-url`, `--oidc-client-id` and `--oidc-groups-claim` (or the structured authentication config). See [Groups from the user's token](../guides/groups.md). Not with `groups_connection` |
+| `groups_connection` | The id of an `aws`, `googleworkspace`, `microsoft365`, `okta` or `fake` connection that names the user's groups from the email when the caller sends none. See [Groups from the email](#groups-from-the-email) |
 | `eks_cluster` | The EKS cluster name. Required when `groups_connection` is an `aws` connection, refused otherwise |
 | `eks_aws_auth` | `true` also reads the `kube-system/aws-auth` ConfigMap for principals with no access entry (default `false`; needs one more RBAC rule, below) |
 
@@ -52,8 +55,9 @@ the template must match the API server's `--oidc-username-prefix` / `--oidc-user
 structured authentication config. A wrong template silently denies everyone. Run one check for a user
 you know is allowed after configuring.
 
-Groups come from the caller's `groups` field, or, when the caller sends none and the connection sets
-`groups_connection`, from that connection (next section). Kubernetes has no user directory: a
+Groups come from the caller's `groups` field, or, when the caller sends none, from the user's ID
+token (`oidc_issuer`, exactly what the API server's OIDC authenticator sees, `group_prefix` put in
+front) or from `groups_connection` (next section). Kubernetes has no user directory: a
 review sent with no groups is evaluated for a user in no group, so on a cluster that grants access
 through groups every such check is a false deny. Caller-sent groups always win, so an existing caller
 sees no change. Every holder of the API key can assert any group in the `groups` field. Set
@@ -64,16 +68,14 @@ server reserves. Without a prefix, groups starting with `system:` are rejected w
 ## Groups from the email
 
 With `groups_connection` set, toolpass asks that connection for the user's groups whenever the
-caller sends none, so the email alone is enough ([the guide](../guides/groups.md) has the mechanism
-every integration shares; here is what each source means to a cluster):
+caller sends none, so the email alone is enough:
 
 | `groups_connection` names | What toolpass sends | Fits |
 |---|---|---|
-| [`oidc`](oidc.md) | the groups claim of the user's own ID token, sent with the check, with `group_prefix` in front | any API server with OIDC authentication, exactly as it sees the token |
 | [`aws`](aws.md) (with `eks_cluster`) | the `kubernetesGroups` of the EKS access entries of the user's IAM principals (the Identity Center roles of their permission sets, their IAM user, or their `role_map_file` roles), unioned; the entry's `username` when exactly one entry matched | EKS |
 | [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours), and the account's primary email as the username | GKE with Google Groups for RBAC |
-| [`microsoft365`](microsoft365.md) | the object ids of the user's Entra groups, lower-cased, transitive (unknown above 200, where the token carries an overage claim; AKS resolves that itself, toolpass does not) | AKS with Entra ID integration |
-| [`okta`](okta.md) | the names of the user's Okta groups (unknown above 100, the claim's cap) | an API server whose OIDC groups claim comes from Okta |
+| [`microsoft365`](microsoft365.md) | the object ids of the user's Entra groups, lower-cased, transitive | AKS with Entra ID integration |
+| [`okta`](okta.md) | the names of the user's Okta groups | an API server whose OIDC groups claim comes from Okta |
 | `fake` | the `groups` field of the fake connection | tests |
 
 Directory groups (Google, Entra, Okta) are treated exactly like groups a caller sent: `group_prefix`

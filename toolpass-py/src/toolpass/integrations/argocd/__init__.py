@@ -5,9 +5,9 @@ reads the policy (argocd-rbac-cm, argocd-cm and AppProjects) through a
 kubernetes connection and evaluates it with the same rules as the Argo CD
 API server (see the rbac subpackage).
 
-Argo CD reads a user's groups from the identity provider's groups claim. When
-the caller sends none, a groups_connection (a directory) can name them from
-the email instead.
+Argo CD reads a user's groups from the identity provider's groups claim.
+When the caller sends none, the oidc_* keys let the connection read them
+from the user's own ID token sent with the check (core.oidc).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from toolpass.core import integration as integ
-from toolpass.core import jsonx
+from toolpass.core import jsonx, oidc
 from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
@@ -47,9 +47,6 @@ POLICY_CACHE_TTL = 30.0
 # The resources whose objects carry an application namespace.
 _NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
-# How many groups a reason names before "and N more".
-_NAMED_GROUPS = 10
-
 
 class Integration(integ.Integration):
     """The argocd product."""
@@ -73,8 +70,8 @@ class Integration(integ.Integration):
                 enum=("none", "email"),
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
-            integ.groups_connection_field("where the user's groups come from when the caller sends none: the directory behind Argo CD's login"),
             integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
+            *oidc.oidc_fields("Argo CD"),
         ]
 
     def routes(self) -> RouteTable | None:
@@ -112,12 +109,7 @@ class Integration(integ.Integration):
         if not isinstance(kc, kubernetes.Connection):
             raise ValueError(f"kubernetes_connection {go_quote(s.get('kubernetes_connection'))} is not a kubernetes connection")
         c = Connection(kc, s.get("namespace"), s.get("rbac_configmap"), s.get("user_subject"), d.now)
-        ref = s.get("groups_connection")
-        if ref != "":
-            src = d.connection(ref)
-            if not isinstance(src, integ.GroupsSource):
-                raise ValueError(f"groups_connection {go_quote(ref)} cannot look up a user's groups")
-            c.groups_source = src
+        c.oidc = oidc.Verifier.from_settings(s, d)
         return c
 
 
@@ -203,10 +195,11 @@ class Connection(integ.Connection):
         self.rbac_cm = rbac_cm
         self.user_subject = user_subject
         self.now = now
-        self.groups_source: integ.GroupsSource | None = None
         # Holds the one policy bundle under the key ().
         self.policies: TTL[tuple[()], Bundle] = TTL(1)
         self.policies.set_clock(now)
+        # Set when the groups come from the user's ID token.
+        self.oidc: oidc.Verifier | None = None
 
     def load(self, ctx: Context) -> Bundle:
         """The cached policy bundle, or one fetch shared with concurrent
@@ -285,13 +278,12 @@ class Connection(integ.Connection):
 
     def resolve_identity(self, ctx: Context, u: integ.User) -> integ.Identity:
         """Map the caller to an Argo CD subject and group values: the
-        caller's groups or, when the caller sends none, groups_connection's.
-        A user the directory does not know, or a deactivated one, cannot log
-        in to Argo CD and is answered user_not_found."""
+        caller's groups or, when the caller sends none and oidc_issuer is
+        set, the groups claim of the user's ID token."""
         subject = u.email if self.user_subject == "email" else ""
         groups = tuple(u.groups)
-        if not groups and self.groups_source is not None:
-            groups = integ.claimed_groups(self.groups_source, ctx, u)
+        if not groups and self.oidc is not None:
+            groups = self.oidc.token_groups(ctx, u)
         return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:
@@ -373,6 +365,10 @@ class Connection(integ.Connection):
                 lines += 1
         summary = f"{lines} policy lines, {len(b.projects)} projects, match mode {b.match_mode}, default role {go_quote(b.default_role)}"
         warnings: list[str] = []
+        if self.oidc is not None:
+            line, warn = self.oidc.probe(ctx)
+            summary += "; " + line
+            warnings.extend(warn)
         if b.user_err is not None:
             warnings.append("the RBAC policy is invalid and every check will answer unknown: " + str(b.user_err))
         if not b.argocd_cm_seen:
@@ -389,18 +385,10 @@ def who(subject: str, groups: list[str]) -> str:
     if subject == "":
         if not groups:
             return "a user with no groups"
-        return "groups " + _named(groups)
+        return "groups " + ", ".join(groups)
     if not groups:
         return subject
-    return subject + " (groups " + _named(groups) + ")"
-
-
-def _named(groups: list[str]) -> str:
-    """The first groups by name; a directory may hold many more than a
-    reason should carry."""
-    if len(groups) <= _NAMED_GROUPS:
-        return ", ".join(groups)
-    return ", ".join(groups[:_NAMED_GROUPS]) + f" and {len(groups) - _NAMED_GROUPS} more"
+    return subject + " (groups " + ", ".join(groups) + ")"
 
 
 INTEGRATION = Integration()

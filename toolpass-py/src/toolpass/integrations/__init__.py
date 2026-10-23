@@ -35,7 +35,6 @@ NAMES = (
     "databricks",
     "googlecloud",
     "okta",
-    "oidc",
 )
 
 

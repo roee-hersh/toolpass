@@ -1,16 +1,20 @@
-"""The oidc integration: a user's groups from their own ID token, for any
-OpenID Connect provider.
+"""A user's groups from their own ID token, for any OpenID Connect provider.
 
 A system that grants by group (Argo CD, Kubernetes, an aws role map) reads
 the groups from the token the user logged in with. toolpass never sees that
-login, so this connection takes the token from the check itself (the
-request's `token`), verifies it the way the system did (the provider's
-published signing keys, issuer, audience, expiry) and reads the groups
-claim. That works with every provider that speaks OIDC discovery, with no
-provider API and no credential, and sees exactly the groups the system saw,
-including any filtering the provider applies to the claim.
+login, so an integration that grants by group takes the token from the
+check itself (the request's token), verifies it the way the system did (the
+provider's published signing keys, issuer, audience, expiry) and reads the
+groups claim. That works with every provider that publishes an OIDC
+discovery document, with no provider API and no credential, and sees
+exactly the groups the system saw, including any filtering the provider
+applies to the claim.
 
-It answers no actions of its own: it serves only as a groups_connection.
+An integration declares oidc_fields() and builds a Verifier with
+Verifier.from_settings; when the caller sent no groups it asks
+token_groups. Nothing here knows one provider from another: the issuer, the
+audience and the claim names are the connection's settings, and the token
+formats are OIDC Core's and JOSE's.
 """
 
 from __future__ import annotations
@@ -21,26 +25,13 @@ from toolpass.authx import jwt
 from toolpass.authx.util import go_json_loads
 from toolpass.core import jsonx
 from toolpass.core.cache import TTL
-from toolpass.core.catalog import Action
 from toolpass.core.context import Context
-from toolpass.core.decision import Code, Decision, ToolpassError, errorf, wrap_error
+from toolpass.core.decision import Code, ToolpassError, errorf, wrap_error
 from toolpass.core.errors import go_quote, go_trim_space
-from toolpass.core.integration import (
-    CAP_GROUPS,
-    CheckRequest,
-    Connection,
-    Deps,
-    Field,
-    Identity,
-    Integration,
-    ProbeResult,
-    Settings,
-    User,
-    validate_https_url,
-)
+from toolpass.core.integration import Deps, Field, Settings, User, validate_https_url
 from toolpass.net import httpx
 
-__all__ = ["CLOCK_SKEW", "INTEGRATION", "KEYS_RETRY", "KEYS_TTL", "OIDC", "OIDCConnection"]
+__all__ = ["CLOCK_SKEW", "KEYS_RETRY", "KEYS_TTL", "Verifier", "oidc_fields"]
 
 # How long the discovery document and the signing keys are reused.
 KEYS_TTL = 3600.0
@@ -49,71 +40,39 @@ KEYS_TTL = 3600.0
 KEYS_RETRY = 60.0
 # Tolerance on exp and nbf, as providers and systems usually allow.
 CLOCK_SKEW = 60.0
+
 DISCOVERY_PATH = "/.well-known/openid-configuration"
 
 
-def _validate_issuer(v: str) -> None:
-    validate_https_url(v)
-
-
 def _validate_claim(v: str) -> None:
-    if v == "" or any(c.isspace() for c in v):
-        raise ValueError("a claim name must not be empty or contain whitespace")
+    if v != "" and any(c.isspace() for c in v):
+        raise ValueError("a claim name must not contain whitespace")
 
 
-class OIDC(Integration):
-    """The oidc product."""
-
-    def name(self) -> str:
-        return "oidc"
-
-    def provides(self) -> frozenset[str]:
-        return frozenset({CAP_GROUPS})
-
-    def fields(self) -> list[Field]:
-        return [
-            Field(
-                name="issuer",
-                required=True,
-                validate=_validate_issuer,
-                description="the provider's issuer URL, as in the system's OIDC settings, e.g. https://acme.okta.com/oauth2/default",
-            ),
-            Field(
-                name="audience",
-                required=True,
-                description="the client id the system logs in with: the token's aud must carry it",
-            ),
-            Field(name="groups_claim", default="groups", validate=_validate_claim, description="the claim holding the user's groups"),
-            Field(
-                name="email_claim",
-                default="email",
-                validate=_validate_claim,
-                description="the claim holding the user's email, which must equal the check's user",
-            ),
-        ]
-
-    def actions(self) -> list[Action]:
-        return []
-
-    def new(self, ctx: Context, s: Settings, d: Deps) -> Connection:
-        issuer = s.get("issuer").rstrip("/")
-        c = OIDCConnection(
-            issuer=issuer,
-            audience=s.get("audience"),
-            groups_claim=s.get("groups_claim") or "groups",
-            email_claim=s.get("email_claim") or "email",
-            http=httpx.Client(http=d.http_client(s), base=issuer, logger=d.logger),
-            now=d.now,
-        )
-        return c
+def oidc_fields(what: str) -> list[Field]:
+    """The keys an integration that grants by group takes to read the
+    groups from the user's own ID token; what names the system, for the
+    descriptions ("Argo CD")."""
+    return [
+        Field(
+            name="oidc_issuer",
+            validate=validate_https_url,
+            description=f"the OpenID Connect issuer {what} logs users in with, e.g. https://sso.example.com; "
+            "set to read the user's groups from the ID token sent with the check when the caller sends none",
+        ),
+        Field(name="oidc_audience", description=f"the client id {what} logs in with: the token's aud must carry it; required with oidc_issuer"),
+        Field(name="oidc_groups_claim", default="groups", validate=_validate_claim, description="the token claim holding the user's groups"),
+        Field(
+            name="oidc_email_claim",
+            default="email",
+            validate=_validate_claim,
+            description="the token claim holding the user's email, which must equal the check's user",
+        ),
+    ]
 
 
-class OIDCConnection(Connection):
-    """One identity provider."""
-
-    # The provider's own claim limits are not known here; a token over them
-    # carries no groups claim, which reads as a user in no group.
-    groups_claim_limit = None
+class Verifier:
+    """One identity provider's tokens, for one audience."""
 
     def __init__(self, issuer: str, audience: str, groups_claim: str, email_claim: str, http: httpx.Client, now: Any) -> None:
         self.issuer = issuer
@@ -130,30 +89,45 @@ class OIDCConnection(Connection):
         self.keys.set_clock(now)
         self.keys_fetched = 0.0
 
-    def resolve_identity(self, ctx: Context, u: User) -> Identity:
-        """The token's subject, display email and groups."""
-        claims = self._verify(ctx, u)
-        return Identity(id=str(claims.get("sub", "")), display=u.email, groups=self._groups_of(claims))
+    @classmethod
+    def from_settings(cls, s: Settings, d: Deps) -> Verifier | None:
+        """The verifier the oidc_* keys of a connection describe, or None
+        when oidc_issuer is unset. Raise ValueError for keys that cannot
+        work together."""
+        issuer = s.get("oidc_issuer").rstrip("/")
+        audience = s.get("oidc_audience")
+        if issuer == "":
+            for key in ("oidc_audience", "oidc_groups_claim", "oidc_email_claim"):
+                if s.get(key) not in ("", "groups", "email"):
+                    raise ValueError(f"{key} needs oidc_issuer")
+            if audience != "":
+                raise ValueError("oidc_audience needs oidc_issuer")
+            return None
+        if audience == "":
+            raise ValueError("oidc_audience is required with oidc_issuer: the client id the system logs in with")
+        return cls(
+            issuer=issuer,
+            audience=audience,
+            groups_claim=s.get("oidc_groups_claim") or "groups",
+            email_claim=s.get("oidc_email_claim") or "email",
+            http=httpx.Client(http=d.http_client(s), base=issuer, logger=d.logger),
+            now=d.now,
+        )
 
-    def check(self, ctx: Context, r: CheckRequest) -> Decision:
-        raise errorf(Code.INVALID_REQUEST, "an oidc connection names a user's groups for other connections (groups_connection); it answers no actions")
-
-    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
-        """The groups claim of the user's verified token."""
-        return self._groups_of(self._verify(ctx, user))
-
-    def _groups_of(self, claims: dict[str, Any]) -> tuple[str, ...]:
+    def token_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
+        """The groups claim of the user's verified token, each once. A
+        token that fails verification, or no token, is INVALID_REQUEST:
+        nothing about the user is known from it, so the answer is unknown,
+        never a deny or an allow."""
+        claims = self.verify(ctx, user)
         raw = claims.get(self.groups_claim)
         if raw is None:
             # A distributed claim (OIDC Core 5.6.2): the provider names the
-            # claim in _claim_names and leaves it for the system to fetch
-            # (Entra ID's "overage" above its group cap). What the system
-            # saw is unknown here.
+            # claim in _claim_names and leaves it for the system to fetch.
+            # What the system saw is unknown here.
             names = claims.get("_claim_names")
             if isinstance(names, dict) and self.groups_claim in names:
-                raise errorf(
-                    Code.UNSUPPORTED, f"the token carries its {self.groups_claim} claim by reference (an overage); which groups the system saw is unknown"
-                )
+                raise errorf(Code.UNSUPPORTED, f"the token carries its {self.groups_claim} claim by reference; which groups the system saw is unknown")
             return ()
         if not isinstance(raw, list) or not all(isinstance(g, str) for g in raw):
             raise errorf(Code.UNSUPPORTED, f"the token's {self.groups_claim} claim is not a list of strings")
@@ -165,13 +139,12 @@ class OIDCConnection(Connection):
 
     # -- verification --
 
-    def _verify(self, ctx: Context, u: User) -> dict[str, Any]:
+    def verify(self, ctx: Context, u: User) -> dict[str, Any]:
         """The claims of u.token once its signature, issuer, audience,
-        expiry and email are checked. A token that fails is
-        INVALID_REQUEST: nothing about the user is known from it."""
+        expiry and email are checked."""
         token = u.token
         if token == "":
-            raise errorf(Code.INVALID_REQUEST, "no token: an oidc groups_connection reads the user's groups from the ID token sent in the check's token field")
+            raise errorf(Code.INVALID_REQUEST, "no token: the user's groups are read from the ID token sent in the check's token field, and none was sent")
         parts = token.split(".")
         if len(parts) != 3:
             raise errorf(Code.INVALID_REQUEST, "token is not a compact JWS (header.payload.signature)")
@@ -219,8 +192,8 @@ class OIDCConnection(Connection):
 
     def _key(self, ctx: Context, kid: str | None, alg: str) -> Any:
         """The provider's public key for kid (or its only key of the
-        algorithm's type), fetching the keys again once for a kid that is
-        not in the cached set."""
+        algorithm's type), fetching the keys again for a kid that is not
+        in the cached set, at most once per KEYS_RETRY."""
         uri = self._jwks_uri(ctx)
         keys = self.keys.do(ctx, uri, lambda c: (self._fetch_keys(c, uri), KEYS_TTL))
         found = _select(keys, kid, alg)
@@ -246,8 +219,7 @@ class OIDCConnection(Connection):
             doc = jsonx.obj(v)
             if not _same_issuer(doc.get("issuer"), self.issuer):
                 raise ValueError(f"the discovery document names issuer {go_quote(str(doc.get('issuer')))}, not {go_quote(self.issuer)}")
-            uri = jsonx.s(doc, "jwks_uri")
-            validate_https_url(uri)
+            validate_https_url(jsonx.s(doc, "jwks_uri"))
         except ToolpassError:
             raise
         except ValueError as e:
@@ -278,20 +250,15 @@ class OIDCConnection(Connection):
         self.keys_fetched = self.now()
         return out
 
-    def probe(self, ctx: Context) -> ProbeResult:
-        """Read the discovery document and the signing keys."""
-        try:
-            uri = self._jwks_uri(ctx)
-            keys = self._fetch_keys(ctx, uri)
-        except ToolpassError:
-            raise
-        except Exception as e:
-            raise _classify(e, "read the provider's metadata") from e
+    def probe(self, ctx: Context) -> tuple[str, list[str]]:
+        """Read the discovery document and the signing keys: a summary line
+        and warnings, for the connection's probe."""
+        uri = self._jwks_uri(ctx)
+        keys = self._fetch_keys(ctx, uri)
         warnings: list[str] = []
         if not keys:
-            warnings.append("the provider publishes no signing keys; every token will be refused")
-        warnings.append("toolpass never calls the provider's user API: a check needs the user's ID token in its token field")
-        return ProbeResult(summary=f"issuer {self.issuer} publishes {len(keys)} signing key(s) at {uri}", warnings=tuple(warnings))
+            warnings.append(f"{self.issuer} publishes no signing keys; every token will be refused")
+        return f"OIDC issuer {self.issuer} publishes {len(keys)} signing key(s)", warnings
 
 
 def _select(keys: dict[str, Any], kid: str | None, alg: str) -> Any:
@@ -304,7 +271,7 @@ def _select(keys: dict[str, Any], kid: str | None, alg: str) -> Any:
 
 def _same_issuer(a: Any, b: str) -> bool:
     """Equal issuers, a trailing slash aside: a provider's iss may end in
-    one (Auth0) while its URL is written without."""
+    one while its URL is written without."""
     return isinstance(a, str) and a.rstrip("/") == b.rstrip("/")
 
 
@@ -321,6 +288,3 @@ def _classify(err: BaseException, what: str) -> ToolpassError:
     if he is not None:
         return he
     return wrap_error(Code.UPSTREAM_ERROR, err, f"could not {what}")
-
-
-INTEGRATION = OIDC()

@@ -38,7 +38,8 @@ rules:
     namespace: argocd              # default
     rbac_configmap: argocd-rbac-cm # default
     user_subject: none             # default; or email
-    # groups_connection: okta-main   # a directory naming the groups when the caller sends none
+    # oidc_issuer: https://sso.example.com   # read the groups from the user's ID token
+    # oidc_audience: argo-cd                 #   (Argo CD's oidc.config issuer and clientID)
     # url: https://argocd.example.com   # the API server, for observed actions
 ```
 
@@ -47,34 +48,11 @@ rules:
 | `kubernetes_connection` | id of the kubernetes connection for the cluster Argo CD runs in |
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
-| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups (the caller's, or `groups_connection`'s). `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
-| `groups_connection` | optional: the id of a connection that names the user's groups when the caller sends none: an `oidc` connection (from the user's token, any provider) or a directory (`okta`, `microsoft365`, `googleworkspace`). See [Groups from the email](#groups-from-the-email) |
+| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | optional: read the user's groups from the ID token sent with the check when the caller sends none; the issuer and client id of Argo CD's `oidc.config`. See [Groups from the user's token](../guides/groups.md) |
 | `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
-
-## Groups from the email
-
-Argo CD reads a user's groups from the identity provider's groups claim, and the policy's `g, <group>,
-role:...` lines match those names. The groups are the caller's `groups` or, when the caller sends
-none and `groups_connection` is set, that connection's: an [oidc](oidc.md) connection reads them
-from the user's own ID token, sent with the check, for any provider; a directory (Okta group names,
-Entra ID group object ids, Google group addresses) names them from the email. [Groups from the
-email](../guides/groups.md) has the mechanism, the sources and what they cannot see.
-
-```yaml
-  - id: argocd-prod
-    integration: argocd
-    kubernetes_connection: k8s-prod-eu
-    groups_connection: sso             # an oidc connection, or okta, microsoft365, googleworkspace
-```
-
-A user the directory does not know, or who cannot sign in, is `user_not_found`, a deny; a user in no
-group gets the `policy.default` role (and the email as a group value, when `scopes` includes
-`email`). An identity provider's `sub` is usually an opaque id, not the email, so keep
-`user_subject: none` unless your provider puts the email in `sub`. A user who logs in to Argo CD
-through another provider (a second Dex connector) is not in the directory; have the caller send
-such users' groups.
 
 ## How the evaluation works
 
@@ -88,9 +66,10 @@ Exactly as in Argo CD:
 3. Effect: some matching `allow` and no matching `deny`.
 4. Order: `policy.default` role first, then the subject, then each group that appears as the first
    element of some `g` line.
-5. Group values are the caller's `groups` or, when the caller sends none and `groups_connection` is
-   set, the directory's (see [Groups from the email](#groups-from-the-email)). When `scopes` in `argocd-rbac-cm` includes `email`, the
-   email is a group value too.
+5. Group values are the caller's `groups` or, when the caller sends none and `oidc_issuer` is set,
+   the groups claim of the user's ID token, verified against the provider ([Groups from the user's
+   token](../guides/groups.md)). When `scopes` in `argocd-rbac-cm` includes `email`, the email is a
+   group value too.
 6. `server.rbac.disableApplicationFineGrainedRBACInheritance` in `argocd-cm` (default true since v3):
    when true `app.update` does not imply `app.update/<resource>`; when false the top-level verb is
    checked first.
@@ -193,16 +172,13 @@ Refused:
 | The policy is invalid (Argo CD would refuse it too) | unknown (`unsupported`) |
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
 | The ServiceAccount may not read the config maps or projects | unknown (`credential_rejected`) |
-| `groups_connection` has no active user with the email | deny (`user_not_found`) |
-| `groups_connection` names more groups than the provider's claim carries | unknown (`unsupported`) |
+| `oidc_issuer` is set, the caller sent no groups, and no token or one that does not verify | unknown (`invalid_request`) |
 
 ## What it cannot see
 
 - Policies bound to opaque identity provider subjects (Dex `sub`, `federated_claims.user_id`).
   Use `user_subject: email` only when the subject really is the email.
 - Local Argo CD accounts, project JWT tokens.
-- With `groups_connection`: a group the app's groups claim filters out (see
-  [the guide](../guides/groups.md#what-it-cannot-see)) reads as allowed here while Argo CD denies it.
 - Sync windows, project source/destination restrictions, and anything else enforced outside RBAC.
 - Applications in other namespaces are addressed as `<project>/<namespace>/<name>`; toolpass does not
   look the application up to find its project.
