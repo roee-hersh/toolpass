@@ -48,7 +48,10 @@ def permission_check(tp: _Checker, connection: str, action: str, resource: str, 
     def authorize(call: Call) -> AuthDecision:
         target = resource.format(**call.arguments)
         groups = None if call.session.groups is None else list(call.session.groups)
-        d = tp.check(call.session.user, connection, action, target, groups, fresh=fresh, token=call.session.token)
+        # The token only when the session has one, so a checker written
+        # before the argument existed keeps working.
+        extra = {"token": call.session.token} if call.session.token else {}
+        d = tp.check(call.session.user, connection, action, target, groups, fresh=fresh, **extra)
         outcome = getattr(d, "decision", None)
         reason = f"toolpass {outcome} {action} on {target} in {connection}: {getattr(d, 'reason', '')}"
         if outcome == "allow":
