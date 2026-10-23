@@ -403,7 +403,7 @@ def test_without_a_permissions_engine_a_user_action_cannot_be_decided(gh, events
 
     with pytest.raises(ActionRefused) as e:
         propose("acme/x")
-    assert e.value.code == "authorization_error"
+    assert e.value.code == "not_configured"  # nothing was checked
 
 
 def test_a_tool_with_a_declared_effect_and_no_engine_is_not_hooked(gh, events, dana):

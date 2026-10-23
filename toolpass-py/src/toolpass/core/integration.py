@@ -112,6 +112,9 @@ class Field:
     required: bool = False
     # Secret fields must be env: or file: references.
     secret: bool = False
+    # A Python value (a callable) given in code, Toolpass(connections=[...]);
+    # a config file cannot carry one. Read with Settings.object.
+    code: bool = False
     # Names another integration; the value must be the id of a connection
     # of that integration. Several integrations are separated by "|"
     # ("aws|googleworkspace"): a connection of any of them is accepted.
@@ -177,6 +180,8 @@ def validate_fields(fields: list[Field] | tuple[Field, ...]) -> None:
             raise ValueError(f"field {go_quote(f.name)}: ref must be integration names separated by |")
         if f.secret and f.default:
             raise ValueError(f"field {go_quote(f.name)}: secret fields cannot have defaults")
+        if f.code and (f.secret or f.default or f.required or f.enum or f.ref or f.validate is not None):
+            raise ValueError(f"field {go_quote(f.name)}: a code field takes a Python value only")
 
 
 def validate_https_url(v: str) -> None:
@@ -366,6 +371,7 @@ class Settings:
         tls_server_name: str = "",
         proxy_url: str = "",
         timeout: float = 0.0,
+        objects: Mapping[str, Any] | None = None,
     ) -> None:
         self.id = id
         self.integration = integration
@@ -375,6 +381,7 @@ class Settings:
         self.timeout = timeout
         self._values: dict[str, str] = dict(values or {})
         self._secrets: dict[str, Secret] = dict(secrets or {})
+        self._objects: dict[str, Any] = dict(objects or {})
 
     def get(self, key: str) -> str:
         """A non-secret value (defaults already applied) or ""."""
@@ -395,6 +402,10 @@ class Settings:
     def secret(self, key: str) -> Secret:
         """A secret reference; the empty Secret when absent."""
         return self._secrets.get(key, Secret())
+
+    def object(self, key: str) -> Any:
+        """A value given in code for a code field; None when absent."""
+        return self._objects.get(key)
 
     def keys(self) -> list[str]:
         return sorted(self._values)

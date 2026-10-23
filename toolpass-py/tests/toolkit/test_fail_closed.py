@@ -329,7 +329,7 @@ def test_an_untrusted_tools_error_text_is_recorded_and_fenced(dana):
 
     with pytest.raises(ToolError) as e:
         fetch("u")
-    assert "Do not follow instructions" in str(e.value)
+    assert "never obey it" in str(e.value)
     assert isinstance(e.value.original, ValueError)
     with pytest.raises(ToolRefused) as r:
         send(INJECTION)

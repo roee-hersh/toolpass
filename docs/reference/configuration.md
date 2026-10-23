@@ -73,7 +73,9 @@ secret key takes a reference:
 | `toolpass.file("/run/secrets/jira")` or `"file:/run/secrets/jira"` | the file, on every use |
 | `toolpass.literal(token)` | a value your code already holds; never printed or logged |
 
-A plain string is rejected there as in the file. The top-level keys are keyword arguments:
+A plain string is rejected there as in the file. A few keys take a Python value only, never a
+string: github's `identity`, a callable that maps an email to a login
+([github](../integrations/github.md#identity)). A file cannot carry them. The top-level keys are keyword arguments:
 `decision_cache_seconds=30`, `identity_cache_seconds=900`, `decision_log="none"`; `listen` and
 `api_key` belong to the server.
 

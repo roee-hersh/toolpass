@@ -1,7 +1,8 @@
 # github
 
-toolpass authenticates as a GitHub App installed in one organization, maps the user's email to a
-GitHub login (through the organization's SAML identities, a login template or a mapping file), and
+toolpass authenticates as a GitHub App installed in one organization, or with a plain token, maps
+the user's email to a GitHub login (through the organization's SAML identities, a login template, a
+mapping file, an HTTP identity service or a callable given in code), and
 asks the REST API for that login's effective permission: the collaborator permission endpoint for
 repositories (the highest of direct, team, organization and enterprise grants, as GitHub computes
 it), the membership endpoints for organizations and teams. For `@branch` questions it also reads the
@@ -29,6 +30,28 @@ installation token it buys lasts one hour and is cached and refreshed five minut
 
 Signing with the App's private key needs `cryptography`: install `toolpass[crypto]` (the Docker image has it).
 
+### A token instead of an App
+
+`token` takes any token GitHub's API accepts as `Authorization: Bearer`: a fine-grained personal
+access token, a classic one, or an installation token another system mints. Set `token` or
+`credential`, not both; `app_id` and `installation_id` belong to the App. The checks and the
+decisions are the same; nothing is minted, the token is read at every request (a rotated file takes
+effect), and a 401 is not retried.
+
+A token answers what its user can see. The reads it needs, read-only: repository metadata (the
+collaborator permission endpoint), organization members (organization and team memberships), and
+for `@branch` questions repository administration (rules and classic protection). What an App's
+installation token answers and a typical token cannot:
+
+| Read | With a token | Answer when it cannot |
+|---|---|---|
+| SAML external identities (`identity_mode: saml`) | only an organization owner's token | unknown (`unsupported`, "use another identity_mode"), never a deny |
+| branch ruleset rules and classic protection (`@branch`) | needs admin, or Administration: read, on the repository | unknown (`unsupported`) |
+| `members_can_create_repositories` (`org.repo.create` for a member) | an owner's token | unknown (`unsupported`) |
+| the collaborator permission of a private repository the token's user cannot see | no | unknown (`resource_not_visible`) |
+
+Use `identity_mode: http`, `callable`, `template` or `map_file` with a token unless it is an owner's.
+
 ## Connection
 
 ```yaml
@@ -39,23 +62,48 @@ Signing with the App's private key needs `cryptography`: install `toolpass[crypt
     credential: file:/secrets/github-app.pem
     # url: https://github.example.com     # GitHub Enterprise Server only
     # installation_id: "12345678"         # optional, discovered when omitted
-    # identity_mode: saml                 # saml (default), template or map_file
+    # identity_mode: saml                 # saml (default), template, map_file, http or callable
     # login_template: "{local}"           # template mode
     # email_domains: acme.com,acme.io     # template mode, required
     # user_map_file: /etc/toolpass/github-users.txt   # map_file mode
 ```
 
+With a token and an identity service:
+
+```yaml
+  - id: github-acme
+    integration: github
+    organization: acme
+    token: env:GITHUB_READ_TOKEN
+    identity_url: https://groot.internal/v1/github-login   # identity_mode http, implied
+    identity_token: file:/secrets/groot-token             # optional bearer
+```
+
+Or in code, with the lookup as a callable (`identity_mode: callable` is implied):
+
+```python
+async def github_login(email: str) -> str | None:
+    return await groot.login_for(email)          # None: no identity
+
+tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github", "organization": "acme",
+                                     "token": toolpass.env("GITHUB_READ_TOKEN"), "identity": github_login}])
+```
+
 | Key | Meaning |
 |---|---|
 | `url` | GitHub Enterprise Server base URL; REST is then `{url}/api/v3` and GraphQL `{url}/api/graphql`. Omit for github.com |
-| `organization` | the organization the App is installed in. Every resource must belong to it: the installation is per organization |
-| `app_id` | the App's client id (preferred) or numeric App id; the JWT issuer |
-| `installation_id` | numeric installation id; discovered when omitted |
-| `credential` | the App private key PEM (PKCS#1 or PKCS#8), `env:` or `file:` |
-| `identity_mode` | `saml`: look the email up in the organization's SAML external identities. `template`: render `login_template` and verify the login exists. `map_file`: look the email up in `user_map_file` |
+| `organization` | the organization the App is installed in (or the token reads). Every resource must belong to it: the installation is per organization |
+| `app_id` | App auth, required with `credential`: the App's client id (preferred) or numeric App id; the JWT issuer |
+| `installation_id` | App auth: numeric installation id; discovered when omitted |
+| `credential` | App auth: the App private key PEM (PKCS#1 or PKCS#8), `env:` or `file:` |
+| `token` | token auth, instead of `credential`: a GitHub token, `env:` or `file:` ([above](#a-token-instead-of-an-app)) |
+| `identity_mode` | `saml`: look the email up in the organization's SAML external identities. `template`: render `login_template` and verify the login exists. `map_file`: look the email up in `user_map_file`. `http`: ask `identity_url`. `callable`: call `identity`. Default: `callable` when `identity` is given, else `http` when `identity_url` is set, else `saml` |
 | `login_template` | placeholders `{email}`, `{local}`, `{domain}`; must contain `{email}` or `{local}` |
 | `email_domains` | template mode, required: comma-separated domains the template applies to (`acme.com, acme.io`; entries are trimmed and lowercased, each must be a DNS name). An email from any other domain is unknown (`unsupported`), so `root@attacker.example` never renders to the login `root` |
 | `user_map_file` | lines of `email login` or `email=login`, `#` comments; must exist at startup; re-read at most every 60 s (a broken rewrite keeps the previous map) |
+| `identity_url` | http mode: the identity service, an `https://` URL without a query (plain `http://` only for loopback) |
+| `identity_token` | http mode, optional: sent to the identity service as `Authorization: Bearer`, `env:` or `file:` |
+| `identity` | callable mode, in code only: `identity(email)` returns a login or `None`, sync or async; a config file cannot carry it |
 
 ### Identity
 
@@ -77,6 +125,24 @@ Signing with the App's private key needs `cryptography`: install `toolpass[crypt
   unknown (`unsupported`) and nothing is looked up. `GET /users/{login}` then confirms the rendered
   login exists and is a user, not an organization.
 - **map_file**: no upstream call for the identity.
+- **http**: `GET <identity_url>?email=<email>` (the email query-encoded, no redirect followed). The
+  answer decides:
+
+  | Answer | Decision |
+  |---|---|
+  | 200 with a JSON string that is a GitHub login (`"octocat"`) | the login |
+  | 404 (no identity) or 422 (the address is refused) | deny (`user_not_found`) |
+  | any other status (401, 403, 5xx, a redirect), a transport error or timeout, an `identity_token` that cannot be read, a body that is not JSON, JSON that is not a string, a string that is not a GitHub login | unknown (`unsupported`): the question could not be asked; the text says which |
+
+  Neither the body nor the token is ever put into a decision.
+- **callable**: `identity(email)` is called; an `async def` runs to completion on an event loop of
+  its own (in a worker thread when the calling thread runs one), bounded by the connection's
+  timeout; a client bound to your application's event loop cannot be used from it. A login string is the login; `None` is a deny (`user_not_found`); an exception, a value
+  that is not a string, or a string that is not a GitHub login is unknown (`unsupported`), never a
+  deny. A sync callable is not interrupted at the timeout.
+
+The engine's identity cache keeps a resolved login for `identity_cache_seconds` (15 minutes by
+default) and a `user_not_found` for 60 seconds, for every mode; `unsupported` is never cached.
 
 ## Resources
 
@@ -178,18 +244,27 @@ Then, in this order:
 | SAML address on identities linked to different accounts | deny (`user_ambiguous`) |
 | no SAML identity in a truncated listing | unknown (`unsupported`) |
 | template mode, email domain not in `email_domains` | unknown (`unsupported`) |
+| http mode: 404 or 422; callable mode: `None` | deny (`user_not_found`) |
+| http mode: other status, transport error, a body that is not a login string; callable mode: an exception or a value that is not a login | unknown (`unsupported`) |
+| token auth: GraphQL `FORBIDDEN` / `INSUFFICIENT_SCOPES` on the SAML read, or the organization not visible to it | unknown (`unsupported`) |
 | no SAML identity in a complete listing, no `/users/{login}`, no map entry | deny (`user_not_found`) |
 | 401, or 403 without an exhausted rate limit; GraphQL `FORBIDDEN` / `INSUFFICIENT_SCOPES`; App not installed | unknown (`credential_rejected`) |
 | 403 with `X-RateLimit-Remaining: 0` or `Retry-After`, 429, GraphQL `RATE_LIMITED` | unknown (`upstream_rate_limited`) |
 | other GraphQL errors, 5xx, transport | unknown (`upstream_error`); timeouts `upstream_timeout` |
 
-Rate limit: 5,000 requests per hour per installation. A check costs one to four calls after the
+Rate limit: 5,000 requests per hour per installation (a token has its user's limit). A check costs one to four calls after the
 token is cached (identity, permission, repository metadata where needed, and for `@branch` the rules
 and protection records plus one team membership call per restricted team).
 
 ## Probe
 
-`GET /app` and `GET /orgs/{org}/installation` with the App JWT. The summary is
+With a token: `GET /orgs/{org}`. The summary is "token reads organization <org>", with the scopes a
+classic token reports (`X-OAuth-Scopes`); a scope other than `read:org`, `read:user`, `user:email`
+and the other `read:` scopes is reported as over-privileged. The classic `repo` scope, which a
+classic token needs to read private repositories, writes too: the warning says so and points at a
+fine-grained token with read permissions only. In `saml` mode a warning says the SAML read needs an owner's token.
+
+With an App: `GET /app` and `GET /orgs/{org}/installation` with the App JWT. The summary is
 "app <slug> installed in <org>". Warnings: `metadata` or `members` missing from the installation's
 permissions; any permission with value `write` or `admin` (over-privileged); `installation_id` not
 matching what GitHub reports; in `saml` mode, an organization without a SAML identity provider.
@@ -234,6 +309,8 @@ Each item is marked `# UNVERIFIED:` in the code.
 - Enterprise-level SAML / Enterprise Managed Users: `organization.samlIdentityProvider` is expected to
   be null there, so `identity_mode: saml` reports "no SAML identity provider"; use `template` or
   `map_file`.
+- Token auth: which reads a fine-grained token's "Metadata", "Members" and "Administration" read
+  permissions answer was taken from GitHub's documentation, not captured from a live organization.
 - Branch names containing `/` are sent path-escaped (`feature%2Fx`) to the rules and protection
   endpoints.
 
@@ -242,6 +319,8 @@ Each item is marked `# UNVERIFIED:` in the code.
 `python -m pytest tests/integrations/github` (in `toolpass-py`) runs against a fake GitHub (REST and GraphQL) that
 verifies the App JWT signature and claims with the test key, hands out installation tokens, and
 serves the repository, permission, membership, rules, branch protection and SAML identity endpoints.
+`test_token_and_identity.py` runs the same fake on token auth, with a fake identity service for
+`http` mode and callables for `callable` mode.
 With `TOOLPASS_SPECS_DIR` set (see `test/specs/fetch.sh`) every REST request is validated against
 GitHub's OpenAPI description. Against a real organization: install the App, configure a connection,
 run `toolpass probe` and one check for a user you know has `push` on some repository, then one for

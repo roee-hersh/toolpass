@@ -34,7 +34,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from toolpass._context import CallContext, ObservedAction, checks_user, current_call
-from toolpass._toolkit import ToolRefused
+from toolpass._toolkit import ToolRefused, _refusal_text, refusal_code
 from toolpass.core.routes import Request, RouteTable, effect_of_method, host_key, rank
 
 if TYPE_CHECKING:
@@ -292,7 +292,10 @@ def _authorize(ctx: CallContext, request: Request, key: str, obs: ObservedAction
                 key,
                 obs,
                 ActionRefused(
-                    tool, "authorization_error", f"{obs.name} on {obs.resource} needs a permission check and the toolkit has no permissions engine", obs
+                    tool,
+                    "not_configured",
+                    f"nothing was checked: {obs.name} on {obs.resource} needs a permission check and the toolkit has no permissions engine",
+                    obs,
                 ),
             )
         groups = None if session.groups is None else list(session.groups)
@@ -302,12 +305,9 @@ def _authorize(ctx: CallContext, request: Request, key: str, obs: ObservedAction
         except Exception as e:  # noqa: BLE001 - a failed lookup is a refusal
             raise _refuse(ctx, key, obs, ActionRefused(tool, "authorization_error", f"authorization could not be decided ({type(e).__name__})", obs)) from None
         if not allowed:
-            raise _refuse(
-                ctx,
-                key,
-                obs,
-                ActionRefused(tool, "not_authorized", f"{session.user} may not {obs.action} on {obs.resource} in {conn.id}: {reason or 'denied'}", obs),
-            )
+            code = refusal_code(d)
+            text = _refusal_text(code, f"{session.user} may not {obs.action} on {obs.resource} in {conn.id}", reason)
+            raise _refuse(ctx, key, obs, ActionRefused(tool, code, text, obs))
 
     if (spec.check_untrusted or obs.effect != "read") and session._carries_untrusted(request.text()):
         message = f"the request {request.describe()} repeats content from an untrusted source seen in this session, so it may have been injected"

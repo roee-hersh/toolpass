@@ -17,7 +17,7 @@ from __future__ import annotations
 import string
 from typing import Any, Protocol
 
-from toolpass._toolkit import AuthDecision, Call
+from toolpass._toolkit import AuthDecision, Call, refusal_code
 
 
 class _Checker(Protocol):
@@ -29,7 +29,10 @@ def permission_check(tp: _Checker, connection: str, action: str, resource: str, 
 
     ``resource`` is a format string over the call's arguments, e.g.
     ``"issue:{key}"``. Only toolpass's ``allow`` lets the call through:
-    ``deny``, ``unknown`` and an unreachable toolpass all refuse. Use
+    ``deny``, ``unknown`` and an unreachable toolpass all refuse, with
+    distinct codes: ``not_authorized`` for a deny, ``not_configured`` for a
+    connection toolpass does not have, ``authorization_error`` for anything
+    that could not be checked. Use
     ``fresh=True`` on destructive tools to skip toolpass's caches.
     """
 
@@ -47,7 +50,10 @@ def permission_check(tp: _Checker, connection: str, action: str, resource: str, 
         groups = None if call.session.groups is None else list(call.session.groups)
         d = tp.check(call.session.user, connection, action, target, groups, fresh=fresh)
         outcome = getattr(d, "decision", None)
-        return AuthDecision(outcome == "allow", f"toolpass {outcome} {action} on {target} in {connection}: {getattr(d, 'reason', '')}")
+        reason = f"toolpass {outcome} {action} on {target} in {connection}: {getattr(d, 'reason', '')}"
+        if outcome == "allow":
+            return AuthDecision(True, reason)
+        return AuthDecision(False, reason, refusal_code(d))
 
     authorize.__name__ = f"permission_check({connection}, {action})"
     authorize.__toolpass_fields__ = frozenset(fields)  # type: ignore[attr-defined]

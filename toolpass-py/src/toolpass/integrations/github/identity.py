@@ -1,8 +1,13 @@
 """Mapping an email to a GitHub login: organization SAML identities, a
-login template or a mapping file."""
+login template, a mapping file, an HTTP identity service or a callable
+given in code."""
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import inspect
+import json
 import re
 import threading
 from collections.abc import Callable
@@ -12,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from toolpass.core import jsonx
 from toolpass.core.catalog import go_bytes
 from toolpass.core.context import Context
-from toolpass.core.decision import Code, ToolpassError, errorf, user_ambiguous, user_not_found, wrap_error
+from toolpass.core.decision import Code, ToolpassError, errorf, to_decision, user_ambiguous, user_not_found, wrap_error
 from toolpass.core.errors import as_error, go_lower, go_quote, go_trim_space, path_error_text
 from toolpass.core.integration import Identity, User
 from toolpass.core.template import email_domain
@@ -26,6 +31,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAP_FILE_TTL",
+    "MODE_CALLABLE",
+    "MODE_HTTP",
     "MODE_MAP_FILE",
     "MODE_SAML",
     "MODE_TEMPLATE",
@@ -47,6 +54,12 @@ __all__ = [
 MODE_SAML = "saml"
 MODE_TEMPLATE = "template"
 MODE_MAP_FILE = "map_file"
+MODE_HTTP = "http"
+MODE_CALLABLE = "callable"
+
+# The statuses with which the identity service says it has no login for an
+# address: 404 (no identity) and 422 (the address is refused). Both deny.
+HTTP_NO_IDENTITY = (404, 422)
 
 # How long the full external-identity map is reused. A fresh check uses
 # the map for as long as anyone: it is an organization's whole identity
@@ -280,8 +293,12 @@ class IdentityMixin:
     # Provided by GitHubConnection.
     org: str
     mode: str
+    auth_mode: str
     template: Template
     email_domains: frozenset[str]
+    identity_url: str
+    lookup: httpx.Client
+    identity_fn: Callable[[str], Any] | None
     map_file: str
     logger: Logger
     now: Callable[[], float]
@@ -307,6 +324,10 @@ class IdentityMixin:
             login = self._resolve_template(ctx, email)
         elif self.mode == MODE_MAP_FILE:
             login = self._resolve_map_file(email)
+        elif self.mode == MODE_HTTP:
+            login = self._resolve_http(ctx, email)
+        elif self.mode == MODE_CALLABLE:
+            login = self._resolve_callable(ctx, email)
         else:
             raise errorf(Code.UNSUPPORTED, f"identity_mode {go_quote(self.mode)} is not supported")
         if not valid_login(login):
@@ -318,6 +339,8 @@ class IdentityMixin:
     def _resolve_saml(self, ctx: Context, email: str) -> str:
         data = self.graphql_saml(ctx, SAML_LOOKUP_QUERY, {"org": self.org, "email": email})
         if not data.has_org:
+            if self.auth_mode == "token":
+                raise errorf(Code.UNSUPPORTED, f"organization {self.org} is not visible to the token's SAML query; use another identity_mode")
             raise errorf(Code.CREDENTIAL_REJECTED, f"organization {self.org} is not visible to the app")
         if not data.has_provider:
             raise _no_saml()
@@ -446,3 +469,81 @@ class IdentityMixin:
                 raise wrap_error(Code.UPSTREAM_ERROR, e, "user_map_file could not be read")
             self._map_entries, self._map_read = m, now
             return m
+
+    # -- http --
+
+    def _resolve_http(self, ctx: Context, email: str) -> str:
+        """GET <identity_url>?email=<email>. 200 with a JSON string is the
+        login; 404 and 422 are no identity (a deny). Anything else means the
+        question could not be asked: unknown, never a deny."""
+        try:
+            resp = self.lookup.do(ctx, httpx.Request(method="GET", path=self.identity_url, query={"email": email}, accept_4xx=True))
+        except Exception as e:  # noqa: BLE001 - transport errors and 5xx
+            raise wrap_error(Code.UNSUPPORTED, e, f"the identity service could not be asked about {email} ({_failure(e)})")
+        if resp.status in HTTP_NO_IDENTITY:
+            raise user_not_found(f"the identity service has no GitHub login for {email} (HTTP {resp.status})")
+        if resp.status != 200:
+            raise errorf(Code.UNSUPPORTED, f"the identity service answered HTTP {resp.status} for {email}")
+        try:
+            login = json.loads(resp.body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise errorf(Code.UNSUPPORTED, f"the identity service's answer for {email} is not JSON") from None
+        return _checked_login(login, "the identity service", email)
+
+    # -- callable --
+
+    def _resolve_callable(self, ctx: Context, email: str) -> str:
+        """identity(email): a login, or None for no identity (a deny). An
+        exception or anything else is unknown, never a deny. An async
+        callable runs on an event loop of its own, within the check's
+        deadline."""
+        fn = self.identity_fn
+        assert fn is not None
+        try:
+            out = fn(email)
+            if inspect.isawaitable(out):
+                out = _await(out, ctx.remaining())
+        except Exception as e:  # noqa: BLE001 - any failure of the application's code
+            raise wrap_error(Code.UNSUPPORTED, e, f"the identity callable failed for {email} ({type(e).__name__})")
+        if out is None:
+            raise user_not_found(f"the identity callable has no GitHub login for {email}")
+        return _checked_login(out, "the identity callable", email)
+
+
+def _checked_login(v: Any, who: str, email: str) -> str:
+    """A login from an identity source, or an unsupported error: a value
+    that is not a GitHub login means the question was not answered."""
+    if not isinstance(v, str):
+        raise errorf(Code.UNSUPPORTED, f"{who} answered a JSON {type(v).__name__} for {email}, not a login string")
+    if not valid_login(v):
+        shown = v if len(v) <= 64 else v[:63] + "…"
+        raise errorf(Code.UNSUPPORTED, f"{who} answered {go_quote(shown)} for {email}, which is not a GitHub login")
+    return v
+
+
+def _failure(e: BaseException) -> str:
+    """A short, secret-free account of a failed lookup: its own text when
+    toolpass classified it, else the status, a timeout, or the type."""
+    te = as_error(e, ToolpassError)
+    if te is not None:
+        return te.text or te.code.value
+    st = httpx.status(e)
+    if st:
+        return f"HTTP {st}"
+    d = to_decision(e)
+    return "timed out" if d.code == Code.UPSTREAM_TIMEOUT else type(e).__name__
+
+
+async def _bounded(aw: Any, timeout: float | None) -> Any:
+    return await asyncio.wait_for(aw, timeout) if timeout is not None else await aw
+
+
+def _await(aw: Any, timeout: float | None) -> Any:
+    """Run an awaitable to completion from synchronous code: on a new event
+    loop, in a worker thread when this thread already runs one."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_bounded(aw, timeout))
+    with concurrent.futures.ThreadPoolExecutor(1) as ex:
+        return ex.submit(asyncio.run, _bounded(aw, timeout)).result()

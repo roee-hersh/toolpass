@@ -44,8 +44,10 @@ class Connection(ABC):
   Raise `ValueError` from `new` for a setting that cannot work; `toolpass validate` reports it.
 - `fields`: use `url_field`, `credential_field` and `connection_ref_field`; set `default`, `enum`
   and `validate` on a `Field` where sensible. Secret fields are `secret=True` and arrive as `env:`
-  or `file:` references (`Settings.secret(name)`); the rest are strings (`Settings.get`,
-  `Settings.bool`). Never declare `url`, `credential` and the like through both a helper and a
+  or `file:` references (`Settings.secret(name)`). A field with `code=True` takes a Python value
+  (a callable) given in `Toolpass(connections=[...])`, never from a file, read with
+  `Settings.object(name)` (None when absent); it cannot be secret, required or defaulted. The rest
+  are strings (`Settings.get`, `Settings.bool`). Never declare `url`, `credential` and the like through both a helper and a
   literal. A `*_connection` field names another connection, which `d.connection(id)` returns. Its
   `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), any of which is
   accepted.

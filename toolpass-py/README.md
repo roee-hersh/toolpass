@@ -93,7 +93,7 @@ and uses their `toolpass.tool`.
 | Action limits | `limit=`, `Toolkit(limits={"destructive": 3})` | A loop or an injection cannot run 200 deletes in one session |
 | User authorization | `authorize=permission_check(...)` or any callable | The call runs only if the person asking may do it |
 | Untrusted-input check | `untrusted_output=True` on readers | An action whose arguments repeat untrusted content (an email, a web page) is refused |
-| Fencing | automatic for untrusted string output | Untrusted text reaches the model inside a nonce-tagged block marked as data |
+| Fencing | automatic for untrusted string output; `toolpass.fence()` for any text | Untrusted text reaches the model in a block whose id its author could not know; forged tags are replaced and borrowed frames counted |
 | Exfiltration guard | `reads_private=True`, `sends_out=True` | Once a session has read private data and seen untrusted content, nothing is sent out |
 | Credential injection | `credential="name"` | The secret is fetched after every check and never enters the model's context; echoes of it in the output are redacted |
 | Audit | `Toolkit(audit=...)` | One event per call, refused or run, with who asked and why it was decided |
@@ -170,7 +170,12 @@ accounts: to show it to people elsewhere, put something that authenticates them 
 ## Refusals
 
 A refused call raises `ToolRefused` with a `code` (`out_of_scope`, `not_authorized`,
-`untrusted_input`, `exfiltration_risk`, ...) and a message written for the model. Most frameworks pass
+`untrusted_input`, `exfiltration_risk`, ...) and a message written for the model. Three codes
+answer "may this user do this?" and must not be confused: `not_authorized` (the user was checked
+and lacks access), `authorization_error` (the question could not be answered: an upstream timeout,
+an `unknown` answer, an unreachable toolpass; try again shortly) and `not_configured` (nothing was
+checked: toolpass has no such connection or action, a server refused the client's key, or the
+toolkit has no permissions engine; an operator must configure it). Only `not_authorized` says the user may not. Most frameworks pass
 the exception's text back to the model. Where a framework hides it, `Toolkit(on_refuse=str)`
 returns the message as the tool's result instead. A check that itself fails unexpectedly (a
 scope predicate that crashes, a session source that is down) refuses with `check_error` or the
@@ -185,6 +190,27 @@ A validator accepts by returning `True` (or any truthy value, such as a `re.Matc
 returning anything falsy (`False`, `None`) or raising. Generator tools are not supported: return
 the whole result. A returned iterator is turned into a list before redaction; an async iterator
 is refused.
+
+## Fencing untrusted text
+
+`toolpass.fence(payload, label=..., source=...)` returns `(block, frames)`: the payload between two
+tags whose id is minted after the payload was fetched, a preamble telling the model that everything
+inside is data, and a fixed closing line (`toolpass.FENCE_END`) after which trusted text resumes.
+Fence tags carrying any other id, and the closing line, are replaced in the payload with
+`[forged fence tag]`, and the preamble says how many. Frames borrowed from other trust systems
+(`<system-reminder>`, `function_calls` / `function_results`, `"type": "tool_result"`, a `Human:`,
+`Assistant:` or `System:` line, ChatML markers) are counted after NFKC, logged and left as they
+are; `frames` is that count. The label (often a path the model chose) is clipped to 300 characters,
+kept to one line and JSON-quoted. `label` and `source` are keyword-only.
+
+```python
+block, frames = toolpass.fence(event.diff, label=event.ref, source="CI event")
+prompt = f"Review requested by {requester} for {event.ref}.\n{block}"
+```
+
+It works on text no tool produced (a chat thread's earlier messages, a CI event's diff) and on part
+of a result. `untrusted_output=True` fences a tool's whole string output with the same function,
+unless the body already fenced its untrusted part itself (a whole block, minted during the call).
 
 ## Permission checks in tools
 
@@ -235,6 +261,7 @@ has the details; `toolpass routes github` prints what toolpass understands of an
   the call runs, within its scope and limits. Don't rely on this check alone.
 - **Fencing helps, it does not guarantee.** Models can still be talked past markers.
 - **Only string output is fenced.** Structured output is recorded as untrusted but returned as is.
+  A body that calls `fence()` on part of its result is trusted to have fenced every untrusted part.
 - **Sessions live in memory.** Counts and flags do not survive a restart or span processes yet.
 - **Redaction matches the credential's literal text.** An encoded or split echo of it (base64, a
   hex dump) is not caught, and strings shorter than 8 characters are never redacted.
