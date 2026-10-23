@@ -47,6 +47,7 @@ def test_codes_are_the_closed_wire_set() -> None:
         "unknown_connection",
         "unknown_action",
         "unauthorized",
+        "not_configured",
     ]
     assert [o.value for o in Outcome] == ["allow", "deny", "unknown"]
     assert str(Code.USER_NOT_FOUND) == "user_not_found" and str(Outcome.DENY) == "deny"

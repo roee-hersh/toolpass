@@ -38,7 +38,10 @@ class Checker(Protocol):
 
 def decision_body(d: Decision) -> bytes:
     """The wire response of POST /check."""
-    return (go_json({"decision": d.outcome.value, "reason": d.reason()}) + "\n").encode()
+    body: dict[str, Any] = {"decision": d.outcome.value, "reason": d.reason()}
+    if d.identity:
+        body["identity"] = d.identity
+    return (go_json(body) + "\n").encode()
 
 
 def check_body(req: Request) -> dict[str, Any]:

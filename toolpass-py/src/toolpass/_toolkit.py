@@ -126,13 +126,14 @@ REFUSAL_CODES = ("not_authorized", "authorization_error", "not_configured")
 
 def refusal_code(d: Any) -> str:
     """The refusal a toolpass answer that is not allow earns: a deny is
-    ``not_authorized``; a connection or action toolpass does not have, or a
-    toolpass server refusing the client's key, is ``not_configured``; any other answer (unknown, a client error) is
+    ``not_authorized``; a connection or action toolpass does not have, a
+    toolpass server refusing the client's key, or a connection that cannot
+    ask as configured (``not_configured``) is ``not_configured``; any other answer (unknown, a client error) is
     ``authorization_error``, never a claim that the user lacks access."""
     if getattr(d, "decision", None) == "deny":
         return "not_authorized"
     code = getattr(d, "code", "")
-    if code in ("unknown_connection", "unknown_action", "unauthorized"):
+    if code in ("unknown_connection", "unknown_action", "unauthorized", "not_configured"):
         return "not_configured"
     return "authorization_error"
 

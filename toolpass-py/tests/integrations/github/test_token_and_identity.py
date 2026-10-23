@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -72,12 +73,61 @@ def test_a_rejected_token_is_not_retried_and_not_a_deny(gh: Harness) -> None:
     assert e.calls("/users/dana") == 1, "a 401 on a static token was retried"
 
 
-def test_a_token_that_cannot_read_saml_is_unsupported_not_deny(gh: Harness) -> None:
+def test_a_token_that_cannot_read_saml_is_not_configured_never_deny(gh: Harness) -> None:
+    # No identity settings: the connection falls back to SAML, which this token cannot read.
+    # Nothing about the user was checked, so the answer says the deployment is unconfigured.
     e = token_env(gh)
     e.api.with_(lambda: setattr(e.api, "gql_errors", [{"type": "FORBIDDEN", "message": "owner only"}]))
-    expect_text(e.check(DANA, "repo.push", "repo:acme/api"), Code.UNSUPPORTED, "SAML identities")
+    expect_text(e.check(DANA, "repo.push", "repo:acme/api"), Code.NOT_CONFIGURED, "SAML identities")
     e.api.with_(lambda: setattr(e.api, "gql_errors", [{"type": "INSUFFICIENT_SCOPES", "message": "admin:org"}]))
-    expect_text(e.check(DANA, "repo.push", "repo:acme/api"), Code.UNSUPPORTED, "use another identity_mode")
+    expect_text(e.check(DANA, "repo.push", "repo:acme/api"), Code.NOT_CONFIGURED, "configure identity_url")
+    e.api.with_(lambda: (setattr(e.api, "gql_errors", None), setattr(e.api, "saml", False)))
+    expect_text(e.check(DANA, "repo.push", "repo:acme/api"), Code.NOT_CONFIGURED, "no SAML identity provider")
+    assert e.calls("/permission") == 0
+
+
+def test_not_configured_reaches_a_tool_as_not_configured(gh: Harness) -> None:
+    from toolpass import Session, Toolkit, ToolRefused, permission_check
+    from toolpass._api import Decision as ApiDecision
+
+    e = token_env(gh)
+    e.api.with_(lambda: setattr(e.api, "gql_errors", [{"type": "FORBIDDEN", "message": "owner only"}]))
+
+    class Engine:
+        def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False) -> ApiDecision:
+            d = e.check(User(email=user), action, resource)
+            return ApiDecision(d.outcome.value, d.reason())
+
+    tools = Toolkit(audit=None)
+
+    @tools.tool(effect="write", authorize=permission_check(Engine(), "gh", "repo.push", "repo:{repo}"))
+    def push(repo: str) -> str:
+        return "pushed"
+
+    with Session("dana@example.com").active(), pytest.raises(ToolRefused) as r:
+        push("acme/api")
+    assert r.value.code == "not_configured" and r.value.reason.startswith("nothing was checked")
+    assert "may not" not in r.value.reason
+
+
+@pytest.mark.parametrize("deny", [False, True])
+def test_collaborator_404_is_unknown_unless_configured_as_deny(gh: Harness, deny: bool) -> None:
+    v = {"identity_mode": "template", "email_domains": "example.com"}
+    if deny:
+        v["collaborator_404"] = "deny"
+    e = token_env(gh, v)
+    d = e.check(User(email="frank@example.com"), "repo.push", "repo:acme/api")  # frank has no record on api
+    if deny:
+        expect_text(d, Code.DENIED, "not a collaborator")
+    else:
+        itest.expect_code(d, Code.RESOURCE_NOT_VISIBLE)
+    # A repository toolpass cannot see says nothing about the login: unknown either way.
+    e.api.with_(lambda: setattr(e.api, "repo_status", 404))
+    itest.expect_code(e.check(User(email="frank@example.com"), "repo.push", "repo:acme/api"), Code.RESOURCE_NOT_VISIBLE)
+    e.api.with_(lambda: setattr(e.api, "repo_status", 0))
+    # Other failures of the same read stay unknown either way.
+    e.api.with_(lambda: setattr(e.api, "perm_status", 500))
+    itest.expect_code(e.check(DANA, "repo.push", "repo:acme/api"), Code.UPSTREAM_ERROR)
 
 
 def test_a_token_that_cannot_read_branch_rules_is_unsupported_not_deny(gh: Harness) -> None:
@@ -262,9 +312,56 @@ def test_http_mode_settings(gh: Harness) -> None:
             GitHub().new(background(), itest.settings("gh", "github", {**base, **values}, secrets), deps)
     f = next(f for f in GitHub().fields() if f.name == "identity_url")
     assert f.validate is not None
-    for bad in ("http://groot.example/v1", "https://groot.example/v1?email=x", "https://user@groot.example/v1"):
+    for bad in ("ftp://groot.example/v1", "https://groot.example/v1?email=x", "https://user@groot.example/v1", "http://u@groot/v1", "http://groot/v1#x"):
         with pytest.raises(ValueError):
             f.validate(bad)
+    f.validate("http://groot-service.security.svc.cluster.local/v1")  # the shape is fine; whether http is allowed is new()'s
+
+
+def test_plain_http_identity_url_needs_the_opt_in(gh: Harness) -> None:
+    deps, _ = itest.deps()
+    v = {"organization": "acme", "identity_url": "http://groot-service.security.svc.cluster.local/v1/github-login"}
+    tok = {"token": itest.literal("t")}
+    with pytest.raises(ValueError, match="identity_allow_http"):
+        GitHub().new(background(), itest.settings("gh", "github", v, tok), deps)
+    with pytest.raises(ValueError, match="identity_allow_http applies to identity_mode http"):
+        sv = {"organization": "acme", "identity_mode": "saml", "identity_allow_http": "true"}
+        GitHub().new(background(), itest.settings("gh", "github", sv, tok), deps)
+    f = next(f for f in GitHub().fields() if f.name == "identity_url")
+    assert f.validate is not None
+    with pytest.raises(ValueError, match=re.escape('"http://groot.svc/v1?x=1"')):  # the URL as written, not as rewritten
+        f.validate("http://groot.svc/v1?x=1")
+    c = GitHub().new(background(), itest.settings("gh", "github", {**v, "identity_allow_http": "true"}, tok), deps)
+    assert c.identity_url == v["identity_url"]  # type: ignore[attr-defined]
+    # Loopback needs no opt-in, as everywhere else.
+    GitHub().new(background(), itest.settings("gh", "github", {**v, "identity_url": "http://127.0.0.1:8080/v1"}, tok), deps)
+
+
+def test_plain_http_identity_service_answers(gh: Harness) -> None:
+    groot = Groot()
+    ids = itest.Server(tls=False)
+    gh.servers.append(ids)
+    ids.handle("GET", "/v1/github-login", groot.handle)
+    e = token_env(gh, {"identity_mode": "http", "identity_url": ids.url + "/v1/github-login", "identity_allow_http": "true"})
+    itest.expect_code(e.check(DANA, "repo.push", "repo:acme/api"), Code.ALLOWED)
+    assert groot.asked == ["dana@example.com"]
+
+
+def test_the_decision_carries_the_resolved_login(gh: Harness) -> None:
+    from toolpass import Toolpass, literal
+
+    e = token_env(gh, {"identity_mode": "template", "email_domains": "example.com"})
+    logins = {"dana@example.com": "dana", "bob@example.com": "bob"}
+    conn = {"id": "gh", "integration": "github", "url": e.srv.url, "ca_file": itest.test_ca().ca_file, "organization": "acme"}
+    tp = Toolpass(connections=[{**conn, "token": literal(TOKEN), "identity": logins.get}])
+    d = tp.check("dana@example.com", "gh", "repo.push", "repo:acme/api")
+    assert (d.decision, d.identity) == ("allow", "dana"), d
+    d = tp.check("bob@example.com", "gh", "repo.push", "repo:acme/api")
+    assert (d.decision, d.identity) == ("deny", "bob"), d
+    d = tp.check("bob@example.com", "gh", "repo.push", "repo:acme/api")  # from the decision cache
+    assert (d.decision, d.identity) == ("deny", "bob"), d
+    d = tp.check("nobody@example.com", "gh", "repo.push", "repo:acme/api")
+    assert (d.decision, d.code, d.identity) == ("deny", "user_not_found", ""), d
 
 
 # -- identity_mode callable ----------------------------------------------------

@@ -63,6 +63,9 @@ class Code(str, Enum):
     UNKNOWN_CONNECTION = "unknown_connection"
     UNKNOWN_ACTION = "unknown_action"
     UNAUTHORIZED = "unauthorized"
+    # The deployment cannot ask the question as configured (no identity
+    # source that works, for example): nothing was checked.
+    NOT_CONFIGURED = "not_configured"
 
     def __str__(self) -> str:
         return self.value
@@ -87,6 +90,9 @@ class Decision:
     # What the upstream system said when the decision was computed. The
     # engine fills it; integrations leave it None.
     evidence: Evidence | None = field(default=None, compare=False)
+    # The account the email resolved to in the upstream system (a GitHub
+    # login); "" when no account was resolved. The engine fills it.
+    identity: str = field(default="", compare=False)
 
     def reason(self) -> str:
         """``"<code>: <text>"``, the wire form of the reason field."""

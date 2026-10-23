@@ -34,6 +34,12 @@ describe("client", () => {
     assert.equal(d.allowed, true);
   });
 
+  test("the resolved identity comes back", async () => {
+    assert.equal((await check("withlogin")).identity, "dana-gh");
+    assert.equal((await check("allowed")).identity, "");
+    assert.equal((await check("oddlogin")).identity, ""); // not a string: ignored
+  });
+
   test("deny is not allowed", async () => {
     for (const thing of ["denied", "nobody"]) {
       const d = await check(thing);

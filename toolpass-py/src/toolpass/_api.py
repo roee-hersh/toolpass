@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeVar, Union
 
 __all__ = [
@@ -60,12 +60,16 @@ class Decision:
     ``"<code>: <text>"``, or ``"client_error: ..."`` when a remote request
     never produced a usable answer. ``status`` is the HTTP status the server
     used (the in-process engine reports the one it would have used), 0 when
-    no response arrived.
+    no response arrived. ``identity`` is the account the user's email
+    resolved to in the system (a GitHub login, a Jira account id), "" when
+    none was resolved.
     """
 
     decision: str
     reason: str
     status: int = 200
+    # Not part of equality: the same verdict for the same login or none.
+    identity: str = field(default="", compare=False)
 
     @property
     def allowed(self) -> bool:
@@ -267,7 +271,7 @@ class _Local(_Backend):
             None,
             Request(user=user, connection=connection, action=action, resource=resource, groups=groups, fresh=fresh, token=token, remote="in-process"),
         )
-        return Decision(res.decision.outcome.value, res.decision.reason(), res.status)
+        return Decision(res.decision.outcome.value, res.decision.reason(), res.status, res.decision.identity)
 
     def probe(self) -> list[tuple[str, bool, str]]:
         out = []
@@ -398,6 +402,7 @@ def _parse(status: int, raw: bytes) -> Decision:
     try:
         data = json.loads(raw)
         decision, reason = data["decision"], str(data.get("reason", ""))
+        identity = data.get("identity", "")
     except (ValueError, KeyError, TypeError, AttributeError):
         return Decision(UNKNOWN, f"client_error: unexpected response (HTTP {status})", status)
     if decision not in (ALLOW, DENY, UNKNOWN):
@@ -405,7 +410,7 @@ def _parse(status: int, raw: bytes) -> Decision:
     if decision == ALLOW and status != 200:
         # toolpass never allows with a non-200 status; do not trust a proxy that does.
         return Decision(UNKNOWN, f"client_error: allow with HTTP {status}", status)
-    return Decision(decision, reason, status)
+    return Decision(decision, reason, status, identity if isinstance(identity, str) else "")
 
 
 def _log_write(

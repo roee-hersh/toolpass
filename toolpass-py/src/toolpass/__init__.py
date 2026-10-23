@@ -38,7 +38,7 @@ from toolpass._checks import ScopeRule, Validator
 from toolpass._context import ObservedAction, as_agent, as_user, current_call
 from toolpass._default import configure, default_toolkit, secured_tool, tool
 from toolpass._entitlements import ActionRecorder, Entitlement, Entitlements, ToolEntitlements
-from toolpass._fence import FENCE_END, Fenced, fence
+from toolpass._fence import FENCE_END, FENCE_START, Fenced, fence, neutralize
 from toolpass._permissions import permission_check
 from toolpass._session import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, TOKEN_HEADER, USER_HEADER, Session, current_session, session_from_header
 from toolpass._toolkit import (
@@ -65,6 +65,7 @@ __all__ = [
     "DENY",
     "EFFECTS",
     "FENCE_END",
+    "FENCE_START",
     "GROUPS_HEADER",
     "KEY_HEADER",
     "SESSION_HEADER",
@@ -113,6 +114,7 @@ __all__ = [
     "intercept",
     "literal",
     "log_audit",
+    "neutralize",
     "permission_check",
     "secured_tool",
     "session_from_header",

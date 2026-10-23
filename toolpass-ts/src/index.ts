@@ -43,17 +43,20 @@ export type DecisionValue = typeof ALLOW | typeof DENY | typeof UNKNOWN;
  * `decision` is `allow`, `deny` or `unknown`. `reason` is `"<code>: <text>"`
  * as toolpass sent it, or `"client_error: ..."` when the request never
  * produced a usable answer. `status` is the HTTP status, 0 when no response
- * arrived.
+ * arrived. `identity` is the account the user's email resolved to in the
+ * system (a GitHub login), "" when none was resolved.
  */
 export class Decision {
   readonly decision: DecisionValue;
   readonly reason: string;
   readonly status: number;
+  readonly identity: string;
 
-  constructor(decision: DecisionValue, reason: string, status = 200) {
+  constructor(decision: DecisionValue, reason: string, status = 200, identity = "") {
     this.decision = decision;
     this.reason = reason;
     this.status = status;
+    this.identity = identity;
     Object.freeze(this);
   }
 
@@ -316,7 +319,7 @@ function parse(status: number, raw: string): Decision {
   if (typeof data !== "object" || data === null || !("decision" in data)) {
     return new Decision(UNKNOWN, `client_error: unexpected response (HTTP ${status})`, status);
   }
-  const { decision, reason } = data as { decision: unknown; reason?: unknown };
+  const { decision, reason, identity } = data as { decision: unknown; reason?: unknown; identity?: unknown };
   if (decision !== ALLOW && decision !== DENY && decision !== UNKNOWN) {
     return new Decision(UNKNOWN, `client_error: unexpected decision ${JSON.stringify(decision)}`, status);
   }
@@ -324,7 +327,7 @@ function parse(status: number, raw: string): Decision {
     // toolpass never allows with a non-200 status; do not trust a proxy that does.
     return new Decision(UNKNOWN, `client_error: allow with HTTP ${status}`, status);
   }
-  return new Decision(decision, reason === undefined ? "" : String(reason), status);
+  return new Decision(decision, reason === undefined ? "" : String(reason), status, typeof identity === "string" ? identity : "");
 }
 
 /**
