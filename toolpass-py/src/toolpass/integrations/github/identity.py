@@ -197,8 +197,9 @@ class SamlIndex:
 
 
 def _no_saml() -> Exception:
-    """The error for an organization without a SAML identity provider."""
-    return errorf(Code.UNSUPPORTED, "organization has no SAML identity provider; use identity_mode template or map_file")
+    """The error for an organization without a SAML identity provider: the
+    deployment has no identity source that works, nothing was checked."""
+    return errorf(Code.NOT_CONFIGURED, "organization has no SAML identity provider; configure identity_url, identity, login_template or user_map_file")
 
 
 def identity_matches(n: ExternalIdentity, email: str) -> bool:
@@ -340,7 +341,10 @@ class IdentityMixin:
         data = self.graphql_saml(ctx, SAML_LOOKUP_QUERY, {"org": self.org, "email": email})
         if not data.has_org:
             if self.auth_mode == "token":
-                raise errorf(Code.UNSUPPORTED, f"organization {self.org} is not visible to the token's SAML query; use another identity_mode")
+                raise errorf(
+                    Code.NOT_CONFIGURED,
+                    f"organization {self.org} is not visible to the token's SAML query; configure identity_url, identity, login_template or user_map_file",
+                )
             raise errorf(Code.CREDENTIAL_REJECTED, f"organization {self.org} is not visible to the app")
         if not data.has_provider:
             raise _no_saml()

@@ -64,6 +64,7 @@ Every `unknown` carries a code. What each one usually means and what to do:
 | `resource_not_visible` | toolpass's credential cannot see that resource | Grant the read permission the integration page lists for it |
 | `user_ambiguous` | Several accounts match the email | Fix the directory, or use the integration's mapping file |
 | `unsupported` | A policy construct toolpass does not evaluate, such as an IAM condition | Expected; the integration page lists these |
+| `not_configured` | The connection cannot ask as configured, such as a github connection with no identity source its credential can read | Configure one, as the integration page describes; nothing about the user was checked |
 | `unauthorized` (HTTP 401) | The caller's API key is wrong or missing (server only) | Check the agent's `TOOLPASS_API_KEY` |
 | `client_error` | `Toolpass.remote` or the Node client got no usable answer: the server is unreachable, timed out, redirected, or sent something that is not a decision | Check that the server is up and the URL is right; nothing reached the decision log |
 | `unknown_connection`, `unknown_action`, `invalid_request` (HTTP 400) | A mistake in the request | `toolpass catalog <integration>` lists the actions |

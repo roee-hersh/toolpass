@@ -25,7 +25,7 @@ print(tp.check("dana@example.com", "demo", "thing.write", "thing:1"))
 ```
 
 ```text
-Decision(decision='deny', reason='denied: dana@example.com is not an admin', status=200)
+Decision(decision='deny', reason='denied: dana@example.com is not an admin', status=200, identity='dana@example.com')
 ```
 
 Change the user to `admin@example.com` and the answer is `allow`. Try `nobody@example.com` and it is

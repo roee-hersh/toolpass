@@ -25,8 +25,12 @@ at most 200 entries of at most 256 bytes each.
 ```
 
 ```json
-{ "decision": "allow" | "deny" | "unknown", "reason": "<code>: <text>" }
+{ "decision": "allow" | "deny" | "unknown", "reason": "<code>: <text>", "identity": "<account>" }
 ```
+
+`identity` is the account the user's email resolved to in the system (a GitHub login, a Jira
+account id), present whenever one was resolved, allow or deny alike; it is absent when the email
+did not resolve (`user_not_found`, a lookup that failed) and on requests refused before a lookup.
 
 | Case | HTTP | decision | code |
 |---|---|---|---|
@@ -37,6 +41,7 @@ at most 200 entries of at most 256 bytes each.
 | toolpass's own credential was rejected | 200 | unknown | `credential_rejected` |
 | Resource not visible to toolpass | 200 | unknown | `resource_not_visible` |
 | Policy construct toolpass does not understand | 200 | unknown | `unsupported` |
+| The connection cannot ask as configured (no identity source that works): nothing was checked | 200 | unknown | `not_configured` |
 | Bad request, unknown connection or action | 400 | unknown | `invalid_request`, `unknown_connection`, `unknown_action` |
 | Bad or missing API key | 401 | unknown | `unauthorized` |
 | A method other than `POST` | 405 | unknown | `invalid_request` |

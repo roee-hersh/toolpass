@@ -15,6 +15,8 @@ type Answer = [status: number, body: unknown] | null;
 // writes something that is not an HTTP response.
 const ANSWERS: Record<string, Answer> = {
   allowed: [200, { decision: "allow", reason: "allowed: admin" }],
+  withlogin: [200, { decision: "allow", reason: "allowed: write", identity: "dana-gh" }],
+  oddlogin: [200, { decision: "deny", reason: "denied: read", identity: 42 }],
   denied: [200, { decision: "deny", reason: "denied: not an admin" }],
   nobody: [200, { decision: "deny", reason: "user_not_found: no account" }],
   timeout: [200, { decision: "unknown", reason: "upstream_timeout: jira took too long" }],

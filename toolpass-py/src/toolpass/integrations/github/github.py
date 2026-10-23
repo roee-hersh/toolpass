@@ -118,6 +118,19 @@ AUTH_TOKEN = "token"
 READ_SCOPES = frozenset({"read:org", "read:user", "user:email", "read:discussion", "read:project", "read:packages", "read:enterprise", "read:audit_log"})
 
 
+def validate_identity_url(v: str) -> None:
+    """An https:// URL, or a plain http:// one with the same shape (whether
+    plain http is allowed is identity_allow_http's to say, in new)."""
+    if not v.startswith("http://"):
+        validate_https_url(v)
+        return
+    as_https = "https://" + v.removeprefix("http://")
+    try:
+        validate_https_url(as_https)
+    except ValueError as e:
+        raise ValueError(str(e).replace(go_quote(as_https), go_quote(v))) from None
+
+
 def validate_login(v: str) -> None:
     if not valid_login(v):
         raise ValueError(f"{go_quote(v)} is not a GitHub login")
@@ -187,8 +200,20 @@ class GitHub(Integration):
             ),
             Field(
                 name="identity_url",
-                validate=validate_https_url,
+                validate=validate_identity_url,
                 description="http mode: the identity service; GET <identity_url>?email=<email> answers 200 and the login as a JSON string, 404/422 for none",
+            ),
+            Field(
+                name="identity_allow_http",
+                default="false",
+                enum=("true", "false"),
+                description="http mode: true lets identity_url be plain http:// on any host, for a network that carries TLS itself (a service mesh)",
+            ),
+            Field(
+                name="collaborator_404",
+                default="unknown",
+                enum=("unknown", "deny"),
+                description="what a 404 from the collaborator permission read means: unknown (default; the repository may be invisible) or deny",
             ),
             Field(
                 name="identity_token",
@@ -245,6 +270,9 @@ class GitHub(Integration):
         c.saml.set_fresh_max_age(SAML_CACHE_TTL)
         if token:
             c.auth_mode, c.who = AUTH_TOKEN, "the token"
+        c.collaborator_404 = s.get("collaborator_404") or "unknown"
+        if s.bool("identity_allow_http", False) and c.mode != MODE_HTTP:
+            raise ValueError(f"identity_allow_http applies to identity_mode http, not {c.mode}")
         if s.get("identity_url") != "" and c.mode != MODE_HTTP:
             raise ValueError(f"identity_url applies to identity_mode http, not {c.mode}")
         if not s.secret("identity_token").is_zero() and c.mode != MODE_HTTP:
@@ -280,6 +308,11 @@ class GitHub(Integration):
             if s.get("identity_url") == "":
                 raise ValueError("identity_mode http requires identity_url")
             c.identity_url = s.get("identity_url")
+            if not s.bool("identity_allow_http", False):
+                try:
+                    validate_https_url(c.identity_url)
+                except ValueError as e:
+                    raise ValueError(f"identity_url: {e}; set identity_allow_http: true when the network carries TLS itself (a service mesh)") from None
             ident = s.secret("identity_token")
             c.lookup = httpx.Client(
                 http=hc, logger=d.logger, auth=None if ident.is_zero() else httpx.bearer_auth(lambda _ctx: _read_secret(ident, "identity_token"))
@@ -568,6 +601,8 @@ class GitHubConnection(IdentityMixin, Connection):
         self.identity_url = ""
         self.lookup: httpx.Client = httpx.Client()
         self.identity_fn: Callable[[str], Any] | None = None
+        # "deny": a 404 from the collaborator permission read is a deny, not unknown.
+        self.collaborator_404 = "unknown"
 
     # -- authentication --------------------------------------------------
 
@@ -723,7 +758,10 @@ class GitHubConnection(IdentityMixin, Connection):
             if typ.upper() in ("INSUFFICIENT_SCOPES", "FORBIDDEN"):
                 if self.auth_mode == AUTH_TOKEN:
                     # A token reads SAML identities only for an organization owner: the question could not be asked.
-                    raise errorf(Code.UNSUPPORTED, f"the token may not read organization SAML identities (GraphQL {typ}); use another identity_mode")
+                    raise errorf(
+                        Code.NOT_CONFIGURED,
+                        f"the token cannot read organization SAML identities (GraphQL {typ}); configure identity_url, identity, login_template or a map file",
+                    )
                 raise errorf(
                     Code.CREDENTIAL_REJECTED,
                     f"the App may not read organization SAML identities (GraphQL {typ}); it needs Organization members: read",
@@ -778,6 +816,11 @@ class GitHubConnection(IdentityMixin, Connection):
             rec = _decode_permission_record(self._get(ctx, repo_path + "/collaborators/" + httpx.path_escape(login) + "/permission"))
         except Exception as e:  # noqa: BLE001 - classified below
             if api_status(e) == 404:
+                if self.collaborator_404 == "deny":
+                    # Only when the repository itself is visible does the 404 say
+                    # something about the login; otherwise nothing was checked.
+                    self._repo_meta(ctx, repo_path, t.owner + "/" + t.repo)
+                    return denied(f"{login} is not a collaborator on {t.owner}/{t.repo} (GitHub answered 404; collaborator_404 is deny)")
                 return unknown_decision(
                     Code.RESOURCE_NOT_VISIBLE,
                     f"repository {t.owner}/{t.repo} is not visible to {self.who}, or {login} is not a collaborator on a private repository",
@@ -1057,7 +1100,7 @@ class GitHubConnection(IdentityMixin, Connection):
             else:
                 if not data.has_org or not data.has_provider:
                     warnings.append(
-                        "organization " + self.org + " has no SAML identity provider; identity_mode saml will not resolve anyone (use template or map_file)"
+                        "organization " + self.org + " has no SAML identity provider; saml will not resolve anyone (use http, callable, template or map_file)"
                     )
         return ProbeResult(summary=summary, warnings=tuple(warnings))
 

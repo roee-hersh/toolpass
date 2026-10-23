@@ -289,7 +289,7 @@ class Engine:
                 self._logger.debug("check failed", connection=req.connection, action=req.action, code=str(d.code), error=str(e))
             if not isinstance(d, Decision) or d.code is None:
                 d = unsupported("integration returned no reason code")
-            d = d.with_(outcome=outcome_of(d.code), evidence=rec.evidence())
+            d = d.with_(outcome=outcome_of(d.code), evidence=rec.evidence(), identity=identity.id)
             if self._dec_ttl > 0 and d.outcome.value != "unknown":
                 # store, not set: a decision is as old as the oldest read it
                 # rests on, and one built on older reads must not replace the
@@ -321,7 +321,9 @@ class Engine:
                 return _IdEntry(id=c.c.resolve_identity(fctx, u)), self._id_ttl
             except Exception as e:
                 ie = as_error(e, ToolpassError)
-                if ie is not None and ie.code in (Code.USER_NOT_FOUND, Code.USER_AMBIGUOUS):
+                # A connection that cannot resolve anyone as configured fails
+                # the same way every time: cached as briefly as a miss.
+                if ie is not None and ie.code in (Code.USER_NOT_FOUND, Code.USER_AMBIGUOUS, Code.NOT_CONFIGURED):
                     return _IdEntry(err=ie), self._neg_ttl
                 raise
 

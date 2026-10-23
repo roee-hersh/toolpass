@@ -41,6 +41,7 @@ d.reason    # "denied: Dana Levi does not hold DELETE_ISSUES on issue PAY-123"
 d.code      # "denied"
 d.allowed   # True only for allow
 d.status    # the HTTP status the server used (in-process: the one it would use); 0 if none arrived
+d.identity  # the account the email resolved to (a GitHub login, a Jira account id); "" if none
 
 tp.allowed(...)          # True or False
 tp.require(...)          # returns the decision on allow, raises PermissionDenied otherwise

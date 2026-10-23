@@ -45,7 +45,7 @@ installation token answers and a typical token cannot:
 
 | Read | With a token | Answer when it cannot |
 |---|---|---|
-| SAML external identities (`identity_mode: saml`) | only an organization owner's token | unknown (`unsupported`, "use another identity_mode"), never a deny |
+| SAML external identities (`identity_mode: saml`, the default when no identity setting is given) | only an organization owner's token | unknown (`not_configured`, "configure identity_url, ..."), never a deny |
 | branch ruleset rules and classic protection (`@branch`) | needs admin, or Administration: read, on the repository | unknown (`unsupported`) |
 | `members_can_create_repositories` (`org.repo.create` for a member) | an owner's token | unknown (`unsupported`) |
 | the collaborator permission of a private repository the token's user cannot see | no | unknown (`resource_not_visible`) |
@@ -101,7 +101,9 @@ tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github
 | `login_template` | placeholders `{email}`, `{local}`, `{domain}`; must contain `{email}` or `{local}` |
 | `email_domains` | template mode, required: comma-separated domains the template applies to (`acme.com, acme.io`; entries are trimmed and lowercased, each must be a DNS name). An email from any other domain is unknown (`unsupported`), so `root@attacker.example` never renders to the login `root` |
 | `user_map_file` | lines of `email login` or `email=login`, `#` comments; must exist at startup; re-read at most every 60 s (a broken rewrite keeps the previous map) |
-| `identity_url` | http mode: the identity service, an `https://` URL without a query (plain `http://` only for loopback) |
+| `identity_url` | http mode: the identity service, an `https://` URL without a query (plain `http://` for loopback, or anywhere with `identity_allow_http`) |
+| `identity_allow_http` | http mode only, `false` by default: `true` lets `identity_url` be plain `http://` on any host, for a network that carries TLS itself (a service mesh such as `http://groot.security.svc.cluster.local`). `identity_token` then travels in that request |
+| `collaborator_404` | `unknown` (default) or `deny`: what a 404 from the collaborator permission read means. GitHub answers 200 with permission `none` for an organization member without access, so a 404 means the repository is not visible to toolpass or the login is not a collaborator on a private repository. With `deny` toolpass reads the repository: visible, the 404 is a deny; not visible, the answer stays unknown (`resource_not_visible`), since nothing about the login was checked |
 | `identity_token` | http mode, optional: sent to the identity service as `Authorization: Bearer`, `env:` or `file:` |
 | `identity` | callable mode, in code only: `identity(email)` returns a login or `None`, sync or async; a config file cannot carry it |
 
@@ -119,7 +121,7 @@ tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github
   stopped at a cap, the map is partial: a miss is then unknown (`unsupported`, "identity list
   truncated"), not `user_not_found`. An identity whose user is null (the person has not linked their
   SAML identity to a GitHub account) is unknown (`unsupported`), not a deny. An organization without
-  a SAML identity provider is unknown (`unsupported`) with a message pointing at the other modes.
+  a SAML identity provider is unknown (`not_configured`) with a message pointing at the other modes.
   `/search/users` is never used.
 - **template**: the email's domain must be listed in `email_domains`, otherwise the answer is
   unknown (`unsupported`) and nothing is looked up. `GET /users/{login}` then confirms the rendered
@@ -221,6 +223,10 @@ Then, in this order:
 
 ## Decisions
 
+Every decision for a resolved user carries the GitHub login (`Decision.identity` in Python and Node,
+`"identity"` in the HTTP response), so a caller can print it or bind it to its logs without parsing
+the reason.
+
 | Situation | Answer |
 |---|---|
 | the login's permissions include the level, membership matches | allow |
@@ -237,16 +243,16 @@ Then, in this order:
 | organization or team membership without a `state` | unknown (`unsupported`) |
 | team membership 404 and the team exists | deny |
 | team 404 as well | unknown (`resource_not_visible`) |
-| collaborator permission 404 | unknown (`resource_not_visible`): the repository is not visible to the App, or the login is not a collaborator on a private repository |
+| collaborator permission 404 | unknown (`resource_not_visible`): the repository is not visible to the App, or the login is not a collaborator on a private repository. With `collaborator_404: deny`, deny when the repository itself is visible |
 | `members_can_create_repositories` absent | unknown (`unsupported`) |
 | `has_issues` absent | unknown (`unsupported`) |
-| SAML identity unlinked, or no SAML provider | unknown (`unsupported`) |
+| SAML identity unlinked | unknown (`unsupported`) |
 | SAML address on identities linked to different accounts | deny (`user_ambiguous`) |
 | no SAML identity in a truncated listing | unknown (`unsupported`) |
 | template mode, email domain not in `email_domains` | unknown (`unsupported`) |
 | http mode: 404 or 422; callable mode: `None` | deny (`user_not_found`) |
 | http mode: other status, transport error, a body that is not a login string; callable mode: an exception or a value that is not a login | unknown (`unsupported`) |
-| token auth: GraphQL `FORBIDDEN` / `INSUFFICIENT_SCOPES` on the SAML read, or the organization not visible to it | unknown (`unsupported`) |
+| token auth: GraphQL `FORBIDDEN` / `INSUFFICIENT_SCOPES` on the SAML read, or the organization not visible to it; any auth: no SAML identity provider | unknown (`not_configured`): nothing about the user was checked; configure `identity_url`, `identity`, `login_template` or `user_map_file` |
 | no SAML identity in a complete listing, no `/users/{login}`, no map entry | deny (`user_not_found`) |
 | 401, or 403 without an exhausted rate limit; GraphQL `FORBIDDEN` / `INSUFFICIENT_SCOPES`; App not installed | unknown (`credential_rejected`) |
 | 403 with `X-RateLimit-Remaining: 0` or `Retry-After`, 429, GraphQL `RATE_LIMITED` | unknown (`upstream_rate_limited`) |
@@ -307,8 +313,8 @@ Each item is marked `# UNVERIFIED:` in the code.
 - `allow_forking` on a private or internal repository is assumed to reflect the organization's
   "members can fork private repositories" policy.
 - Enterprise-level SAML / Enterprise Managed Users: `organization.samlIdentityProvider` is expected to
-  be null there, so `identity_mode: saml` reports "no SAML identity provider"; use `template` or
-  `map_file`.
+  be null there, so `identity_mode: saml` answers `not_configured` ("no SAML identity provider");
+  use `http`, `callable`, `template` or `map_file`.
 - Token auth: which reads a fine-grained token's "Metadata", "Members" and "Administration" read
   permissions answer was taken from GitHub's documentation, not captured from a live organization.
 - Branch names containing `/` are sent path-escaped (`feature%2Fx`) to the rules and protection
