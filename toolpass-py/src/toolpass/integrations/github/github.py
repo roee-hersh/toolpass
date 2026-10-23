@@ -1100,7 +1100,7 @@ class GitHubConnection(IdentityMixin, Connection):
             else:
                 if not data.has_org or not data.has_provider:
                     warnings.append(
-                        "organization " + self.org + " has no SAML identity provider; identity_mode saml will not resolve anyone (use template or map_file)"
+                        "organization " + self.org + " has no SAML identity provider; saml will not resolve anyone (use http, callable, template or map_file)"
                     )
         return ProbeResult(summary=summary, warnings=tuple(warnings))
 
