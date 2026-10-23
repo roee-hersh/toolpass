@@ -71,7 +71,7 @@ class Integration(integ.Integration):
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
             integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
-            *oidc.oidc_fields("Argo CD"),
+            *oidc.oidc_fields(),
         ]
 
     def routes(self) -> RouteTable | None:

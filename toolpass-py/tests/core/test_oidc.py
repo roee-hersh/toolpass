@@ -220,6 +220,12 @@ def test_clock_skew(setup: Setup) -> None:
     assert "expired" in refused(v, tok).text
 
 
+def test_wrong_claims_cost_no_key_read(setup: Setup) -> None:
+    p, v, _, _ = setup()
+    refused(v, p.token({"aud": "other"}, kid="unknown"))
+    assert p.jwks_reads == 0 and not p.srv.calls()
+
+
 def test_bad_tokens(setup: Setup) -> None:
     p, v, _, _ = setup()
     e = refused(v, "")
@@ -323,9 +329,11 @@ def test_from_settings() -> None:
     ):
         with pytest.raises(ValueError, match=msg):
             Verifier.from_settings(settings(bad), deps)
+    with pytest.raises(ValueError, match="oidc_email_claim needs oidc_issuer"):
+        Verifier.from_settings(settings({"oidc_email_claim": "groups"}), deps)
     v = Verifier.from_settings(settings({"oidc_issuer": "https://sso.example.com/", "oidc_audience": "x"}), deps)
     assert v is not None and v.issuer == "https://sso.example.com" and v.groups_claim == "groups" and v.email_claim == "email"
-    fields = {f.name: f for f in oidc_fields("x")}
+    fields = {f.name: f for f in oidc_fields()}
     for key, bad_value in (("oidc_issuer", "http://sso.example.com"), ("oidc_groups_claim", "a b")):
         f = fields[key]
         assert f.validate is not None

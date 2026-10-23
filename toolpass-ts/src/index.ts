@@ -129,8 +129,8 @@ export class Toolpass {
    * `unknown` decision. The fifth argument is the user's groups, or an
    * options object: `{ groups, fresh, token }`. Groups left out or null are
    * omitted from the request. `token` is the user's own login token (an
-   * OIDC ID token), for a connection whose `groups_connection` reads the
-   * groups from it.
+   * OIDC ID token), for a connection that reads the groups from it
+   * (`oidc_issuer`).
    *
    * `fresh: true` asks for an answer straight from the upstream system,
    * skipping toolpass's caches. Use it for destructive actions. It narrows

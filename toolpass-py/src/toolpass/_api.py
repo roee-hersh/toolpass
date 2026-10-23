@@ -179,7 +179,7 @@ class Toolpass:
         action to the time between the two; it does not close it.
 
         ``token`` is the user's own login token (an OIDC ID token), for a
-        connection whose ``groups_connection`` reads the groups from it.
+        connection that reads the groups from it (``oidc_issuer``).
         """
         grp = None if groups is None else _group_list(groups)
         return self._backend.check(user, connection, action, resource, grp, fresh, _token(token))

@@ -90,7 +90,7 @@ class Integration(integ.Integration):
                 validate=_validate_eks_cluster,
                 description="the EKS cluster name, required when groups_connection is an aws connection",
             ),
-            *oidc.oidc_fields("the API server"),
+            *oidc.oidc_fields(),
             integ.Field(
                 name="eks_aws_auth",
                 default="false",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -441,6 +442,31 @@ def test_token_is_validated_and_keys_the_caches() -> None:
     assert e.check(ctx, req("t2")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 2
     assert e.check(ctx, req("")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 3
     assert c.last_user is not None and c.last_user.token == ""
+
+
+def test_caches_end_with_the_token() -> None:
+    """The groups read from a token are cached no longer than the token's
+    own exp says, whatever the configured TTLs."""
+    import base64
+
+    c = Counting()
+    e, _ = build_engine(c, Options(identity_cache=15 * 60.0, decision_cache=30.0))
+    ctx = background()
+
+    def tok(exp: float) -> str:
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
+        return "eyJhbGciOiJSUzI1NiJ9." + payload + ".sig"
+
+    short = Request(user="a@x.com", connection="c", action="thing.read", resource="thing:1", token=tok(time.time() + 2))
+    assert e.check(ctx, short).decision.outcome == Outcome.ALLOW and c.resolves.load() == 1
+    assert e.check(ctx, short).decision.outcome == Outcome.ALLOW and c.resolves.load() == 1 and c.checks.load() == 1
+    time.sleep(2.2)
+    r = e.check(ctx, short)
+    assert r.decision.outcome == Outcome.ALLOW and c.resolves.load() == 2 and c.checks.load() == 2, f"{r} resolves={c.resolves.load()} checks={c.checks.load()}"
+    # A token that is not a readable JWS caps nothing: the integration refuses it.
+    opaque = Request(user="a@x.com", connection="c", action="thing.read", resource="thing:1", token="opaque-token")
+    assert e.check(ctx, opaque).decision.outcome == Outcome.ALLOW and c.resolves.load() == 3
+    assert e.check(ctx, opaque).decision.outcome == Outcome.ALLOW and c.resolves.load() == 3
 
 
 def test_identity_cache_keeps_non_ascii_case_variants_apart() -> None:

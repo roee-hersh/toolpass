@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from toolpass.authx import jwt
 from toolpass.core import evidence
 from toolpass.core.cache import TTL, PanicError, is_panic_type, panic_stack
 from toolpass.core.catalog import ResourceError, parse_resource, validate_action_name
@@ -51,9 +52,9 @@ class Request:
     action: str
     resource: str
     groups: list[str] | tuple[str, ...] | None = None
-    # The user's own token from their login (an OIDC ID token), read by an
-    # oidc groups_connection. Never logged or cached in clear, so not in
-    # the repr either.
+    # The user's own token from their login (an OIDC ID token), for a
+    # connection that reads the groups from it (oidc_issuer). Never logged
+    # or cached in clear, so not in the repr either.
     token: str = field(default="", repr=False)
     # An answer straight from the upstream system: the decision cache, the
     # identity cache and the lookups integrations cache themselves are not
@@ -266,6 +267,9 @@ class Engine:
         user = User(email=req.user, groups=tuple(groups), token=req.token)
         dec_key = "\x00".join([req.connection, req.user, "\x01".join(groups), _token_key(req.token), req.action, req.resource])
         started = self._now()
+        # What a token says never outlives the token: the caches that hold
+        # the groups read from it end with it.
+        token_ttl = _token_remaining(req.token, started)
         if self._dec_ttl > 0 and not req.fresh:
             d, ok = self._decs.get(dec_key)
             if ok and d is not None:
@@ -277,7 +281,7 @@ class Engine:
             if req.fresh:
                 cctx = evidence.with_fresh(cctx)
             try:
-                identity = self._identity(cctx, c, user)
+                identity = self._identity(cctx, c, user, token_ttl)
             except Exception as e:  # noqa: BLE001 - every failure is an unknown decision
                 if is_panic_type(e):
                     # A crash outside the identity cache (it is off): logged
@@ -304,7 +308,7 @@ class Engine:
                 o = rec.oldest()
                 if o is not None and o < inputs:
                     inputs = o
-                self._decs.store(dec_key, d, self._dec_ttl, inputs, started)
+                self._decs.store(dec_key, d, min(self._dec_ttl, token_ttl), inputs, started)
             return Result(d, 200)
         finally:
             cancel()
@@ -317,14 +321,15 @@ class Engine:
         if pe is not None and pe.first_report():
             self._logger.error("lookup panicked", connection=connection, action=action, type=type(pe.value).__name__, stack=pe.stack)
 
-    def _identity(self, ctx: Context, c: _Conn, u: User) -> Identity:
+    def _identity(self, ctx: Context, c: _Conn, u: User, max_ttl: float = float("inf")) -> Identity:
         """Resolve u through the identity cache, which also carries the
-        evidence of the lookup to every check it serves."""
+        evidence of the lookup to every check it serves. max_ttl caps how
+        long the entry lives (a token's remaining life)."""
         key = _identity_key(c.settings.id, u)
 
         def fill(fctx: Context) -> tuple[_IdEntry, float]:
             try:
-                return _IdEntry(id=c.c.resolve_identity(fctx, u)), self._id_ttl
+                return _IdEntry(id=c.c.resolve_identity(fctx, u)), min(self._id_ttl, max_ttl)
             except Exception as e:
                 ie = as_error(e, ToolpassError)
                 if ie is not None and ie.code in (Code.USER_NOT_FOUND, Code.USER_AMBIGUOUS):
@@ -412,6 +417,22 @@ def _validate_token(t: str) -> None:
     for ch in t:
         if not 0x21 <= ord(ch) <= 0x7E:
             raise ValueError("token contains whitespace, a control character or a non-ASCII character")
+
+
+def _token_remaining(t: str, now: float) -> float:
+    """How long the token's own exp claim says it has left, read without
+    verification: it can only shorten a cache, never extend one, and a
+    token with no readable expiry is refused by whoever verifies it."""
+    if t == "":
+        return float("inf")
+    try:
+        claims = jwt.decode_jwt_claims(t)
+        exp = claims.get("exp") if isinstance(claims, dict) else None
+    except ValueError:
+        return float("inf")
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+        return float("inf")
+    return max(float(exp) - now, 0.0)
 
 
 def _token_key(t: str) -> str:

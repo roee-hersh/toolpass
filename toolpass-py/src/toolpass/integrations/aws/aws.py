@@ -197,7 +197,7 @@ class AWS(Integration):
                 description="identity_center: the Identity Center instance ARN",
             ),
             Field(name="role_map_file", description='static_map: file of "<email-or-group> <role-arn>" lines, # comments; re-read every 60 s'),
-            *oidc_fields("the role map's users"),
+            *oidc_fields(),
             Field(
                 name="context_entries",
                 validate=_validate_context_entries,

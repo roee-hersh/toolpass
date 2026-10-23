@@ -19,6 +19,7 @@ formats are OIDC Core's and JOSE's.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from toolpass.authx import jwt
@@ -49,18 +50,17 @@ def _validate_claim(v: str) -> None:
         raise ValueError("a claim name must not contain whitespace")
 
 
-def oidc_fields(what: str) -> list[Field]:
+def oidc_fields() -> list[Field]:
     """The keys an integration that grants by group takes to read the
-    groups from the user's own ID token; what names the system, for the
-    descriptions ("Argo CD")."""
+    groups from the user's own ID token."""
     return [
         Field(
             name="oidc_issuer",
             validate=validate_https_url,
-            description=f"the OpenID Connect issuer {what} logs users in with, e.g. https://sso.example.com; "
+            description="the OpenID Connect issuer the users log in to the system with, e.g. https://sso.example.com; "
             "set to read the user's groups from the ID token sent with the check when the caller sends none",
         ),
-        Field(name="oidc_audience", description=f"the client id {what} logs in with: the token's aud must carry it; required with oidc_issuer"),
+        Field(name="oidc_audience", description="the client id the system logs users in with: the token's aud must carry it; required with oidc_issuer"),
         Field(name="oidc_groups_claim", default="groups", validate=_validate_claim, description="the token claim holding the user's groups"),
         Field(
             name="oidc_email_claim",
@@ -88,6 +88,7 @@ class Verifier:
         self.keys: TTL[str, dict[str, Any]] = TTL(1)
         self.keys.set_clock(now)
         self.keys_fetched = 0.0
+        self.refetch = threading.Lock()
 
     @classmethod
     def from_settings(cls, s: Settings, d: Deps) -> Verifier | None:
@@ -97,11 +98,9 @@ class Verifier:
         issuer = s.get("oidc_issuer").rstrip("/")
         audience = s.get("oidc_audience")
         if issuer == "":
-            for key in ("oidc_audience", "oidc_groups_claim", "oidc_email_claim"):
-                if s.get(key) not in ("", "groups", "email"):
+            for key, default in (("oidc_audience", ""), ("oidc_groups_claim", "groups"), ("oidc_email_claim", "email")):
+                if s.get(key) not in ("", default):
                     raise ValueError(f"{key} needs oidc_issuer")
-            if audience != "":
-                raise ValueError("oidc_audience needs oidc_issuer")
             return None
         if audience == "":
             raise ValueError("oidc_audience is required with oidc_issuer: the client id the system logs in with")
@@ -160,14 +159,16 @@ class Verifier:
         kid = header.get("kid")
         if kid is not None and not isinstance(kid, str):
             raise errorf(Code.INVALID_REQUEST, "token kid is not a string")
-        pub = self._key(ctx, kid, alg)
+        # The claims first: they refuse a wrong token without a read of the
+        # provider's keys, and accept nothing until the signature is checked.
+        self._check_claims(claims, u.email)
         try:
+            pub = self._key(ctx, kid, alg)
             jwt.verify_jws(pub, alg, (parts[0] + "." + parts[1]).encode("ascii"), sig)
         except jwt.CryptoMissing as e:
             raise wrap_error(Code.UNSUPPORTED, e, 'verifying a token needs the cryptography package: pip install "toolpass[crypto]"') from e
         except ValueError:
             raise errorf(Code.INVALID_REQUEST, "token signature does not verify against the provider's keys") from None
-        self._check_claims(claims, u.email)
         return claims
 
     def _check_claims(self, claims: dict[str, Any], email: str) -> None:
@@ -197,10 +198,15 @@ class Verifier:
         uri = self._jwks_uri(ctx)
         keys = self.keys.do(ctx, uri, lambda c: (self._fetch_keys(c, uri), KEYS_TTL))
         found = _select(keys, kid, alg)
-        if found is None and self.now() - self.keys_fetched >= KEYS_RETRY:
-            keys = self._fetch_keys(ctx, uri)
-            self.keys.set(uri, keys, KEYS_TTL)
-            found = _select(keys, kid, alg)
+        if found is None:
+            # One rollover read at a time, shared by whoever waited for it.
+            with self.refetch:
+                keys = self.keys.do(ctx, uri, lambda c: (self._fetch_keys(c, uri), KEYS_TTL))
+                found = _select(keys, kid, alg)
+                if found is None and self.now() - self.keys_fetched >= KEYS_RETRY:
+                    keys = self._fetch_keys(ctx, uri)
+                    self.keys.set(uri, keys, KEYS_TTL)
+                    found = _select(keys, kid, alg)
         if found is None:
             what = f"key {go_quote(kid)}" if kid is not None else f"a single {alg[:2]} key"
             raise errorf(Code.INVALID_REQUEST, f"the provider publishes no signing {what} for the token")
@@ -208,6 +214,7 @@ class Verifier:
             return jwt.jwk_public_key(found)
         except ValueError as e:
             raise wrap_error(Code.UPSTREAM_ERROR, e, "the provider's signing key could not be read") from e
+        # jwt.CryptoMissing passes through to verify, which names the extra.
 
     def _jwks_uri(self, ctx: Context) -> str:
         doc = self.discovery.do(ctx, "", lambda c: (self._fetch_discovery(c), KEYS_TTL))

@@ -69,9 +69,10 @@ system fetched the groups itself.
 | `POST /check` | the `token` field: printable ASCII without spaces, at most 16 KiB |
 | Python client | `check(..., token=...)`, and `require`, `allowed`, `acheck`, `arequire` |
 | Node client | `{ token }` in the options |
-| The toolkit | `Session(user, token=...)`; `session_from_header` reads `X-Toolpass-Token`; `toolpass.mcp.token_session` passes the token the MCP caller signed in with |
+| The toolkit | `Session(user, token=...)`; `session_from_header` reads `X-Toolpass-Token`; `toolpass.mcp.token_session` passes the access token the MCP caller signed in with, which serves a connection whose `oidc_audience` is that token's audience |
 
-The token is never logged; toolpass keys its caches on a digest of it.
+The token is never logged; toolpass keys its caches on a digest of it, and nothing read from a
+token is cached past its `exp`.
 
 ### What it cannot see
 

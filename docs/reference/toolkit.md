@@ -56,8 +56,9 @@ held to the same rules (close codes 4403 and 4400).
 A session source (`Toolkit(session=...)`, `toolpass.configure(session=...)`) for an MCP server whose
 callers sign in with their own token, verified by the `mcp` SDK's auth: each call runs under a
 `Session` for the token's user (its `email` claim, or `sub`; a token with `email_verified` false
-names no one), with the groups of `groups_claim`, and the token itself travels with every check
-for a connection that reads the groups from it ([`oidc_issuer`](../guides/groups.md)). The
+names no one), with the groups of `groups_claim`. The access token itself travels with every check
+too, for a connection that reads the groups from it ([`oidc_issuer`](../guides/groups.md)), which
+works when that connection's `oidc_audience` is the audience of the MCP server's tokens. The
 calls made with one token share one `Session`. A request without a verified token has no session,
 so a toolpass tool refuses it. `toolpass.USER_HEADER`, `toolpass.GROUPS_HEADER`,
 `toolpass.TOKEN_HEADER`, `toolpass.SESSION_HEADER` and `toolpass.KEY_HEADER` are the header names.
