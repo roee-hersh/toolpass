@@ -202,11 +202,11 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
             session = remembered.get(k)
             if session is None:
                 session = remembered[k] = Session(user, groups=groups, token=token)
-            elif token is not None and session.token != token:
-                session.token = token
                 while len(remembered) > _REMEMBERED:
                     remembered.popitem(last=False)
             else:
+                if token is not None and session.token != token:
+                    session.token = token
                 remembered.move_to_end(k)
             return session
 
