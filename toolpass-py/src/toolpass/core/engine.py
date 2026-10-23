@@ -11,6 +11,7 @@ resolution and check is recorded as evidence on the decision and in the log.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -50,6 +51,9 @@ class Request:
     action: str
     resource: str
     groups: list[str] | tuple[str, ...] | None = None
+    # The user's own token from their login (an OIDC ID token), read by an
+    # oidc groups_connection. Never logged or cached in clear.
+    token: str = ""
     # An answer straight from the upstream system: the decision cache, the
     # identity cache and the lookups integrations cache themselves are not
     # consulted, and what the request learns replaces their entries.
@@ -241,6 +245,7 @@ class Engine:
         try:
             validate_user(req.user)
             _validate_groups(groups_in)
+            _validate_token(req.token)
             if req.connection == "":
                 raise ValueError("connection is empty")
             validate_action_name(req.action)
@@ -257,8 +262,8 @@ class Engine:
             return Result(unknown_decision(Code.UNKNOWN_ACTION, f'integration {c.settings.integration} has no action "{req.action}"'), 400)
 
         groups = _normalize_groups(groups_in)
-        user = User(email=req.user, groups=tuple(groups))
-        dec_key = "\x00".join([req.connection, req.user, "\x01".join(groups), req.action, req.resource])
+        user = User(email=req.user, groups=tuple(groups), token=req.token)
+        dec_key = "\x00".join([req.connection, req.user, "\x01".join(groups), _token_key(req.token), req.action, req.resource])
         started = self._now()
         if self._dec_ttl > 0 and not req.fresh:
             d, ok = self._decs.get(dec_key)
@@ -346,6 +351,7 @@ class Engine:
 _MAX_EMAIL = 320
 _MAX_GROUPS = 200
 _MAX_GROUP = 256
+_MAX_TOKEN = 16 << 10
 
 
 # Non-ASCII letters whose case mapping or simple case folding lands on an
@@ -395,6 +401,25 @@ def _validate_groups(gs: list[str]) -> None:
                 raise ValueError("group contains a control character")
 
 
+def _validate_token(t: str) -> None:
+    """A token is sent as it was issued: printable ASCII without spaces, at
+    most _MAX_TOKEN bytes (an ID token with a long groups claim is a few
+    KiB)."""
+    if not isinstance(t, str):
+        raise ValueError("token must be a string")
+    if len(t) > _MAX_TOKEN:
+        raise ValueError(f"token is longer than {_MAX_TOKEN} bytes")
+    for ch in t:
+        if not 0x21 <= ord(ch) <= 0x7E:
+            raise ValueError("token contains whitespace, a control character or a non-ASCII character")
+
+
+def _token_key(t: str) -> str:
+    """How a token takes part in a cache key: a digest, so the caches never
+    hold it in clear, and "" without one."""
+    return hashlib.sha256(t.encode("ascii")).hexdigest() if t else ""
+
+
 def _normalize_groups(gs: list[str]) -> list[str]:
     """Sorted and deduplicated, so the same set looks the same to the
     integration and to both caches. Sorted by UTF-8 bytes, as Go sorts."""
@@ -409,4 +434,4 @@ def _identity_key(conn_id: str, u: User) -> str:
     the integrations' own folding differ, and two users that one of them
     tells apart must never share an Identity."""
     email = u.email.lower() if u.email.isascii() else u.email
-    return "\x00".join([conn_id, email, *u.groups])
+    return "\x00".join([conn_id, email, _token_key(u.token), *u.groups])

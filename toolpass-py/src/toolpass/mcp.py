@@ -60,7 +60,9 @@ def token_session(user_claim: str = "email", groups_claim: str | None = None) ->
     that gives each request the user of its verified access token.
 
     ``groups_claim`` names a claim holding the user's groups, as a list of
-    strings, for the systems that grant by group."""
+    strings, for the systems that grant by group. The token itself travels
+    with every check, for a connection whose ``groups_connection`` is an
+    oidc connection that reads the groups from it."""
     try:
         from mcp.server.auth.middleware.auth_context import get_access_token
     except ImportError as e:  # pragma: no cover - exercised only without the SDK
@@ -86,7 +88,7 @@ def token_session(user_claim: str = "email", groups_claim: str | None = None) ->
         with lock:
             session = remembered.get(k)
             if session is None:
-                session = remembered[k] = Session(user, groups=groups)
+                session = remembered[k] = Session(user, groups=groups, token=str(getattr(token, "token", "") or "") or None)
                 while len(remembered) > _REMEMBERED:
                     remembered.popitem(last=False)
             else:

@@ -291,7 +291,7 @@ class Connection(integ.Connection):
         subject = u.email if self.user_subject == "email" else ""
         groups = tuple(u.groups)
         if not groups and self.groups_source is not None:
-            groups = integ.claimed_groups(self.groups_source, ctx, u.email)
+            groups = integ.claimed_groups(self.groups_source, ctx, u)
         return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:

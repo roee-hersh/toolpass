@@ -309,10 +309,10 @@ class Directory:
     groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
     groups_claim_limit: int | None = None
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
-        g = self.groups.get(email)
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
+        g = self.groups.get(user.email)
         if g is None:
-            raise user_not_found(f"no account for {email}")
+            raise user_not_found(f"no account for {user.email}")
         return g
 
 

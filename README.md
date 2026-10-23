@@ -153,7 +153,7 @@ def delete_issue(key: str) -> str: ...
 The [permission engine](docs/permission-checks.md) answers for
 Kubernetes, Argo CD, GitHub, GitLab, Bitbucket, Jira, Confluence, Slack, Datadog, PagerDuty, AWS,
 Google Workspace, Google Cloud, Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure,
-Linear, Zendesk and Okta, with no policy language and no synced copy of anyone's permissions. It also
+Linear, Zendesk, Okta and any OpenID Connect provider, with no policy language and no synced copy of anyone's permissions. It also
 runs on its own, in-process or as a server, with adapters for nine agent frameworks.
 
 ## Install

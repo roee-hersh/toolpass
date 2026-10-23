@@ -128,7 +128,7 @@ by toolpass alone.
 | `identity_store_id` | `identity_center`: `d-` + 10 hex digits |
 | `sso_instance_arn` | `identity_center`: `arn:aws:sso:::instance/ssoins-...` |
 | `role_map_file` | `static_map`: the map file, see below |
-| `groups_connection` | `static_map`: the id of a directory connection (`okta`, `microsoft365`, `googleworkspace`) that names the user's groups when the caller sends none; see [Groups from the email](../guides/groups.md) |
+| `groups_connection` | `static_map`: the id of a connection that names the user's groups when the caller sends none, an `oidc` connection (from the user's token) or a directory (`okta`, `microsoft365`, `googleworkspace`); see [Groups from the email](../guides/groups.md) |
 | `context_entries` | condition keys for the simulation: `key=type:value;key=type:value`; types `string`, `stringList` (comma-separated values), `numeric`, `boolean`, `ip`, `binary`, `date` |
 | `implicit_deny_as` | what "no statement matched" (and, for `identity_center`, "no permission set assigned") answers: `deny` (default) or `unknown` |
 | `session_name` | `RoleSessionName`, default `toolpass` |

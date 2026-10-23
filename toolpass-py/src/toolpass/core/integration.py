@@ -67,6 +67,9 @@ class User:
 
     email: str
     groups: tuple[str, ...] = ()
+    # The user's own token from their login (an OIDC ID token), for a
+    # groups_connection that reads the groups from it. Never logged.
+    token: str = ""
 
 
 @dataclass(frozen=True)
@@ -515,36 +518,38 @@ class KubernetesSubject:
 
 @runtime_checkable
 class GroupsSource(Protocol):
-    """A connection that can name a user's groups from the email: the
-    groups a directory holds for the user, as the identity provider's
-    groups claim carries them. A groups_connection may name it. The
-    integration's provides() includes CAP_GROUPS."""
+    """A connection that can name a user's groups: from the email, as a
+    directory holds them, or from the user's own token, as the identity
+    provider's groups claim carries them. A groups_connection may name it.
+    The integration's provides() includes CAP_GROUPS."""
 
     # How many groups the provider's groups claim carries at most, or None
     # when it carries them all. Over it, the token carries fewer or none,
     # so what the system saw is unknown: see claimed_groups.
     groups_claim_limit: int | None
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
         """The user's groups, each once. Raise ToolpassError with
         USER_NOT_FOUND when the directory has no account for the email or
-        the account cannot sign in; any other exception means the lookup
-        itself failed. A user in no group is an empty tuple, not an
+        the account cannot sign in, INVALID_REQUEST when the request lacks
+        what the source needs (a token); any other exception means the
+        lookup itself failed. A user in no group is an empty tuple, not an
         error."""
         ...
 
 
-def claimed_groups(src: GroupsSource, ctx: Context, email: str) -> tuple[str, ...]:
-    """The groups src names for email, as the integrations that grant by
+def claimed_groups(src: GroupsSource, ctx: Context, user: User) -> tuple[str, ...]:
+    """The groups src names for the user, as the integrations that grant by
     group take them: an UNSUPPORTED error when there are more than the
     provider's groups claim carries, since the system then saw fewer or
     none and an answer from the full list could allow what it denies."""
-    groups = src.user_groups(ctx, email)
+    groups = src.user_groups(ctx, user)
     limit = src.groups_claim_limit
     if limit is not None and len(groups) > limit:
         raise ToolpassError(
             Code.UNSUPPORTED,
-            f"{email} is in {len(groups)} groups, more than the {limit} the identity provider's groups claim carries; which of them the system saw is unknown",
+            f"{user.email} is in {len(groups)} groups, more than the {limit} the identity provider's groups claim carries; "
+            "which of them the system saw is unknown",
         )
     return groups
 

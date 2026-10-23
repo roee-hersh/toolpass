@@ -719,7 +719,7 @@ class AWSConnection(IdentityResolver, Connection):
             email = go_trim_space(email)
             if email == "" or "@" not in email:
                 raise user_not_found(f"{go_quote(email)} is not an email address")
-            arns = self.role_map.lookup(email, self._static_groups(ctx, email, ()))
+            arns = self.role_map.lookup(email, self._static_groups(ctx, User(email=email)))
             if not arns:
                 raise user_not_found(f"{email} and its groups are not in role_map_file")
             return [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns], []

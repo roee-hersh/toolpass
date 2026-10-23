@@ -55,7 +55,7 @@ class RecordingToolpass(Toolpass):
 
     seen: list[dict[str, Any]]
 
-    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False) -> Any:
+    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False, token: str | None = None) -> Any:
         self.seen.append({"user": user, "connection": connection, "action": action, "resource": resource, "groups": groups, "fresh": fresh})
         return super().check(user, connection, action, resource, groups, fresh=fresh)
 

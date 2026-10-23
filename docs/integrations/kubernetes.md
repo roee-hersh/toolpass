@@ -43,7 +43,7 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
 | `username_template` | How the API server names your users. Placeholders `{email}`, `{local}`, `{domain}`. Must contain `{email}` or `{local}`. A name that comes out starting with `system:` (Kubernetes' own ServiceAccounts and components) is refused (`invalid_request`). `{local}` drops the domain, so it suits a single-domain directory |
 | `group_prefix` | Prefix the API server puts on groups from your identity provider. Without it a caller group starting with `system:` is rejected (`invalid_request`), since it would name a built-in group such as `system:masters` |
 | `add_authenticated_group` | Also send `system:authenticated`, as the API server would for any logged-in user |
-| `groups_connection` | The id of a connection that names the user's groups when the caller sends none: an `aws` connection (EKS access entries) or a directory (`okta`, `microsoft365`, `googleworkspace`). See [Groups from the email](#groups-from-the-email) |
+| `groups_connection` | The id of a connection that names the user's groups when the caller sends none: an `oidc` connection (from the user's token), an `aws` connection (EKS access entries) or a directory (`okta`, `microsoft365`, `googleworkspace`). See [Groups from the email](#groups-from-the-email) |
 | `eks_cluster` | The EKS cluster name. Required when `groups_connection` is an `aws` connection, refused otherwise |
 | `eks_aws_auth` | `true` also reads the `kube-system/aws-auth` ConfigMap for principals with no access entry (default `false`; needs one more RBAC rule, below) |
 
@@ -69,6 +69,7 @@ every integration shares; here is what each source means to a cluster):
 
 | `groups_connection` names | What toolpass sends | Fits |
 |---|---|---|
+| [`oidc`](oidc.md) | the groups claim of the user's own ID token, sent with the check, with `group_prefix` in front | any API server with OIDC authentication, exactly as it sees the token |
 | [`aws`](aws.md) (with `eks_cluster`) | the `kubernetesGroups` of the EKS access entries of the user's IAM principals (the Identity Center roles of their permission sets, their IAM user, or their `role_map_file` roles), unioned; the entry's `username` when exactly one entry matched | EKS |
 | [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours), and the account's primary email as the username | GKE with Google Groups for RBAC |
 | [`microsoft365`](microsoft365.md) | the object ids of the user's Entra groups, lower-cased, transitive (unknown above 200, where the token carries an overage claim; AKS resolves that itself, toolpass does not) | AKS with Entra ID integration |

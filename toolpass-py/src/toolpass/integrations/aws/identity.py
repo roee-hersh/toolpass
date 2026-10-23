@@ -277,7 +277,7 @@ class IdentityResolver:
             # again in check from the groups carried in the identity rather
             # than the roles.
             assert self.role_map is not None
-            groups = self._static_groups(ctx, email, u.groups)
+            groups = self._static_groups(ctx, u)
             arns = self.role_map.lookup(email, groups)
             if not arns:
                 raise user_not_found(f"{email} and its groups are not in role_map_file")
@@ -286,12 +286,12 @@ class IdentityResolver:
             return self._resolve_iam_user(ctx, email)
         return self._resolve_identity_center(ctx, email)
 
-    def _static_groups(self, ctx: Context, email: str, sent: tuple[str, ...]) -> tuple[str, ...]:
+    def _static_groups(self, ctx: Context, u: User) -> tuple[str, ...]:
         """The groups the role map is looked up with: the caller's, or
         groups_connection's when the caller sent none."""
-        if sent or self.groups_source is None:
-            return sent
-        return claimed_groups(self.groups_source, ctx, email)
+        if u.groups or self.groups_source is None:
+            return u.groups
+        return claimed_groups(self.groups_source, ctx, u)
 
     # Identity Center
 

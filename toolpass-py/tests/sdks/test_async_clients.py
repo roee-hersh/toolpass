@@ -36,7 +36,7 @@ class RemoteLikeEngine(Engine):
         super().__init__(github_url)
         self.check_url = check_url
 
-    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False) -> Any:
+    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False, token: str | None = None) -> Any:
         req = urllib.request.Request(
             self.check_url, data=json.dumps({"user": user, "action": action}).encode(), method="POST", headers={"Content-Type": "application/json"}
         )

@@ -291,9 +291,10 @@ Permission checks for AI agents and bots, answered live by the system they act i
 Before your agent acts for a user (delete a Jira issue, push to a repository, scale a deployment),
 ask toolpass whether that user may do it. toolpass asks the system that owns the resource, live,
 with its own read-only credential, and answers `allow`, `deny` or `unknown`. It only checks; it
-never performs the action. Twenty-two systems are supported: Kubernetes, Argo CD, GitHub, GitLab,
+never performs the action. Twenty-three systems are supported: Kubernetes, Argo CD, GitHub, GitLab,
 Bitbucket, Jira, Confluence, Slack, Datadog, PagerDuty, AWS, Google Workspace, Google Cloud,
-Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear, Zendesk and Okta.
+Microsoft 365, Databricks, Salesforce, Snowflake, Vault, Azure, Linear, Zendesk, Okta and any
+OpenID Connect provider.
 
 ```sh
 pip install toolpass

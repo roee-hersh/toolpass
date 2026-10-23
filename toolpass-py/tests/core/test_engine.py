@@ -55,6 +55,7 @@ class Counting(Integration):
 
     def __init__(self, slow: float = 0.0, bad_allow: bool = False, need_group: str = "", panic_resolve: bool = False) -> None:
         self.inner = Fake()
+        self.last_user: User | None = None
         self.resolves = _Counter()
         self.checks = _Counter()
         self.slow = slow
@@ -100,6 +101,7 @@ class CountingConn(Connection):
         """Embeds the request's groups in the identity, as the kubernetes
         and argocd integrations do."""
         self.p.resolves.add(1)
+        self.p.last_user = u
         if self.p.panic_resolve:
             # Go: panic("resolve bug " + u.Email); a bug type is a panic here.
             raise TypeError("resolve bug " + u.email)
@@ -419,6 +421,26 @@ def test_group_names_may_hold_unicode_spaces() -> None:
     for bad in ("a\u2028b", "a\u0085b", "a\nb"):
         r = e.check(background(), groups_req("a@x.com", bad))
         assert r.decision.code == Code.INVALID_REQUEST, (bad, r)
+
+
+def test_token_is_validated_and_keys_the_caches() -> None:
+    """A token must be printable ASCII without spaces; the identity and
+    decision caches tell tokens apart without holding them."""
+    c = Counting()
+    e, _ = build_engine(c, Options(identity_cache=15 * 60.0, decision_cache=30.0))
+    ctx = background()
+
+    def req(token: str) -> Request:
+        return Request(user="a@x.com", connection="c", action="thing.read", resource="thing:1", token=token)
+
+    for bad in ("a b", "a\nb", "tok\u00e9n", "x" * (16 * 1024 + 1)):
+        r = e.check(ctx, req(bad))
+        assert r.decision.code == Code.INVALID_REQUEST, (bad[:10], r)
+    assert e.check(ctx, req("t1")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 1
+    assert e.check(ctx, req("t1")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 1
+    assert e.check(ctx, req("t2")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 2
+    assert e.check(ctx, req("")).decision.outcome == Outcome.ALLOW and c.resolves.load() == 3
+    assert c.last_user is not None and c.last_user.token == ""
 
 
 def test_identity_cache_keeps_non_ascii_case_variants_apart() -> None:

@@ -21,7 +21,7 @@ from toolpass._toolkit import AuthDecision, Call, refusal_code
 
 
 class _Checker(Protocol):
-    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False) -> Any: ...
+    def check(self, user: str, connection: str, action: str, resource: str, groups: Any = None, *, fresh: bool = False, token: str | None = None) -> Any: ...
 
 
 def permission_check(tp: _Checker, connection: str, action: str, resource: str, *, fresh: bool = False) -> Any:
@@ -48,7 +48,7 @@ def permission_check(tp: _Checker, connection: str, action: str, resource: str, 
     def authorize(call: Call) -> AuthDecision:
         target = resource.format(**call.arguments)
         groups = None if call.session.groups is None else list(call.session.groups)
-        d = tp.check(call.session.user, connection, action, target, groups, fresh=fresh)
+        d = tp.check(call.session.user, connection, action, target, groups, fresh=fresh, token=call.session.token)
         outcome = getattr(d, "decision", None)
         reason = f"toolpass {outcome} {action} on {target} in {connection}: {getattr(d, 'reason', '')}"
         if outcome == "allow":

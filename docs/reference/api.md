@@ -12,7 +12,9 @@ are rejected, and so is a field given twice; names match regardless of ASCII cas
 by one `Content-Length` or by `Transfer-Encoding: chunked`, never both or twice. `user` is an email
 of at most 320 bytes, with no whitespace or control characters (C1 and Unicode separators included)
 and none of the letters that case-fold to ASCII ones (`İ`, `ı`, `ſ`, the Kelvin sign). `groups` holds
-at most 200 entries of at most 256 bytes each.
+at most 200 entries of at most 256 bytes each. `token`, optional, is the user's own ID token for a
+connection whose `groups_connection` is an [oidc](../integrations/oidc.md) connection: printable
+ASCII without spaces, at most 16 KiB; it is never logged, and the caches key on a digest of it.
 
 ```json
 {

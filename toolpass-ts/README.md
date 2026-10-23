@@ -49,6 +49,8 @@ Without a wrapper:
 const d = await tp.check("dana@example.com", "jira-main", "DELETE_ISSUES", "issue:PAY-123");
 d.decision, d.reason;   // "deny", "denied: ..."
 await tp.require(...);  // rejects with PermissionDenied unless allow
+// The fifth argument: the user's groups, or { groups, fresh, token } (token: the user's own
+// ID token, for a connection whose groups_connection reads the groups from it).
 ```
 
 Framework examples: [examples/agent-ts](https://github.com/roee-hersh/toolpass/tree/main/examples/agent-ts).

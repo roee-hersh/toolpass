@@ -146,37 +146,22 @@ class Integration(integ.Integration):
         c.aws_auth_cache.set_clock(d.now)
         if ref != "":
             conn = d.connection(ref)
-            src: integ.KubernetesSubjectSource
             if isinstance(conn, integ.KubernetesSubjectSource):
-                src = conn
+                c.groups_source = conn
             elif isinstance(conn, integ.GroupsSource):
-                src = _DirectorySubjects(conn)
+                c.directory = conn
             else:
                 raise ValueError(f"groups_connection {go_quote(ref)} cannot look up Kubernetes groups")
-            needs_cluster = bool(src.kubernetes_needs_cluster)
+            needs_cluster = c.groups_source is not None and bool(c.groups_source.kubernetes_needs_cluster)
             if needs_cluster and c.eks_cluster == "":
                 raise ValueError("eks_cluster is required when groups_connection is an aws connection")
             if not needs_cluster and c.eks_cluster != "":
                 raise ValueError("eks_cluster is used only when groups_connection is an aws connection")
             if not needs_cluster and c.eks_aws_auth:
                 raise ValueError("eks_aws_auth is used only when groups_connection is an aws connection")
-            c.groups_source = src
         elif c.eks_cluster != "" or c.eks_aws_auth:
             raise ValueError("eks_cluster and eks_aws_auth need groups_connection set to an aws connection")
         return c
-
-
-class _DirectorySubjects:
-    """A plain GroupsSource as a KubernetesSubjectSource: the directory's
-    group names, treated like groups a caller sent, and no username."""
-
-    kubernetes_needs_cluster = False
-
-    def __init__(self, src: integ.GroupsSource) -> None:
-        self.src = src
-
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> integ.KubernetesSubject:
-        return integ.KubernetesSubject(groups=integ.claimed_groups(self.src, ctx, email))
 
 
 def _validate_eks_cluster(v: str) -> None:
@@ -207,7 +192,11 @@ class Connection(integ.Connection):
         self.template = template
         self.prefix = prefix
         self.add_auth = add_auth
+        # One of: a source of Kubernetes subjects (EKS access entries, GKE's
+        # security group) or a plain directory whose groups are treated like
+        # groups a caller sent.
         self.groups_source: integ.KubernetesSubjectSource | None = None
+        self.directory: integ.GroupsSource | None = None
         self.eks_cluster = ""
         self.eks_aws_auth = False
         self.aws_auth_cache: TTL[str, dict[str, Any] | None] = TTL(1)
@@ -239,7 +228,9 @@ class Connection(integ.Connection):
         when the caller sends none, groups_connection's."""
         name = self.username(u.email)
         groups: list[str] = []
-        if not u.groups and self.groups_source is not None:
+        if not u.groups and self.directory is not None:
+            groups.extend(self._prefixed(integ.claimed_groups(self.directory, ctx, u), " from groups_connection"))
+        elif not u.groups and self.groups_source is not None:
             subject = self._subject(ctx, u.email)
             if subject.username != "":
                 name = subject.username

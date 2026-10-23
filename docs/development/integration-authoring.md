@@ -51,7 +51,8 @@ class Connection(ABC):
   literal. A `*_connection` field names another connection, which `d.connection(id)` returns. Its
   `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), or a capability
   (`"@groups"`): any integration whose `provides()` includes it is accepted.
-- A directory that knows a user's groups implements `GroupsSource` (`user_groups(ctx, email)`) and
+- A directory that knows a user's groups, or a source that reads them from the user's token
+  (`User.token`), implements `GroupsSource` (`user_groups(ctx, user)` and `groups_claim_limit`) and
   returns `{CAP_GROUPS}` from `provides()`; every integration with a `groups_connection`
   (`groups_connection_field`) then accepts it. A source with cluster-specific rules (EKS access
   entries, GKE's security group) implements `KubernetesSubjectSource` (`kubernetes_subject(ctx,

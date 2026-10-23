@@ -6,7 +6,8 @@ groups to IAM roles. Those systems read the groups from the user's login token, 
 provider (Okta, Entra ID, Google, Keycloak, Dex, ...) fills from its groups claim. toolpass never
 sees that token, so for these systems a check needs the user's groups as well as the email.
 
-There are two ways to supply them.
+There are three ways to supply them, and they combine: groups the caller sends always win, a
+`groups_connection` fills in when it sends none.
 
 ## The caller sends the groups
 
@@ -15,10 +16,39 @@ carries the user's groups as the system sees them. This works with any identity 
 application that authenticated the user has their login and its groups claim, and passes the names
 along. Groups the caller sends are always used as they are; the connection does not look further.
 
-## `groups_connection`: toolpass asks a directory
+## `groups_connection`: any OIDC provider, from the user's token
 
-When the caller sends no groups, a connection that grants by group can look them up itself from a
-directory, so the email alone is enough. Every such integration takes the same key:
+When the caller sends no groups, a connection that grants by group asks its `groups_connection`.
+The provider-independent one is an [oidc](../integrations/oidc.md) connection: the check carries
+the user's own ID token (the one the system logged them in with) in its `token` field, toolpass
+verifies it against the provider's published keys, issuer and audience, exactly as the system did,
+and reads the groups claim. It works with every provider that speaks OIDC (Okta, Entra ID, Google,
+Keycloak, Auth0, Dex, ...), needs no credential and no provider API, and sees exactly the groups
+the system saw, including whatever the provider filtered out of the claim.
+
+```yaml
+connections:
+  - id: sso
+    integration: oidc
+    issuer: https://acme.okta.com/oauth2/default   # as in the system's OIDC settings
+    audience: argo-cd                              # the client id the system logs in with
+
+  - id: argocd-prod
+    integration: argocd
+    kubernetes_connection: k8s-prod-eu
+    groups_connection: sso
+```
+
+The caller then sends the token with the check: the `token` field of `POST /check`, `token=` on
+the Python client, `{ token }` on the Node client, `Session(user, token=...)` or the
+`X-Toolpass-Token` header for the toolkit, and `toolpass.mcp.token_session` passes the token the
+MCP caller signed in with. Without a token the answer is unknown (`invalid_request`), never a deny
+or an allow.
+
+## `groups_connection`: a directory, from the email
+
+When the caller has only the email, a directory connection can name the groups instead. Every
+integration that grants by group takes the same key:
 
 ```yaml
 connections:
@@ -49,11 +79,12 @@ connections:
 
 ### Which connections can be one
 
-Any connection whose integration can name a user's groups from the email; `toolpass catalog
-<integration>` lists the accepted ones for the key, and `toolpass validate` refuses any other.
+Any connection whose integration can name a user's groups; `toolpass catalog <integration>` lists
+the accepted ones for the key, and `toolpass validate` refuses any other.
 
 | `groups_connection` names | What it returns | Matches the groups claim of |
 |---|---|---|
+| [oidc](../integrations/oidc.md) | the groups claim of the user's verified ID token (needs the check's `token`) | the provider itself, exactly |
 | [okta](../integrations/okta.md) | the names of the user's Okta groups (unknown above 100) | an Okta OIDC app |
 | [microsoft365](../integrations/microsoft365.md) | the object ids of the user's Entra ID groups, lower-cased, transitive (unknown above 200) | Entra ID |
 | [googleworkspace](../integrations/googleworkspace.md) | the email addresses of the user's Google groups | Google (through Dex or another broker); for GKE, see [kubernetes](../integrations/kubernetes.md#groups-from-the-email) |
@@ -62,7 +93,7 @@ Any connection whose integration can name a user's groups from the email; `toolp
 
 ### How it behaves
 
-- Groups the caller sends win; the directory is not asked.
+- Groups the caller sends win; the source is not asked.
 - The lookup is part of the identity, so it is cached with it (`identity_cache_seconds`, per
   connection, email and caller-sent groups), not on every check.
 - A user the directory does not know, or one who cannot sign in (an Okta user who is staged,
@@ -84,6 +115,7 @@ assigned to the application", a Dex connector's group allow-list. toolpass retur
 user is in, so a binding to a group the claim leaves out reads as allowed here while the system
 denies it. Write the bindings only with groups the claim carries.
 
-A provider toolpass has no integration for (Keycloak, Auth0, LDAP, a Dex connector such as GitHub)
-cannot be a `groups_connection`: OIDC has no standard way to ask a provider for another user's
-groups. Have the caller send the groups for those users.
+These limits are the directories'. OIDC has no standard way to ask a provider for another user's
+groups, so a provider toolpass has no directory integration for (Keycloak, Auth0, LDAP, a Dex
+connector such as GitHub) is served by the [oidc](../integrations/oidc.md) connection from the
+user's token, or by the caller sending the groups.

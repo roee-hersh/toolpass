@@ -27,11 +27,11 @@ class Source:
     calls: list[str] = field(default_factory=list)
     groups_claim_limit: int | None = None
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
-        self.calls.append(email)
-        g = self.groups.get(email)
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
+        self.calls.append(user.email)
+        g = self.groups.get(user.email)
         if g is None:
-            raise user_not_found(f"no account for {email}")
+            raise user_not_found(f"no account for {user.email}")
         return g
 
 

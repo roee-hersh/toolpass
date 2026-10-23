@@ -785,13 +785,13 @@ class GoogleWorkspaceConnection(Connection):
     # Google's groups claim (through Dex or another broker) has no documented cap.
     groups_claim_limit = None
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
         """The user's groups as a Google groups claim names them: the group
         email addresses, lower-cased, from groups.list?userKey=<user> as
         the admin. UNVERIFIED: groups.list returns direct memberships only;
         a group reached through nesting is missing here, which can only
         deny."""
-        return tuple(self._group_emails(ctx, self._active_user(ctx, email)))
+        return tuple(self._group_emails(ctx, self._active_user(ctx, user.email)))
 
     def _active_user(self, ctx: Context, email: str) -> Identity:
         ident = self.resolve_identity(ctx, User(email=email))

@@ -48,7 +48,7 @@ rules:
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
 | `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups (the caller's, or `groups_connection`'s). `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
-| `groups_connection` | optional: the id of a connection that names the user's groups when the caller sends none (okta, microsoft365, googleworkspace). See [Groups from the email](#groups-from-the-email) |
+| `groups_connection` | optional: the id of a connection that names the user's groups when the caller sends none: an `oidc` connection (from the user's token, any provider) or a directory (`okta`, `microsoft365`, `googleworkspace`). See [Groups from the email](#groups-from-the-email) |
 | `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
@@ -56,17 +56,17 @@ The policy (config maps and AppProjects) is cached for 30 seconds.
 ## Groups from the email
 
 Argo CD reads a user's groups from the identity provider's groups claim, and the policy's `g, <group>,
-role:...` lines match those names. toolpass never sees the login token, so the groups are the
-caller's `groups` or, when the caller sends none and `groups_connection` is set, the directory's:
-Okta group names, Entra ID group object ids, Google group addresses, as that provider's claim
-carries them. [Groups from the email](../guides/groups.md) has the mechanism, the sources and what
-they cannot see.
+role:...` lines match those names. The groups are the caller's `groups` or, when the caller sends
+none and `groups_connection` is set, that connection's: an [oidc](oidc.md) connection reads them
+from the user's own ID token, sent with the check, for any provider; a directory (Okta group names,
+Entra ID group object ids, Google group addresses) names them from the email. [Groups from the
+email](../guides/groups.md) has the mechanism, the sources and what they cannot see.
 
 ```yaml
   - id: argocd-prod
     integration: argocd
     kubernetes_connection: k8s-prod-eu
-    groups_connection: okta-main       # an okta, microsoft365 or googleworkspace connection
+    groups_connection: sso             # an oidc connection, or okta, microsoft365, googleworkspace
 ```
 
 A user the directory does not know, or who cannot sign in, is `user_not_found`, a deny; a user in no

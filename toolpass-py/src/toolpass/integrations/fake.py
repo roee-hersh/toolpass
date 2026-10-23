@@ -115,21 +115,21 @@ class FakeConnection(Connection):
         self.groups: dict[str, tuple[str, ...]] = {}
         self.groups_mapped = False
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
         """The groups listed for the email; a known user with none listed
         is in no group; anyone else has no account."""
         if self.fail is not None:
             raise errorf(self.fail, "fake failure")
-        e = email.strip().lower()
+        e = user.email.strip().lower()
         if e in self.groups:
             return self.groups[e]
         if e in self.users or e in self.admins:
             return ()
-        raise user_not_found(f"no account for {email}")
+        raise user_not_found(f"no account for {user.email}")
 
     def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
         """user_groups, handed to kubernetes as mapped when groups_mapped."""
-        return KubernetesSubject(groups=self.user_groups(ctx, email), mapped=self.groups_mapped)
+        return KubernetesSubject(groups=self.user_groups(ctx, User(email=email)), mapped=self.groups_mapped)
 
     def resolve_identity(self, ctx: Context, u: User) -> Identity:
         """Known users and admins resolve; an email containing "ambiguous"

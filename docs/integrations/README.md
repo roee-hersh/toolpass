@@ -1,6 +1,6 @@
 # Integrations
 
-Twenty-two systems. Two are exercised against the real thing in CI, and vault against a real Vault
+Twenty-three systems. Two are exercised against the real thing in CI, and vault against a real Vault
 in Docker when one is available; most validate every request their tests make against the vendor's
 published API description; none has yet been confirmed against a live account. The live test
 ([`examples/live-cases.yaml`](../../examples/live-cases.yaml),
@@ -33,6 +33,7 @@ that list is long enough that you should read it first.
 | [linear](linear.md) | beta | fake upstream, validated against Linear's GraphQL schema; see **Unverified** |
 | [zendesk](zendesk.md) | beta | fake upstream, validated against Zendesk's API description; see **Unverified** |
 | [okta](okta.md) | beta | fake upstream only (no Okta API description is fetched); see **Unverified** |
+| [oidc](oidc.md) (any OpenID Connect provider, as a `groups_connection`) | beta | a fake provider with keys made in the tests; see **Unverified** |
 | fake | for smoke tests | |
 
 Each page covers the credential to create, the minimum permissions it needs, how the email maps to

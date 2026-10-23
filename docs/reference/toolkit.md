@@ -40,7 +40,8 @@ logged).
 
 Wraps an ASGI app, an MCP server's Streamable HTTP app, so each request runs under a `Session` for
 the user in its `X-Toolpass-User` header, which the agent sets from the login it already did, with
-the groups of `X-Toolpass-Groups` (comma-separated) when sent. The requests of one conversation
+the groups of `X-Toolpass-Groups` (comma-separated) and the user's own ID token of
+`X-Toolpass-Token` (for a system whose groups toolpass reads from it) when sent. The requests of one conversation
 share one `Session`: the one the agent names in `X-Toolpass-Session`, else the MCP session
 (`Mcp-Session-Id`, kept until its DELETE), else the request alone; the wrapper remembers 4096. No
 user header: no session, even when the process made one current, and a toolpass tool refuses the
@@ -55,10 +56,11 @@ held to the same rules (close codes 4403 and 4400).
 A session source (`Toolkit(session=...)`, `toolpass.configure(session=...)`) for an MCP server whose
 callers sign in with their own token, verified by the `mcp` SDK's auth: each call runs under a
 `Session` for the token's user (its `email` claim, or `sub`; a token with `email_verified` false
-names no one), with the groups of `groups_claim`. The calls made with one token share one
-`Session`. A request without a verified token has no session, so a toolpass tool refuses it.
-`toolpass.USER_HEADER`, `toolpass.GROUPS_HEADER`, `toolpass.SESSION_HEADER` and
-`toolpass.KEY_HEADER` are the header names.
+names no one), with the groups of `groups_claim`, and the token itself travels with every check
+for a connection whose `groups_connection` is an [oidc](../integrations/oidc.md) connection. The
+calls made with one token share one `Session`. A request without a verified token has no session,
+so a toolpass tool refuses it. `toolpass.USER_HEADER`, `toolpass.GROUPS_HEADER`,
+`toolpass.TOKEN_HEADER`, `toolpass.SESSION_HEADER` and `toolpass.KEY_HEADER` are the header names.
 
 ## `ActionRefused`
 

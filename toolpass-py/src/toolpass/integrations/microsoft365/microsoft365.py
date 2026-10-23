@@ -924,12 +924,12 @@ class Microsoft365Connection(Connection):
     # toolpass does not tell AKS apart and answers unknown there too.
     groups_claim_limit = 200
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
         """The user's groups as an Entra ID groups claim carries them (and
         as AKS's Entra integration binds them): the object ids, lower-cased,
         of every group the user belongs to directly or transitively
         (getMemberGroups)."""
-        ident = self.resolve_identity(ctx, User(email=email))
+        ident = self.resolve_identity(ctx, User(email=user.email))
         if ident.attr("account_enabled") == "false":
             raise user_not_found(f"{ident.display} is disabled in Entra ID")
         resp = self._do(

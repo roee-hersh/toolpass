@@ -184,14 +184,14 @@ class OktaConnection(Connection):
                 return allowed(f"{who} is a member of Okta group {name or gid}")
         return denied(f"{who} is not a member of Okta group {group}")
 
-    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+    def user_groups(self, ctx: Context, user: User) -> tuple[str, ...]:
         """The user's group names, as an Okta OIDC groups claim carries
         them. UNVERIFIED: the claim carries the groups' profile.name, as
         Okta documents for the default groups claim. An app's claim is
         usually filtered (a regex or a prefix in its settings); toolpass
         returns every group, so a binding to a group the claim leaves out
         reads as allowed here and denied by the system."""
-        ident = self.resolve_identity(ctx, User(email=email))
+        ident = self.resolve_identity(ctx, User(email=user.email))
         if ident.attr("status") in INACTIVE:
             raise user_not_found(f"{ident.display} is {go_lower(ident.attr('status'))} in Okta")
         names: list[str] = []

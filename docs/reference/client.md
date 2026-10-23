@@ -48,12 +48,13 @@ await tp.acheck(...)     # check for async code; the lookup runs in a worker thr
 await tp.arequire(...)   # require for async code
 ```
 
-All five take `(user, connection, action, resource, groups=None, *, fresh=False)`:
+All five take `(user, connection, action, resource, groups=None, *, fresh=False, token=None)`:
 
 | Argument | Meaning |
 |---|---|
 | `groups` | A list of the user's groups, for systems that grant by group, such as Kubernetes (a connection with [`groups_connection`](../guides/groups.md) looks them up when none are sent) |
 | `fresh` | Skip toolpass's caches and ask the system now ([fresh checks](api.md#fresh-checks)) |
+| `token` | The user's own ID token, for a connection whose `groups_connection` is an [oidc](../integrations/oidc.md) connection that reads the groups from it |
 
 `check` never raises for a failed lookup: every failure is an `unknown` decision. With `remote`, a
 connection error, a timeout, a redirect, a body that is not a decision, or an `allow` with a
