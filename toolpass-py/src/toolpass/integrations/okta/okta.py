@@ -2,9 +2,9 @@
 
 toolpass authenticates with an Okta API token (SSWS), finds the user by
 login (the email) and lists the groups the user belongs to. The same list
-is what an Okta OIDC app's groups claim carries, so a kubernetes or argocd
-connection can use an okta connection as its groups_connection. Nothing is
-written.
+is what an Okta OIDC app's groups claim carries, so the integrations that
+grant by group can use an okta connection as their groups_connection.
+Nothing is written.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, ToolpassError, allowed, denied, errorf, user_not_found, wrap_error
 from toolpass.core.errors import go_lower, go_quote, go_trim_space
 from toolpass.core.integration import (
+    CAP_GROUPS,
     CheckRequest,
     Connection,
     Deps,
     Field,
     Identity,
     Integration,
-    KubernetesSubject,
     ProbeResult,
     Settings,
     User,
@@ -75,6 +75,9 @@ class Okta(Integration):
     def name(self) -> str:
         return "okta"
 
+    def provides(self) -> frozenset[str]:
+        return frozenset({CAP_GROUPS})
+
     def fields(self) -> list[Field]:
         return [
             url_field(True, "the Okta org, e.g. https://acme.okta.com"),
@@ -111,8 +114,9 @@ class Okta(Integration):
 class OktaConnection(Connection):
     """One Okta org."""
 
-    # kubernetes_subject needs no cluster name.
-    kubernetes_needs_cluster = False
+    # UNVERIFIED: Okta leaves the groups claim out of a token for a user in
+    # more than 100 groups.
+    groups_claim_limit = 100
 
     def __init__(self, api: httpx.Client) -> None:
         self.api = api
@@ -180,14 +184,13 @@ class OktaConnection(Connection):
                 return allowed(f"{who} is a member of Okta group {name or gid}")
         return denied(f"{who} is not a member of Okta group {group}")
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
         """The user's group names, as an Okta OIDC groups claim carries
         them. UNVERIFIED: the claim carries the groups' profile.name, as
         Okta documents for the default groups claim. An app's claim is
         usually filtered (a regex or a prefix in its settings); toolpass
         returns every group, so a binding to a group the claim leaves out
-        reads as allowed here and denied by the cluster. The username stays
-        the kubernetes connection's username_template."""
+        reads as allowed here and denied by the system."""
         ident = self.resolve_identity(ctx, User(email=email))
         if ident.attr("status") in INACTIVE:
             raise user_not_found(f"{ident.display} is {go_lower(ident.attr('status'))} in Okta")
@@ -195,7 +198,7 @@ class OktaConnection(Connection):
         for _, name in self._groups(ctx, ident.id):
             if name != "" and name not in names:
                 names.append(name)
-        return KubernetesSubject(groups=tuple(names))
+        return tuple(names)
 
     def probe(self, ctx: Context) -> ProbeResult:
         """Read one user to prove the token works and may read users."""

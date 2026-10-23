@@ -100,6 +100,7 @@ def test_fake_groups_source() -> None:
     s = Settings("dir", "fake", {"users": "bob@example.com", "groups": "Dana@Example.com=platform-team, ops ;eve@example.com=", "groups_mapped": "false"})
     c = Fake().new(background(), s, deps)  # type: ignore[arg-type]
     assert isinstance(c, FakeConnection) and c.kubernetes_needs_cluster is False
+    assert c.user_groups(background(), "dana@example.com") == ("platform-team", "ops")
     sub = c.kubernetes_subject(background(), "dana@example.com", "")
     assert sub.groups == ("platform-team", "ops") and not sub.mapped and sub.found
     assert c.kubernetes_subject(background(), "eve@example.com", "").groups == ()

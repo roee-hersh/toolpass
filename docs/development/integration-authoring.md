@@ -49,14 +49,16 @@ class Connection(ABC):
   `Settings.object(name)` (None when absent); it cannot be secret, required or defaulted. The rest
   are strings (`Settings.get`, `Settings.bool`). Never declare `url`, `credential` and the like through both a helper and a
   literal. A `*_connection` field names another connection, which `d.connection(id)` returns. Its
-  `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), any of which is
-  accepted.
-- A directory or cloud account that knows a user's groups can implement
-  `KubernetesSubjectSource` (`kubernetes_subject(ctx, email, cluster)` and the
-  `kubernetes_needs_cluster` attribute), so a kubernetes connection can name it as its
-  `groups_connection`; add the integration to the kubernetes `GROUP_SOURCES`. When its groups are
-  what an OIDC groups claim carries and it needs no cluster name, add it to the argocd
-  `GROUP_SOURCES` too.
+  `ref` is the integration it must be, or several separated by `|` (`"aws|okta"`), or a capability
+  (`"@groups"`): any integration whose `provides()` includes it is accepted.
+- A directory that knows a user's groups implements `GroupsSource` (`user_groups(ctx, email)`) and
+  returns `{CAP_GROUPS}` from `provides()`; every integration with a `groups_connection`
+  (`groups_connection_field`) then accepts it. A source with cluster-specific rules (EKS access
+  entries, GKE's security group) implements `KubernetesSubjectSource` (`kubernetes_subject(ctx,
+  email, cluster)` and `kubernetes_needs_cluster`) with `CAP_KUBERNETES_SUBJECT`, which only the
+  kubernetes connection takes. An integration that grants by group declares
+  `groups_connection_field` and, in `resolve_identity`, asks the source when the caller sent no
+  groups; see argocd for the pattern.
 - Pattern actions (`raw:<verb>:<resource>`) are listed with `pattern=True` and matched by
   `match_action`.
 

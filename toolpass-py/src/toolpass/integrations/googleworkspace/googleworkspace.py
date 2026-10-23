@@ -42,6 +42,8 @@ from toolpass.core.decision import (
 )
 from toolpass.core.errors import as_error, go_lower, go_quote, go_trim_space
 from toolpass.core.integration import (
+    CAP_GROUPS,
+    CAP_KUBERNETES_SUBJECT,
     CheckRequest,
     Connection,
     Deps,
@@ -168,6 +170,9 @@ class GoogleWorkspace(Integration):
 
     def name(self) -> str:
         return "googleworkspace"
+
+    def provides(self) -> frozenset[str]:
+        return frozenset({CAP_GROUPS, CAP_KUBERNETES_SUBJECT})
 
     def fields(self) -> list[Field]:
         return [
@@ -775,25 +780,40 @@ class GoogleWorkspaceConnection(Connection):
             return allowed(f"{user} is a member of group {group} (directly or through nested groups)")
         return denied(f"{user} is not a member of group {group}")
 
-    # -- kubernetes groups --
+    # -- groups --
+
+    # Google's groups claim (through Dex or another broker) has no documented cap.
+    groups_claim_limit = None
+
+    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+        """The user's groups as a Google groups claim names them: the group
+        email addresses, lower-cased, from groups.list?userKey=<user> as
+        the admin. UNVERIFIED: groups.list returns direct memberships only;
+        a group reached through nesting is missing here, which can only
+        deny."""
+        return tuple(self._group_emails(ctx, self._active_user(ctx, email)))
+
+    def _active_user(self, ctx: Context, email: str) -> Identity:
+        ident = self.resolve_identity(ctx, User(email=email))
+        for state in ("suspended", "archived"):
+            if ident.attr(state) == "true":
+                raise user_not_found(f"{ident.id} is {state} in Google Workspace")
+        return ident
+
+    def _group_emails(self, ctx: Context, ident: Identity) -> list[str]:
+        return self._list_emails(ctx, "/admin/directory/v1/groups", {"userKey": ident.id}, "groups")
 
     # kubernetes_subject needs no cluster name.
     kubernetes_needs_cluster = False
 
     def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
-        """The user's groups as GKE's Google Groups for RBAC names them: the
-        group email addresses, from groups.list?userKey=<user> as the admin.
-        UNVERIFIED: groups.list returns direct memberships only, while GKE
-        also honours a group reached through nesting; such a group is
-        missing here, which can only deny. With gke_security_group set only
-        the groups that are direct members of it are kept, as GKE keeps
-        only groups nested in gke-security-groups; its members are reused
-        for a minute across users. The username is the primary email."""
-        ident = self.resolve_identity(ctx, User(email=email))
-        for state in ("suspended", "archived"):
-            if ident.attr(state) == "true":
-                raise user_not_found(f"{ident.id} is {state} in Google Workspace")
-        groups = self._list_emails(ctx, "/admin/directory/v1/groups", {"userKey": ident.id}, "groups")
+        """The user's groups as GKE's Google Groups for RBAC names them:
+        user_groups, of which with gke_security_group set only the groups
+        that are direct members of it are kept, as GKE keeps only groups
+        nested in gke-security-groups; its members are reused for a minute
+        across users. The username is the primary email."""
+        ident = self._active_user(ctx, email)
+        groups = self._group_emails(ctx, ident)
         if self.gke_security_group != "":
             allowed_groups = self.gke_groups.do(ctx, self.gke_security_group, lambda ctx: (self._gke_groups(ctx), GKE_GROUPS_TTL))
             groups = [g for g in groups if g in allowed_groups]

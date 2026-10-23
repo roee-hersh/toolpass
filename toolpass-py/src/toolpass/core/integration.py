@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from toolpass.core.catalog import Action, Resource, validate_action_name
 from toolpass.core.context import Context
-from toolpass.core.decision import Decision
+from toolpass.core.decision import Code, Decision, ToolpassError
 from toolpass.core.errors import go_quote
 from toolpass.core.log import Logger
 from toolpass.core.secret import Secret
@@ -27,12 +27,15 @@ if TYPE_CHECKING:
     from toolpass.net.httpx import Transport
 
 __all__ = [
+    "CAP_GROUPS",
+    "CAP_KUBERNETES_SUBJECT",
     "COMMON_FIELDS",
     "DEFAULT_TIMEOUT",
     "CheckRequest",
     "Connection",
     "Deps",
     "Field",
+    "GroupsSource",
     "Identity",
     "Integration",
     "KubernetesSubject",
@@ -41,9 +44,11 @@ __all__ = [
     "Registry",
     "Settings",
     "User",
+    "claimed_groups",
     "connection_ref_field",
     "credential_field",
     "find_action",
+    "groups_connection_field",
     "is_loopback_host",
     "ref_integrations",
     "ref_text",
@@ -117,8 +122,10 @@ class Field:
     code: bool = False
     # Names another integration; the value must be the id of a connection
     # of that integration. Several integrations are separated by "|"
-    # ("aws|googleworkspace"): a connection of any of them is accepted.
-    # Used for keys ending in _connection.
+    # ("aws|googleworkspace"): a connection of any of them is accepted. An
+    # item starting with "@" names a capability ("@groups"): a connection of
+    # any integration whose provides() includes it is accepted. Used for
+    # keys ending in _connection.
     ref: str = ""
     # Applies when the key is absent.
     default: str = ""
@@ -146,15 +153,44 @@ def connection_ref_field(name: str, integration: str, required: bool, desc: str)
     return Field(name=name, ref=integration, required=required, description=desc)
 
 
-def ref_integrations(ref: str) -> tuple[str, ...]:
-    """The integrations a Field.ref accepts, in declaration order."""
-    return tuple(p for p in ref.split("|") if p)
+# The capability a connection that implements GroupsSource provides, and
+# the one for KubernetesSubjectSource.
+CAP_GROUPS = "groups"
+CAP_KUBERNETES_SUBJECT = "kubernetes_subject"
 
 
-def ref_text(ref: str) -> str:
+def groups_connection_field(desc: str, ref: str = "@" + CAP_GROUPS) -> Field:
+    """The groups_connection key of an integration that grants by group:
+    where the user's groups come from when the caller sends none."""
+    return Field(name="groups_connection", ref=ref, description=desc)
+
+
+def ref_integrations(ref: str, reg: Registry | None = None) -> tuple[str, ...]:
+    """The integrations a Field.ref accepts, in declaration order; a
+    capability item expands to the registered integrations that provide
+    it, in name order (none without a registry)."""
+    out: list[str] = []
+    for p in ref.split("|"):
+        if p == "":
+            continue
+        if not p.startswith("@"):
+            names: tuple[str, ...] = (p,)
+        elif reg is None:
+            # Without a registry the capability stands for itself, so a
+            # message still says what is expected.
+            names = (p,)
+        else:
+            names = reg.providing(p[1:])
+        for n in names:
+            if n not in out:
+                out.append(n)
+    return tuple(out)
+
+
+def ref_text(ref: str, reg: Registry | None = None) -> str:
     """The accepted integrations for messages: "kubernetes", or "aws,
     googleworkspace, okta" for several."""
-    return ", ".join(ref_integrations(ref))
+    return ", ".join(ref_integrations(ref, reg))
 
 
 _FIELD_NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
@@ -176,8 +212,8 @@ def validate_fields(fields: list[Field] | tuple[Field, ...]) -> None:
             raise ValueError(f"field {go_quote(f.name)} is a common field and may not be redeclared")
         if f.ref and not f.name.endswith("_connection"):
             raise ValueError(f"field {go_quote(f.name)} references a connection so its name must end in _connection")
-        if f.ref and any(not _NAME_RE.fullmatch(n) for n in f.ref.split("|")):
-            raise ValueError(f"field {go_quote(f.name)}: ref must be integration names separated by |")
+        if f.ref and any(not (_FIELD_NAME_RE if n.startswith("@") else _NAME_RE).fullmatch(n.removeprefix("@")) for n in f.ref.split("|")):
+            raise ValueError(f"field {go_quote(f.name)}: ref must be integration names or @capabilities separated by |")
         if f.secret and f.default:
             raise ValueError(f"field {go_quote(f.name)}: secret fields cannot have defaults")
         if f.code and (f.secret or f.default or f.required or f.enum or f.ref or f.validate is not None):
@@ -478,12 +514,49 @@ class KubernetesSubject:
 
 
 @runtime_checkable
+class GroupsSource(Protocol):
+    """A connection that can name a user's groups from the email: the
+    groups a directory holds for the user, as the identity provider's
+    groups claim carries them. A groups_connection may name it. The
+    integration's provides() includes CAP_GROUPS."""
+
+    # How many groups the provider's groups claim carries at most, or None
+    # when it carries them all. Over it, the token carries fewer or none,
+    # so what the system saw is unknown: see claimed_groups.
+    groups_claim_limit: int | None
+
+    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+        """The user's groups, each once. Raise ToolpassError with
+        USER_NOT_FOUND when the directory has no account for the email or
+        the account cannot sign in; any other exception means the lookup
+        itself failed. A user in no group is an empty tuple, not an
+        error."""
+        ...
+
+
+def claimed_groups(src: GroupsSource, ctx: Context, email: str) -> tuple[str, ...]:
+    """The groups src names for email, as the integrations that grant by
+    group take them: an UNSUPPORTED error when there are more than the
+    provider's groups claim carries, since the system then saw fewer or
+    none and an answer from the full list could allow what it denies."""
+    groups = src.user_groups(ctx, email)
+    limit = src.groups_claim_limit
+    if limit is not None and len(groups) > limit:
+        raise ToolpassError(
+            Code.UNSUPPORTED,
+            f"{email} is in {len(groups)} groups, more than the {limit} the identity provider's groups claim carries; which of them the system saw is unknown",
+        )
+    return groups
+
+
+@runtime_checkable
 class KubernetesSubjectSource(Protocol):
-    """A connection that can name the Kubernetes subject for an email. A
-    kubernetes connection's groups_connection must implement it, and so must
-    an argocd connection's, which uses only groups and found (with cluster
-    "") and so takes only directories whose groups are what an OIDC groups
-    claim carries."""
+    """A connection that can name the Kubernetes subject for an email: a
+    cloud account that maps users to a cluster (EKS access entries) or a
+    directory with cluster-specific rules (GKE's security group). A
+    kubernetes connection's groups_connection may name it, or a plain
+    GroupsSource. The integration's provides() includes
+    CAP_KUBERNETES_SUBJECT."""
 
     # True when kubernetes_subject needs the cluster's name in the source
     # (an EKS cluster name); the kubernetes connection then requires it.
@@ -508,6 +581,13 @@ class Integration(ABC):
     @abstractmethod
     def fields(self) -> list[Field]:
         """Every config key this integration accepts besides the common ones."""
+
+    def provides(self) -> frozenset[str]:
+        """The capabilities every connection of this integration has, as
+        another integration's *_connection field may require them
+        (CAP_GROUPS: GroupsSource; CAP_KUBERNETES_SUBJECT:
+        KubernetesSubjectSource)."""
+        return frozenset()
 
     @abstractmethod
     def actions(self) -> list[Action]:
@@ -578,3 +658,9 @@ class Registry:
     def names(self) -> list[str]:
         with self._lock:
             return sorted(self._items)
+
+    def providing(self, capability: str) -> tuple[str, ...]:
+        """The names of the integrations whose provides() includes
+        capability, in name order."""
+        with self._lock:
+            return tuple(n for n in sorted(self._items) if capability in self._items[n].provides())

@@ -40,13 +40,13 @@ from toolpass.core.decision import (
 )
 from toolpass.core.errors import as_error, go_lower, go_quote, go_trim_space, is_error
 from toolpass.core.integration import (
+    CAP_GROUPS,
     CheckRequest,
     Connection,
     Deps,
     Field,
     Identity,
     Integration,
-    KubernetesSubject,
     ProbeResult,
     Settings,
     User,
@@ -144,6 +144,9 @@ class Microsoft365(Integration):
 
     def name(self) -> str:
         return "microsoft365"
+
+    def provides(self) -> frozenset[str]:
+        return frozenset({CAP_GROUPS})
 
     def fields(self) -> list[Field]:
         return [
@@ -916,17 +919,16 @@ class Microsoft365Connection(Connection):
 
     # -- kubernetes groups --
 
-    # kubernetes_subject needs no cluster name.
-    kubernetes_needs_cluster = False
+    # UNVERIFIED: a user in more than 200 groups gets a token with an
+    # overage claim instead of the groups. AKS resolves the overage itself;
+    # toolpass does not tell AKS apart and answers unknown there too.
+    groups_claim_limit = 200
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
-        """The user's groups as AKS's Entra integration (and an Entra ID
-        groups claim, for an argocd groups_connection) names them: the
-        object ids, lower-cased, of every group the user belongs to directly
-        or transitively (getMemberGroups). The username stays the kubernetes
-        connection's username_template. UNVERIFIED: AKS puts the same ids in
-        the token's groups claim, and a user in more than 200 groups gets a
-        token with an overage claim instead, which AKS resolves itself."""
+    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
+        """The user's groups as an Entra ID groups claim carries them (and
+        as AKS's Entra integration binds them): the object ids, lower-cased,
+        of every group the user belongs to directly or transitively
+        (getMemberGroups)."""
         ident = self.resolve_identity(ctx, User(email=email))
         if ident.attr("account_enabled") == "false":
             raise user_not_found(f"{ident.display} is disabled in Entra ID")
@@ -946,7 +948,7 @@ class Microsoft365Connection(Connection):
             g = go_lower(g)
             if g != "" and g not in groups:
                 groups.append(g)
-        return KubernetesSubject(groups=tuple(groups))
+        return tuple(groups)
 
     # -- probe --
 

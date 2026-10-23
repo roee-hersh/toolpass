@@ -19,7 +19,7 @@ from toolpass.core.cache import TTL, is_panic_type
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, ToolpassError, errorf, user_not_found, wrap_error
 from toolpass.core.errors import as_error, go_lower, go_quote, go_trim_space, path_error_text
-from toolpass.core.integration import Identity, User
+from toolpass.core.integration import GroupsSource, Identity, User, claimed_groups
 
 __all__ = [
     "MAX_PAGES",
@@ -258,6 +258,7 @@ class IdentityResolver:
     identity_store_id: str
     sso_instance_arn: str
     role_map: RoleMap | None
+    groups_source: GroupsSource | None
     iam: AWSClient
     identity_store: AWSClient | None
     sso_admin: AWSClient | None
@@ -273,16 +274,24 @@ class IdentityResolver:
             raise user_not_found(f"{go_quote(u.email)} is not an email address")
         if self.mode == "static_map":
             # The map is re-read every 60 s, so the roles are looked up
-            # again in check from the request's groups rather than carried
-            # in the identity.
+            # again in check from the groups carried in the identity rather
+            # than the roles.
             assert self.role_map is not None
-            arns = self.role_map.lookup(email, u.groups)
+            groups = self._static_groups(ctx, email, u.groups)
+            arns = self.role_map.lookup(email, groups)
             if not arns:
                 raise user_not_found(f"{email} and its groups are not in role_map_file")
-            return Identity(id=go_lower(email), display=email)
+            return Identity(id=go_lower(email), display=email, groups=groups)
         if self.mode == "iam_user":
             return self._resolve_iam_user(ctx, email)
         return self._resolve_identity_center(ctx, email)
+
+    def _static_groups(self, ctx: Context, email: str, sent: tuple[str, ...]) -> tuple[str, ...]:
+        """The groups the role map is looked up with: the caller's, or
+        groups_connection's when the caller sent none."""
+        if sent or self.groups_source is None:
+            return sent
+        return claimed_groups(self.groups_source, ctx, email)
 
     # Identity Center
 

@@ -31,8 +31,8 @@ performs an action and nothing is persisted.
    settings. Leave `enable_gmail_settings` off unless `mail.send_as` or `mail.delegate_access` are
    needed; with it off both actions are unknown, for the user's own mailbox too.
 
-   and, only when a [kubernetes](kubernetes.md#groups-from-the-email) connection uses this
-   connection as its `groups_connection`:
+   and, only when another connection uses this one as its
+   [`groups_connection`](../guides/groups.md):
 
    ```
    https://www.googleapis.com/auth/admin.directory.group.readonly
@@ -221,17 +221,17 @@ every Gmail request is refused as unknown.
 - **Why Drive answered 404**: with reason `notFound` Drive does not distinguish "no access" from
   "does not exist", and toolpass answers deny for both.
 
-## Kubernetes groups
+## As a groups source
 
-As a kubernetes connection's `groups_connection`, the connection resolves the user as for a check
-(a suspended or archived user is `user_not_found`), lists the user's groups with
+As a [`groups_connection`](../guides/groups.md), the connection resolves the user as for a check (a
+suspended or archived user is `user_not_found`), lists the user's groups with
 `GET /admin/directory/v1/groups?userKey=<primary email>&maxResults=200` (every page) as
-`admin_email`, and returns their email addresses, lower-cased: the names GKE's Google Groups for
-RBAC binds to. With `gke_security_group` set it also lists that group's members
-(`GET /admin/directory/v1/groups/{group}/members`) and keeps only the user's groups that are
-`GROUP` members of it; that member list is reused for a minute across users. The Kubernetes
-username is the account's primary email, as GKE names the user, so an alias the caller sent
-still matches the user's RoleBindings.
+`admin_email`, and returns their email addresses, lower-cased. For a kubernetes connection they are
+the names GKE's Google Groups for RBAC binds to: with `gke_security_group` set it also lists that
+group's members (`GET /admin/directory/v1/groups/{group}/members`) and keeps only the user's groups
+that are `GROUP` members of it (that member list is reused for a minute across users), and the
+Kubernetes username is the account's primary email, as GKE names the user, so an alias the caller
+sent still matches the user's RoleBindings. Other integrations get every group.
 
 ## Unverified
 

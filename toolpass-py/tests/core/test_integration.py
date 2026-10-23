@@ -290,5 +290,5 @@ def test_ref_with_several_integrations() -> None:
     assert ref_integrations("aws|okta") == ("aws", "okta") and ref_integrations("jira") == ("jira",)
     assert ref_text("aws|okta|fake") == "aws, okta, fake"
     for bad in ("aws||okta", "Aws", "aws|"):
-        with pytest.raises(ValueError, match="integration names separated by"):
+        with pytest.raises(ValueError, match="integration names or @capabilities separated by"):
             validate_fields([Field(name="x_connection", ref=bad)])

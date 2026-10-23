@@ -45,10 +45,6 @@ SELF_RULES_PATH = "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews"
 # system:authenticated, system:nodes, ...).
 RESERVED_GROUP_PREFIX = "system:"
 
-# The integrations a groups_connection may name: each connection implements
-# integration.KubernetesSubjectSource.
-GROUP_SOURCES = "aws|googleworkspace|microsoft365|okta|fake"
-
 AWS_AUTH_PATH = "/api/v1/namespaces/kube-system/configmaps/aws-auth"
 # How long the aws-auth ConfigMap is reused across users.
 AWS_AUTH_TTL = 60.0
@@ -77,11 +73,9 @@ class Integration(integ.Integration):
                 enum=("true", "false"),
                 description="also send system:authenticated, as the API server would",
             ),
-            integ.connection_ref_field(
-                "groups_connection",
-                GROUP_SOURCES,
-                False,
+            integ.groups_connection_field(
                 "where the user's groups come from when the caller sends none: an aws connection (EKS access entries) or a directory",
+                ref=f"@{integ.CAP_KUBERNETES_SUBJECT}|@{integ.CAP_GROUPS}",
             ),
             integ.Field(
                 name="eks_cluster",
@@ -151,8 +145,13 @@ class Integration(integ.Integration):
         c.eks_aws_auth = s.bool("eks_aws_auth", False)
         c.aws_auth_cache.set_clock(d.now)
         if ref != "":
-            src = d.connection(ref)
-            if not isinstance(src, integ.KubernetesSubjectSource):
+            conn = d.connection(ref)
+            src: integ.KubernetesSubjectSource
+            if isinstance(conn, integ.KubernetesSubjectSource):
+                src = conn
+            elif isinstance(conn, integ.GroupsSource):
+                src = _DirectorySubjects(conn)
+            else:
                 raise ValueError(f"groups_connection {go_quote(ref)} cannot look up Kubernetes groups")
             needs_cluster = bool(src.kubernetes_needs_cluster)
             if needs_cluster and c.eks_cluster == "":
@@ -165,6 +164,19 @@ class Integration(integ.Integration):
         elif c.eks_cluster != "" or c.eks_aws_auth:
             raise ValueError("eks_cluster and eks_aws_auth need groups_connection set to an aws connection")
         return c
+
+
+class _DirectorySubjects:
+    """A plain GroupsSource as a KubernetesSubjectSource: the directory's
+    group names, treated like groups a caller sent, and no username."""
+
+    kubernetes_needs_cluster = False
+
+    def __init__(self, src: integ.GroupsSource) -> None:
+        self.src = src
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> integ.KubernetesSubject:
+        return integ.KubernetesSubject(groups=integ.claimed_groups(self.src, ctx, email))
 
 
 def _validate_eks_cluster(v: str) -> None:

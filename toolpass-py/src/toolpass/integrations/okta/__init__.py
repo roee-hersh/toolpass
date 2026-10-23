@@ -1,5 +1,5 @@
 """The okta integration: a user's Okta groups, for group.member checks and
-as a kubernetes or argocd groups_connection."""
+as a groups_connection of the integrations that grant by group."""
 
 from __future__ import annotations
 

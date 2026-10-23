@@ -29,7 +29,21 @@ from toolpass.core.catalog import Action
 from toolpass.core.context import Context
 from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unknown_decision, unsupported, user_not_found
 from toolpass.core.errors import go_lower, go_quote, go_trim_space, path_error_text
-from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Integration, KubernetesSubject, ProbeResult, Settings, User, credential_field
+from toolpass.core.integration import (
+    CAP_KUBERNETES_SUBJECT,
+    CheckRequest,
+    Connection,
+    Deps,
+    Field,
+    GroupsSource,
+    Integration,
+    KubernetesSubject,
+    ProbeResult,
+    Settings,
+    User,
+    credential_field,
+    groups_connection_field,
+)
 from toolpass.core.log import Logger
 from toolpass.core.routes import RouteTable
 from toolpass.core.secret import Secret
@@ -146,6 +160,9 @@ class AWS(Integration):
     def name(self) -> str:
         return "aws"
 
+    def provides(self) -> frozenset[str]:
+        return frozenset({CAP_KUBERNETES_SUBJECT})
+
     def fields(self) -> list[Field]:
         return [
             Field(
@@ -196,6 +213,7 @@ class AWS(Integration):
                 description="identity_center: the Identity Center instance ARN",
             ),
             Field(name="role_map_file", description='static_map: file of "<email-or-group> <role-arn>" lines, # comments; re-read every 60 s'),
+            groups_connection_field("static_map: where the user's groups come from when the caller sends none (a directory)"),
             Field(
                 name="context_entries",
                 validate=_validate_context_entries,
@@ -284,6 +302,9 @@ class AWS(Integration):
         eks_region = s.get("eks_region") or c.region
         c.eks = AWSClient(c.plain, _endpoint("eks", regional_endpoint(c.partition, "eks", eks_region)), eks_region, "eks", c.account_creds)
 
+        groups_ref = s.get("groups_connection")
+        if groups_ref != "" and c.mode != "static_map":
+            raise ValueError("groups_connection is used only with identity_mode static_map")
         if c.mode == "identity_center":
             ic_role = s.get("identity_center_role_arn")
             ic_region = s.get("identity_center_region")
@@ -320,6 +341,11 @@ class AWS(Integration):
             except (OSError, ValueError) as e:
                 raise ValueError(f"role_map_file: {path_error_text('stat', path, e)}") from e
             c.role_map = RoleMap(path, now, logger.warn)
+            if groups_ref != "":
+                src = d.connection(groups_ref)
+                if not isinstance(src, GroupsSource):
+                    raise ValueError(f"groups_connection {go_quote(groups_ref)} cannot look up a user's groups")
+                c.groups_source = src
         elif c.mode == "iam_user":
             pass
         else:
@@ -481,6 +507,7 @@ class AWSConnection(IdentityResolver, Connection):
         self.identity_store_id = ""
         self.sso_instance_arn = ""
         self.role_map: RoleMap | None = None
+        self.groups_source: GroupsSource | None = None
         # The engine caches resolved identities (identity_cache_seconds); the
         # connection only caches what identities are built from.
         self.roles: TTL[str, list[SSORole]]
@@ -506,7 +533,7 @@ class AWSConnection(IdentityResolver, Connection):
         missing: list[str] = []
         if self.mode == "static_map":
             assert self.role_map is not None
-            arns = self.role_map.lookup(r.user.email, r.user.groups)
+            arns = self.role_map.lookup(r.user.email, r.identity.groups)
             if not arns:
                 raise user_not_found(f"{r.user.email} and its groups are not in role_map_file")
             principals = [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns]
@@ -692,9 +719,9 @@ class AWSConnection(IdentityResolver, Connection):
             email = go_trim_space(email)
             if email == "" or "@" not in email:
                 raise user_not_found(f"{go_quote(email)} is not an email address")
-            arns = self.role_map.lookup(email, [])
+            arns = self.role_map.lookup(email, self._static_groups(ctx, email, ()))
             if not arns:
-                raise user_not_found(f"{email} is not in role_map_file")
+                raise user_not_found(f"{email} and its groups are not in role_map_file")
             return [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns], []
         ident = self.resolve_identity(ctx, User(email=email))
         if ident.attr("user_status") == "DISABLED":

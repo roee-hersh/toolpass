@@ -17,12 +17,28 @@ from toolpass.core.decision import (
     user_ambiguous,
     user_not_found,
 )
-from toolpass.core.integration import CheckRequest, Connection, Deps, Field, Identity, Integration, KubernetesSubject, ProbeResult, Settings, User
+from toolpass.core.integration import (
+    CAP_GROUPS,
+    CAP_KUBERNETES_SUBJECT,
+    CheckRequest,
+    Connection,
+    Deps,
+    Field,
+    Identity,
+    Integration,
+    KubernetesSubject,
+    ProbeResult,
+    Settings,
+    User,
+)
 
 
 class Fake(Integration):
     def name(self) -> str:
         return "fake"
+
+    def provides(self) -> frozenset[str]:
+        return frozenset({CAP_GROUPS, CAP_KUBERNETES_SUBJECT})
 
     def fields(self) -> list[Field]:
         return [
@@ -31,7 +47,7 @@ class Fake(Integration):
             Field(
                 name="groups",
                 validate=_validate_groups,
-                description="directory groups for kubernetes groups_connection: email=group,group;email=group",
+                description="directory groups, as a groups_connection: email=group,group;email=group",
             ),
             Field(
                 name="groups_mapped",
@@ -90,6 +106,7 @@ def _validate_groups(v: str) -> None:
 class FakeConnection(Connection):
     # kubernetes_subject needs no cluster name.
     kubernetes_needs_cluster = False
+    groups_claim_limit = None
 
     def __init__(self, users: frozenset[str], admins: frozenset[str], fail: Code | None) -> None:
         self.users = users
@@ -98,17 +115,21 @@ class FakeConnection(Connection):
         self.groups: dict[str, tuple[str, ...]] = {}
         self.groups_mapped = False
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+    def user_groups(self, ctx: Context, email: str) -> tuple[str, ...]:
         """The groups listed for the email; a known user with none listed
         is in no group; anyone else has no account."""
         if self.fail is not None:
             raise errorf(self.fail, "fake failure")
         e = email.strip().lower()
         if e in self.groups:
-            return KubernetesSubject(groups=self.groups[e], mapped=self.groups_mapped)
+            return self.groups[e]
         if e in self.users or e in self.admins:
-            return KubernetesSubject(mapped=self.groups_mapped)
+            return ()
         raise user_not_found(f"no account for {email}")
+
+    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+        """user_groups, handed to kubernetes as mapped when groups_mapped."""
+        return KubernetesSubject(groups=self.user_groups(ctx, email), mapped=self.groups_mapped)
 
     def resolve_identity(self, ctx: Context, u: User) -> Identity:
         """Known users and admins resolve; an email containing "ambiguous"

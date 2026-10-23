@@ -6,8 +6,8 @@ kubernetes connection and evaluates it with the same rules as the Argo CD
 API server (see the rbac subpackage).
 
 Argo CD reads a user's groups from the identity provider's groups claim. When
-the caller sends none, a groups_connection (an Okta or Entra ID directory) can
-name them from the email instead.
+the caller sends none, a groups_connection (a directory) can name them from
+the email instead.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from toolpass.core import jsonx
 from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
-from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported, user_not_found
+from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported
 from toolpass.core.errors import go_quote, go_trim_space
 from toolpass.core.routes import RouteTable
 from toolpass.integrations import kubernetes
@@ -47,17 +47,8 @@ POLICY_CACHE_TTL = 30.0
 # The resources whose objects carry an application namespace.
 _NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
-# The integrations a groups_connection may name: directories whose groups are
-# what an OIDC groups claim carries (Okta group names, Entra ID group object
-# ids). Each connection implements integration.KubernetesSubjectSource, of
-# which only the groups and found are used.
-GROUP_SOURCES = "okta|microsoft365|fake"
-
-# More groups than an OIDC token carries. UNVERIFIED: Okta's groups claim
-# holds at most 100 groups, and an Entra ID token for a user in more than 200
-# has an overage claim instead of groups, which Argo CD does not resolve; what
-# Argo CD saw for such a user is unknown.
-MAX_SOURCE_GROUPS = 100
+# How many groups a reason names before "and N more".
+_NAMED_GROUPS = 10
 
 
 class Integration(integ.Integration):
@@ -82,12 +73,7 @@ class Integration(integ.Integration):
                 enum=("none", "email"),
                 description="what Argo CD sees as the user's subject: none (evaluate groups only) or email",
             ),
-            integ.connection_ref_field(
-                "groups_connection",
-                GROUP_SOURCES,
-                False,
-                "where the user's groups come from when the caller sends none: the directory behind Argo CD's OIDC login",
-            ),
+            integ.groups_connection_field("where the user's groups come from when the caller sends none: the directory behind Argo CD's login"),
             integ.url_field(False, "the Argo CD API server, e.g. https://argocd.example.com; the secure-tools toolkit maps requests to it to actions"),
         ]
 
@@ -129,8 +115,8 @@ class Integration(integ.Integration):
         ref = s.get("groups_connection")
         if ref != "":
             src = d.connection(ref)
-            if not isinstance(src, integ.KubernetesSubjectSource):
-                raise ValueError(f"groups_connection {go_quote(ref)} cannot look up the groups of an OIDC login")
+            if not isinstance(src, integ.GroupsSource):
+                raise ValueError(f"groups_connection {go_quote(ref)} cannot look up a user's groups")
             c.groups_source = src
         return c
 
@@ -217,7 +203,7 @@ class Connection(integ.Connection):
         self.rbac_cm = rbac_cm
         self.user_subject = user_subject
         self.now = now
-        self.groups_source: integ.KubernetesSubjectSource | None = None
+        self.groups_source: integ.GroupsSource | None = None
         # Holds the one policy bundle under the key ().
         self.policies: TTL[tuple[()], Bundle] = TTL(1)
         self.policies.set_clock(now)
@@ -305,16 +291,7 @@ class Connection(integ.Connection):
         subject = u.email if self.user_subject == "email" else ""
         groups = tuple(u.groups)
         if not groups and self.groups_source is not None:
-            found = self.groups_source.kubernetes_subject(ctx, u.email, "")
-            if not found.found:
-                raise user_not_found(f"{u.email} has no account in groups_connection")
-            if len(found.groups) > MAX_SOURCE_GROUPS:
-                raise errorf(
-                    Code.UNSUPPORTED,
-                    f"{u.email} is in {len(found.groups)} groups in groups_connection, more than the {MAX_SOURCE_GROUPS} an OIDC token "
-                    "carries; which of them Argo CD saw is unknown",
-                )
-            groups = found.groups
+            groups = integ.claimed_groups(self.groups_source, ctx, u.email)
         return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:
@@ -412,10 +389,18 @@ def who(subject: str, groups: list[str]) -> str:
     if subject == "":
         if not groups:
             return "a user with no groups"
-        return "groups " + ", ".join(groups)
+        return "groups " + _named(groups)
     if not groups:
         return subject
-    return subject + " (groups " + ", ".join(groups) + ")"
+    return subject + " (groups " + _named(groups) + ")"
+
+
+def _named(groups: list[str]) -> str:
+    """The first groups by name; a directory may hold many more than a
+    reason should carry."""
+    if len(groups) <= _NAMED_GROUPS:
+        return ", ".join(groups)
+    return ", ".join(groups[:_NAMED_GROUPS]) + f" and {len(groups) - _NAMED_GROUPS} more"
 
 
 INTEGRATION = Integration()

@@ -1104,7 +1104,19 @@ def test_actions_listed() -> None:
     assert len(GoogleWorkspace().actions()) == 18, f"{len(GoogleWorkspace().actions())} actions"
 
 
-# -- kubernetes groups_connection ----------------------------------------------------
+# -- groups_connection ----------------------------------------------------------------
+
+
+def test_user_groups_lists_group_emails(env: Env) -> None:
+    _, _, c = env.setup({"gke_security_group": "gke-security-groups@example.com"})
+    assert isinstance(c, GoogleWorkspaceConnection)
+    # Every group, lower-cased; the GKE security group filter is for
+    # kubernetes_subject only.
+    assert c.user_groups(background(), "D.Alias@example.com") == ("eng@example.com", "ops@example.com", "all@example.com")
+    assert c.user_groups(background(), "bob@example.com") == ()
+    with pytest.raises(ToolpassError) as ei:
+        c.user_groups(background(), "sus@example.com")
+    assert ei.value.code == Code.USER_NOT_FOUND
 
 
 def test_kubernetes_subject_lists_group_emails(env: Env) -> None:
