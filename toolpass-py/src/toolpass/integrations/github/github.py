@@ -4,9 +4,11 @@ through the GitHub REST and GraphQL APIs.
 toolpass authenticates as a GitHub App installed in one organization: it
 signs a short-lived JWT with the App's private key, exchanges it for an
 installation token (cached, refreshed before expiry) and reads with that.
-The App needs only read permissions. The user's email is mapped to a
-GitHub login through the organization's SAML identities, a login template
-or a mapping file, and the effective repository permission (the highest of
+The App needs only read permissions. A plain token (``token``) can stand in
+for the App; the reads are the same. The user's email is mapped to a
+GitHub login through the organization's SAML identities, a login template,
+a mapping file, an HTTP identity service or a callable given in code, and
+the effective repository permission (the highest of
 direct, team, organization and enterprise grants, as GitHub computes it)
 is read from the collaborator permission endpoint. Nothing is written.
 """
@@ -52,6 +54,7 @@ from toolpass.core.integration import (
     Settings,
     credential_field,
     url_field,
+    validate_https_url,
 )
 from toolpass.core.log import Logger
 from toolpass.core.routes import RouteTable
@@ -69,6 +72,8 @@ from toolpass.integrations.github.actions import (
     valid_login,
 )
 from toolpass.integrations.github.identity import (
+    MODE_CALLABLE,
+    MODE_HTTP,
     MODE_MAP_FILE,
     MODE_SAML,
     MODE_TEMPLATE,
@@ -105,6 +110,13 @@ JWT_LIFETIME = 9 * 60.0
 TOKEN_LIFETIME = 3600.0
 MINT_IDEMPOTENT = True
 
+# How toolpass authenticates to GitHub.
+AUTH_APP = "app"
+AUTH_TOKEN = "token"
+
+# Classic token scopes that only read; any other scope is reported by the probe.
+READ_SCOPES = frozenset({"read:org", "read:user", "user:email", "read:discussion", "read:project", "read:packages", "read:enterprise", "read:audit_log"})
+
 
 def validate_login(v: str) -> None:
     if not valid_login(v):
@@ -138,21 +150,25 @@ class GitHub(Integration):
             ),
             Field(
                 name="app_id",
-                required=True,
                 validate=validate_app_id,
-                description="the App's client id (preferred) or numeric App id, used as the JWT issuer",
+                description="App auth (required with credential): the App's client id (preferred) or numeric App id, used as the JWT issuer",
             ),
             Field(
                 name="installation_id",
                 validate=validate_installation_id,
                 description="the App's installation id in the organization; discovered when omitted",
             ),
-            credential_field(True, "the App's private key, PEM (PKCS#1 or PKCS#8)"),
+            credential_field(False, "App auth: the App's private key, PEM (PKCS#1 or PKCS#8); set this or token"),
+            Field(
+                name="token",
+                secret=True,
+                description="token auth, instead of an App: a GitHub token that reads the organization (fine-grained or classic); set this or credential",
+            ),
             Field(
                 name="identity_mode",
-                default=MODE_SAML,
-                enum=(MODE_SAML, MODE_TEMPLATE, MODE_MAP_FILE),
-                description="how an email becomes a login: saml (organization SAML identities), template (login_template) or map_file (user_map_file)",
+                enum=(MODE_SAML, MODE_TEMPLATE, MODE_MAP_FILE, MODE_HTTP, MODE_CALLABLE),
+                description="how an email becomes a login: saml (organization SAML identities; the default), template (login_template), "
+                "map_file (user_map_file), http (identity_url; the default when it is set) or callable (identity, given in code; the default then)",
             ),
             Field(
                 name="login_template",
@@ -169,6 +185,21 @@ class GitHub(Integration):
                 name="user_map_file",
                 description='map_file mode: path to a file of "email login" or "email=login" lines, # comments; re-read every 60 s',
             ),
+            Field(
+                name="identity_url",
+                validate=validate_https_url,
+                description="http mode: the identity service; GET <identity_url>?email=<email> answers 200 and the login as a JSON string, 404/422 for none",
+            ),
+            Field(
+                name="identity_token",
+                secret=True,
+                description="http mode, optional: sent to the identity service as Authorization: Bearer",
+            ),
+            Field(
+                name="identity",
+                code=True,
+                description="callable mode, in code only: identity(email) -> login or None (no identity); may be async",
+            ),
         ]
 
     def actions(self) -> list[Action]:
@@ -184,18 +215,27 @@ class GitHub(Integration):
         read and parsed when a JWT is needed, so a rotated key file takes
         effect."""
         hc = d.http_client(s)
-        if s.secret("credential").is_zero():
-            raise ValueError("credential is required")
+        app, token = not s.secret("credential").is_zero(), not s.secret("token").is_zero()
+        if app and token:
+            raise ValueError("set credential (an App private key) or token, not both")
+        if not app and not token:
+            raise ValueError("credential (an App private key, with app_id) or token is required")
         if s.get("organization") == "":
             raise ValueError("organization is required")
-        if s.get("app_id") == "":
-            raise ValueError("app_id is required")
+        if app and s.get("app_id") == "":
+            raise ValueError("app_id is required with credential")
+        if token and (s.get("app_id") != "" or s.get("installation_id") != ""):
+            raise ValueError("app_id and installation_id apply to App auth (credential), not to token")
+        identity_fn = s.object("identity")
+        mode = s.get("identity_mode")
+        if mode == "":
+            mode = MODE_CALLABLE if identity_fn is not None else MODE_HTTP if s.get("identity_url") != "" else MODE_SAML
         c = GitHubConnection(
             settings=s,
             org=s.get("organization"),
             app_id=s.get("app_id"),
             installation_id=s.get("installation_id"),
-            mode=s.get("identity_mode"),
+            mode=mode,
             template=Template(s.get("login_template")),
             map_file=s.get("user_map_file"),
             logger=d.logger if d.logger is not None else Logger(),
@@ -203,8 +243,14 @@ class GitHub(Integration):
         )
         c.saml.set_clock(c.now)
         c.saml.set_fresh_max_age(SAML_CACHE_TTL)
-        if c.mode == "":
-            c.mode = MODE_SAML
+        if token:
+            c.auth_mode, c.who = AUTH_TOKEN, "the token"
+        if s.get("identity_url") != "" and c.mode != MODE_HTTP:
+            raise ValueError(f"identity_url applies to identity_mode http, not {c.mode}")
+        if not s.secret("identity_token").is_zero() and c.mode != MODE_HTTP:
+            raise ValueError(f"identity_token applies to identity_mode http, not {c.mode}")
+        if identity_fn is not None and c.mode != MODE_CALLABLE:
+            raise ValueError(f"identity applies to identity_mode callable, not {c.mode}")
         if c.template == "":
             c.template = Template(DEFAULT_TEMPLATE)
         if c.mode == MODE_SAML:
@@ -230,17 +276,39 @@ class GitHub(Integration):
                 raise ValueError(f"user_map_file: {path_error_text('stat', c.map_file, e)}") from e
             if stat.S_ISDIR(fi.st_mode):
                 raise ValueError(f"user_map_file {c.map_file} is a directory")
+        elif c.mode == MODE_HTTP:
+            if s.get("identity_url") == "":
+                raise ValueError("identity_mode http requires identity_url")
+            c.identity_url = s.get("identity_url")
+            ident = s.secret("identity_token")
+            c.lookup = httpx.Client(
+                http=hc, logger=d.logger, auth=None if ident.is_zero() else httpx.bearer_auth(lambda _ctx: _read_secret(ident, "identity_token"))
+            )
+        elif c.mode == MODE_CALLABLE:
+            if identity_fn is None or not callable(identity_fn):
+                raise ValueError("identity_mode callable requires identity, a callable given in code: Toolpass(connections=[{..., 'identity': fn}])")
+            c.identity_fn = identity_fn
         else:
-            raise ValueError(f"identity_mode {go_quote(c.mode)} must be one of saml, template, map_file")
+            raise ValueError(f"identity_mode {go_quote(c.mode)} must be one of saml, template, map_file, http, callable")
         rest_base, graphql_url = PUBLIC_REST, PUBLIC_GRAPHQL
         u = s.get("url").rstrip("/")
         if u != "":
             rest_base, graphql_url = u + "/api/v3", u + "/api/graphql"
         c.graphql_url = graphql_url
+        if token:
+            c.rest = httpx.Client(http=hc, base=rest_base, logger=d.logger, auth=c._static_token_auth)
+            return c
         c.app = httpx.Client(http=hc, base=rest_base, logger=d.logger, auth=c._jwt_auth)
         c.rest = httpx.Client(http=hc, base=rest_base, logger=d.logger, auth=c._token_auth)
         c.tokens = TokenSource(fetch=c._mint_token, default_ttl=TOKEN_LIFETIME, now=c.now)
         return c
+
+
+def _read_secret(sec: Any, name: str) -> str:
+    try:
+        return str(sec.get_string())
+    except Exception as e:  # noqa: BLE001 - any failure to read the secret
+        raise wrap_error(Code.CREDENTIAL_REJECTED, e, f"{name} could not be read")
 
 
 # -- decoding ----------------------------------------------------------------
@@ -470,6 +538,10 @@ class GitHubConnection(IdentityMixin, Connection):
         now: Callable[[], float],
     ) -> None:
         self.settings = settings
+        # app: a GitHub App's installation token; token: a token given in config.
+        self.auth_mode = AUTH_APP
+        # Who reads, in messages: "the App" or "the token".
+        self.who = "the App"
         self.org = org
         self.app_id = app_id
         self.installation_id = installation_id
@@ -492,6 +564,10 @@ class GitHubConnection(IdentityMixin, Connection):
         self._map_lock = threading.Lock()
         self._map_entries: dict[str, str] | None = None
         self._map_read = 0.0
+        # http mode: the identity service and its client; callable mode: the callable.
+        self.identity_url = ""
+        self.lookup: httpx.Client = httpx.Client()
+        self.identity_fn: Callable[[str], Any] | None = None
 
     # -- authentication --------------------------------------------------
 
@@ -522,6 +598,13 @@ class GitHubConnection(IdentityMixin, Connection):
 
     def _token_auth(self, ctx: Context, r: httpx.PreparedRequest) -> None:
         tok = self.tokens.get(ctx)
+        self._set_github_headers(r)
+        r.headers.set("Authorization", "Bearer " + tok)
+
+    def _static_token_auth(self, ctx: Context, r: httpx.PreparedRequest) -> None:
+        """Token auth: the configured token, read at every request so a
+        rotated secret file takes effect."""
+        tok = _read_secret(self.settings.secret("token"), "the token")
         self._set_github_headers(r)
         r.headers.set("Authorization", "Bearer " + tok)
 
@@ -579,7 +662,7 @@ class GitHubConnection(IdentityMixin, Connection):
         try:
             return self.rest.get_json(ctx, path, decode=decode)[1]
         except Exception as e:
-            if not _unauthorized(e):
+            if not _unauthorized(e) or self.auth_mode == AUTH_TOKEN:
                 raise
         self.tokens.invalidate()
         return self.rest.get_json(ctx, path, decode=decode)[1]
@@ -599,10 +682,13 @@ class GitHubConnection(IdentityMixin, Connection):
                 and se.header is not None
                 and (go_trim_space(se.header.get("X-RateLimit-Remaining")) == "0" or se.header.get("Retry-After") != "")
             ):
-                return wrap_error(Code.UPSTREAM_RATE_LIMIT, err, "GitHub rate limit exhausted for the App installation")
-            return wrap_error(Code.CREDENTIAL_REJECTED, err, f"the App may not {what} (HTTP 403); check its permissions")
+                return wrap_error(
+                    Code.UPSTREAM_RATE_LIMIT, err, "GitHub rate limit exhausted for " + ("the App installation" if self.auth_mode == AUTH_APP else "the token")
+                )
+            return wrap_error(Code.CREDENTIAL_REJECTED, err, f"{self.who} may not {what} (HTTP 403); check its permissions")
         if st == 401:
-            return wrap_error(Code.CREDENTIAL_REJECTED, err, "the App's credential was rejected (HTTP 401)")
+            rejected = "the App's credential" if self.auth_mode == AUTH_APP else "the token"
+            return wrap_error(Code.CREDENTIAL_REJECTED, err, rejected + " was rejected (HTTP 401)")
         out = httpx.classify(err)
         assert out is not None
         return out
@@ -619,7 +705,7 @@ class GitHubConnection(IdentityMixin, Connection):
             try:
                 resp = do()
             except Exception as e:
-                if not _unauthorized(e):
+                if not _unauthorized(e) or self.auth_mode == AUTH_TOKEN:
                     raise
                 self.tokens.invalidate()
                 resp = do()
@@ -635,6 +721,9 @@ class GitHubConnection(IdentityMixin, Connection):
             raise wrap_error(Code.UPSTREAM_ERROR, e, "GraphQL response was not JSON")
         for typ, _ in errors:
             if typ.upper() in ("INSUFFICIENT_SCOPES", "FORBIDDEN"):
+                if self.auth_mode == AUTH_TOKEN:
+                    # A token reads SAML identities only for an organization owner: the question could not be asked.
+                    raise errorf(Code.UNSUPPORTED, f"the token may not read organization SAML identities (GraphQL {typ}); use another identity_mode")
                 raise errorf(
                     Code.CREDENTIAL_REJECTED,
                     f"the App may not read organization SAML identities (GraphQL {typ}); it needs Organization members: read",
@@ -680,7 +769,7 @@ class GitHubConnection(IdentityMixin, Connection):
             return _decode_repo_meta(self._get(ctx, repo_path))
         except Exception as e:  # noqa: BLE001 - classified below
             if api_status(e) == 404:
-                raise errorf(Code.RESOURCE_NOT_VISIBLE, f"repository {repo} is not visible to the App")
+                raise errorf(Code.RESOURCE_NOT_VISIBLE, f"repository {repo} is not visible to {self.who}")
             raise self.classify(e, "read repository " + repo)
 
     def _check_repo(self, ctx: Context, a: GHAction, t: Target, login: str) -> Decision:
@@ -691,7 +780,7 @@ class GitHubConnection(IdentityMixin, Connection):
             if api_status(e) == 404:
                 return unknown_decision(
                     Code.RESOURCE_NOT_VISIBLE,
-                    f"repository {t.owner}/{t.repo} is not visible to the App, or {login} is not a collaborator on a private repository",
+                    f"repository {t.owner}/{t.repo} is not visible to {self.who}, or {login} is not a collaborator on a private repository",
                 )
             raise self.classify(e, "read collaborator permissions on " + t.owner + "/" + t.repo)
         repo = t.owner + "/" + t.repo
@@ -759,9 +848,9 @@ class GitHubConnection(IdentityMixin, Connection):
         except Exception as e:  # noqa: BLE001 - classified below
             st = api_status(e)
             if st == 403:
-                raise self._forbidden(e, f"branch rules of {t} not readable; grant the App Repository Administration: read")
+                raise self._forbidden(e, f"branch rules of {t} not readable; grant {self.who} Repository Administration: read")
             if st == 404:
-                raise errorf(Code.RESOURCE_NOT_VISIBLE, f"branch {t} does not exist or is not visible to the App")
+                raise errorf(Code.RESOURCE_NOT_VISIBLE, f"branch {t} does not exist or is not visible to {self.who}")
             raise self.classify(e, "read branch rules of " + t.owner + "/" + t.repo)
 
     def _branch_protection(self, ctx: Context, t: Target, repo_path: str) -> _Protection | None:
@@ -774,7 +863,7 @@ class GitHubConnection(IdentityMixin, Connection):
             if st == 404:
                 return None
             if st == 403:
-                raise self._forbidden(e, f"branch protection of {t} not readable; grant the App Repository Administration: read")
+                raise self._forbidden(e, f"branch protection of {t} not readable; grant {self.who} Repository Administration: read")
             raise self.classify(e, "read branch protection of " + t.owner + "/" + t.repo)
 
     def _in_restrictions(self, ctx: Context, t: Target, prot: _Protection, login: str) -> bool:
@@ -796,7 +885,7 @@ class GitHubConnection(IdentityMixin, Connection):
                 if st == 404:
                     continue
                 if st == 403:
-                    raise self._forbidden(e, f"branch {t} restricts pushes to team {slug}, whose members the App may not read")
+                    raise self._forbidden(e, f"branch {t} restricts pushes to team {slug}, whose members {self.who} may not read")
                 raise self.classify(e, "read memberships of team " + t.owner + "/" + slug)
             if m.state == "active":
                 return True
@@ -896,7 +985,7 @@ class GitHubConnection(IdentityMixin, Connection):
             raise self.classify(e, "read organization " + t.owner)
         if can_create is None:
             return unsupported(
-                f"GitHub did not report whether members of {t.owner} may create repositories; the App may need Organization administration: read"
+                f"GitHub did not report whether members of {t.owner} may create repositories; {self.who} may need Organization administration: read"
             )
         if not can_create:
             return denied(f"{login} is a member of organization {t.owner}, whose members may not create repositories")
@@ -919,7 +1008,7 @@ class GitHubConnection(IdentityMixin, Connection):
                 self._get(ctx, team_path, decode=False)
             except Exception as e2:  # noqa: BLE001 - classified below
                 if api_status(e2) == 404:
-                    return unknown_decision(Code.RESOURCE_NOT_VISIBLE, f"team {t} does not exist or is not visible to the App")
+                    return unknown_decision(Code.RESOURCE_NOT_VISIBLE, f"team {t} does not exist or is not visible to {self.who}")
                 raise self.classify(e2, "read team " + str(t))
             return denied(f"{login} is not a member of team {t}")
         if m.state == "":
@@ -938,6 +1027,8 @@ class GitHubConnection(IdentityMixin, Connection):
         """Read the App and its installation with the JWT, then check the
         installation's permissions: metadata and members must be readable,
         and anything writable is reported as over-privileged."""
+        if self.auth_mode == AUTH_TOKEN:
+            return self._probe_token(ctx)
         try:
             _, v = self.app.get_json(ctx, "/app")
             d = jsonx.obj(v)
@@ -968,4 +1059,33 @@ class GitHubConnection(IdentityMixin, Connection):
                     warnings.append(
                         "organization " + self.org + " has no SAML identity provider; identity_mode saml will not resolve anyone (use template or map_file)"
                     )
+        return ProbeResult(summary=summary, warnings=tuple(warnings))
+
+    def _probe_token(self, ctx: Context) -> ProbeResult:
+        """Read the organization with the token. A classic token reports its
+        scopes (X-OAuth-Scopes): any that writes is over-privileged. A
+        fine-grained or installation token reports none."""
+        try:
+            resp, v = self.rest.get_json(ctx, "/orgs/" + httpx.path_escape(self.org))
+            jsonx.obj(v)
+        except Exception as e:  # noqa: BLE001 - classified below
+            if httpx.status(e) == 404:
+                raise errorf(Code.CREDENTIAL_REJECTED, f"organization {self.org} is not visible to the token")
+            raise self.classify(e, "read organization " + self.org)
+        warnings: list[str] = []
+        raw = resp.header.get("X-OAuth-Scopes")
+        scopes = sorted({go_trim_space(x) for x in raw.split(",") if go_trim_space(x) != ""})
+        for sc in scopes:
+            if sc in ("repo", "public_repo"):
+                warnings.append(
+                    f"over-privileged: the token has scope {sc}, which classic tokens need to read repositories but which also writes; "
+                    "a fine-grained token with read permissions only is narrower"
+                )
+            elif sc not in READ_SCOPES:
+                warnings.append(f"over-privileged: the token has scope {sc}; toolpass only reads")
+        if self.mode == MODE_SAML:
+            warnings.append("identity_mode saml with a token: SAML identities are readable only by an organization owner's token; checks are unknown otherwise")
+        summary = f"token reads organization {self.org}"
+        if scopes:
+            summary += " (scopes " + ", ".join(scopes) + ")"
         return ProbeResult(summary=summary, warnings=tuple(warnings))

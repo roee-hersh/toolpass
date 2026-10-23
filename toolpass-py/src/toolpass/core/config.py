@@ -8,6 +8,7 @@ reported with file:line, all of them in one pass.
 from __future__ import annotations
 
 import collections
+import secrets
 import os
 import re
 from collections.abc import Mapping
@@ -486,6 +487,11 @@ class _Loader_:
                 self.errf(node, f"connection {q}: integration {integ.name()} does not accept key {go_quote(key)} (accepted: {_accepted_keys(integ)})")
                 ok = False
                 continue
+            if f.code:
+                if val != IN_CODE:
+                    self.errf(node, f"connection {q}: {key} takes a Python value given in code, Toolpass(connections=[...]); a config file cannot carry it")
+                    ok = False
+                continue
             if f.secret:
                 try:
                     secrets[key] = secretmod.parse(val)
@@ -606,14 +612,21 @@ def _atoi(s: str) -> int | None:
     return int(s)
 
 
+# Stands in for a code field's value while a mapping is validated as YAML.
+# Random per process, so a config file cannot name it and pass validation.
+IN_CODE = "<given in code " + secrets.token_hex(8) + ">"
+
+
 def from_mapping(doc: Mapping[str, Any], reg: Registry, name: str = "<config>", *, require_api_key: bool = True) -> Config:
     """Validate a config given as Python data (connections configured in
     code) with exactly the rules of the file. Values are rendered to YAML
     and loaded, so a dict and a file can never be validated differently.
     Secret fields may be given as Secret objects (literal, env or file);
-    they are applied after validation."""
+    they are applied after validation, and so are the Python values of code
+    fields (a callable)."""
     plain: dict[str, Any] = {}
     in_code: dict[tuple[int, str], Secret] = {}
+    objects: dict[tuple[int, str], Any] = {}
     for k, v in doc.items():
         if k == "connections" and isinstance(v, (list, tuple)):
             conns = []
@@ -622,8 +635,12 @@ def from_mapping(doc: Mapping[str, Any], reg: Registry, name: str = "<config>", 
                     cc: dict[str, Any] = {}
                     integ = reg.lookup(c["integration"]) if isinstance(c.get("integration"), str) else None
                     secret_fields = {f.name for f in integ.fields() if f.secret} if integ is not None else None
+                    code_fields = {f.name for f in integ.fields() if f.code} if integ is not None else set()
                     for ck, cv in c.items():
-                        if isinstance(cv, Secret):
+                        if ck in code_fields and not isinstance(cv, str):
+                            objects[(i, str(ck))] = cv
+                            cc[ck] = IN_CODE
+                        elif isinstance(cv, Secret):
                             # Only a secret field takes a Secret; anywhere else it
                             # would be validated as the placeholder reference.
                             if secret_fields is not None and ck not in secret_fields:
@@ -643,6 +660,12 @@ def from_mapping(doc: Mapping[str, Any], reg: Registry, name: str = "<config>", 
             plain[k] = v
     text = yaml.safe_dump(_stringify(plain), sort_keys=False, allow_unicode=True)
     cfg = parse(name, text, reg, require_api_key=require_api_key)
+    if objects:
+        by_index = _connection_indexes(plain.get("connections"))
+        for (i, key), obj in objects.items():
+            for s in cfg.connections:
+                if s.id == by_index.get(i):
+                    s._objects[key] = obj
     if in_code:
         by_index = _connection_indexes(plain.get("connections"))
         for (i, key), sec in in_code.items():
