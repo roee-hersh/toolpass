@@ -127,9 +127,9 @@ class FakeConnection(Connection):
             return ()
         raise user_not_found(f"no account for {user.email}")
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
         """user_groups, handed to kubernetes as mapped when groups_mapped."""
-        return KubernetesSubject(groups=self.user_groups(ctx, User(email=email)), mapped=self.groups_mapped)
+        return KubernetesSubject(groups=self.user_groups(ctx, user), mapped=self.groups_mapped)
 
     def resolve_identity(self, ctx: Context, u: User) -> Identity:
         """Known users and admins resolve; an email containing "ambiguous"

@@ -31,6 +31,7 @@ __all__ = [
     "CAP_KUBERNETES_SUBJECT",
     "COMMON_FIELDS",
     "DEFAULT_TIMEOUT",
+    "MAX_TOKEN",
     "CheckRequest",
     "Connection",
     "Deps",
@@ -59,6 +60,9 @@ __all__ = [
 
 # The per-check budget when a connection sets none.
 DEFAULT_TIMEOUT = 8.0
+# The longest token a check may carry: an ID token with a long groups
+# claim is a few KiB.
+MAX_TOKEN = 16 << 10
 
 
 @dataclass(frozen=True)
@@ -68,8 +72,9 @@ class User:
     email: str
     groups: tuple[str, ...] = ()
     # The user's own token from their login (an OIDC ID token), for a
-    # groups_connection that reads the groups from it. Never logged.
-    token: str = ""
+    # groups_connection that reads the groups from it. Never logged, so
+    # not in the repr either.
+    token: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -567,8 +572,8 @@ class KubernetesSubjectSource(Protocol):
     # (an EKS cluster name); the kubernetes connection then requires it.
     kubernetes_needs_cluster: bool
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
-        """The subject for email on cluster ("" when the source needs no
+    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
+        """The subject for the user on cluster ("" when the source needs no
         cluster name). Raise ToolpassError with USER_NOT_FOUND when the
         source has no account for the email; any other exception means the
         lookup itself failed. A user in no group is a subject with no

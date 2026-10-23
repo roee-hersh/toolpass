@@ -43,7 +43,7 @@ PS256 = "PS256"  # RSASSA-PSS with SHA-256 (Microsoft Entra certificate credenti
 
 class CryptoMissing(RuntimeError):
     def __init__(self) -> None:
-        super().__init__('signing with a private key needs the cryptography package: pip install "toolpass[crypto]"')
+        super().__init__('signing and verifying with a key needs the cryptography package: pip install "toolpass[crypto]"')
 
 
 def _crypto() -> Any:
@@ -54,6 +54,16 @@ def _crypto() -> Any:
     except ImportError:
         raise CryptoMissing() from None
     return hashes, serialization, padding, rsa, x509
+
+
+def _asymmetric() -> Any:
+    """The elliptic-curve and signature helpers, after _crypto."""
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+    except ImportError:
+        raise CryptoMissing() from None
+    return ec, utils, InvalidSignature
 
 
 def _der_elements(der: bytes, n: int) -> list[int]:
@@ -232,19 +242,9 @@ def sign(key: Any, alg: str, data: bytes) -> bytes:
 
 def verify(pub: Any, alg: str, data: bytes, sig: bytes) -> None:
     """Check a signature made by sign; raise on failure."""
-    from cryptography.exceptions import InvalidSignature
-
-    hashes, _, padding, _, _ = _crypto()
-    if alg == RS256:
-        pad: Any = padding.PKCS1v15()
-    elif alg == PS256:
-        pad = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
-    else:
+    if alg not in (RS256, PS256):
         raise ValueError(f"unsupported algorithm {go_quote(alg)}")
-    try:
-        pub.verify(sig, data, pad, hashes.SHA256())
-    except InvalidSignature:
-        raise ValueError("crypto/rsa: verification error") from None
+    verify_jws(pub, alg, data, sig)
 
 
 _JWS_HASHES = {"256": "SHA256", "384": "SHA384", "512": "SHA512"}
@@ -258,10 +258,8 @@ def verify_jws(pub: Any, alg: str, data: bytes, sig: bytes) -> None:
     """Check the signature of a compact JWS made with alg by the holder of
     pub (an RSA or EC public key); raise ValueError on failure or for an
     algorithm outside ASYMMETRIC_ALGS."""
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils
-
-    hashes, _, padding, _, _ = _crypto()
+    hashes, _, padding, rsa, _ = _crypto()
+    ec, utils, invalid_signature = _asymmetric()
     if alg not in ASYMMETRIC_ALGS:
         raise ValueError(f"unsupported algorithm {go_quote(alg)}")
     h = getattr(hashes, _JWS_HASHES[alg[2:]])()
@@ -279,8 +277,8 @@ def verify_jws(pub: Any, alg: str, data: bytes, sig: bytes) -> None:
             raise ValueError(f"{alg} needs an RSA key")
         pad: Any = padding.PKCS1v15() if alg.startswith("RS") else padding.PSS(mgf=padding.MGF1(h), salt_length=h.digest_size)
         pub.verify(sig, data, pad, h)
-    except InvalidSignature:
-        raise ValueError("crypto: verification error") from None
+    except invalid_signature:
+        raise ValueError("crypto/ecdsa: verification error" if alg.startswith("ES") else "crypto/rsa: verification error") from None
 
 
 _JWK_CURVES = {"P-256": "SECP256R1", "P-384": "SECP384R1", "P-521": "SECP521R1"}
@@ -290,7 +288,8 @@ def jwk_public_key(jwk: Any) -> Any:
     """The public key of a JWK (RFC 7517): an RSA key from n and e, an EC
     key from crv, x and y. Anything else (a symmetric key, an unknown
     curve, a malformed member) is a ValueError."""
-    from cryptography.hazmat.primitives.asymmetric import ec, rsa
+    _, _, _, rsa, _ = _crypto()
+    ec, _, _ = _asymmetric()
 
     if not isinstance(jwk, dict):
         raise ValueError("jwk is not an object")

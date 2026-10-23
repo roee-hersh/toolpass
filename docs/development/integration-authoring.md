@@ -56,7 +56,7 @@ class Connection(ABC):
   returns `{CAP_GROUPS}` from `provides()`; every integration with a `groups_connection`
   (`groups_connection_field`) then accepts it. A source with cluster-specific rules (EKS access
   entries, GKE's security group) implements `KubernetesSubjectSource` (`kubernetes_subject(ctx,
-  email, cluster)` and `kubernetes_needs_cluster`) with `CAP_KUBERNETES_SUBJECT`, which only the
+  user, cluster)` and `kubernetes_needs_cluster`) with `CAP_KUBERNETES_SUBJECT`, which only the
   kubernetes connection takes. An integration that grants by group declares
   `groups_connection_field` and, in `resolve_identity`, asks the source when the caller sent no
   groups; see argocd for the pattern.

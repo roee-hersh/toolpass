@@ -157,5 +157,5 @@ def test_config_accepts_every_groups_source_and_rejects_others() -> None:
         "    groups_connection: w\n  - id: w\n    integration: aws\n    account_id: '123456789012'\n"
         "    role_arn: arn:aws:iam::123456789012:role/r\n    region: eu-west-1\n    credential: env:A\n"
     )
-    with pytest.raises(Exception, match=r"groups_connection must name a fake, googleworkspace, microsoft365, okta connection, but \"w\" is aws"):
+    with pytest.raises(Exception, match=r"groups_connection must name a fake, googleworkspace, microsoft365, oidc, okta connection, but \"w\" is aws"):
         parse_config("t.yaml", bad, registry())

@@ -140,7 +140,7 @@ _Scope = MutableMapping[str, Any]
 _Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
 _Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
-_SessionKey = tuple[str, tuple[str, ...] | None, str | None, bytes]
+_SessionKey = tuple[str, tuple[str, ...] | None, bytes]
 
 
 def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
@@ -195,11 +195,15 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
     def session_for(user: str, groups: tuple[str, ...] | None, token: str | None, sid: bytes | None) -> Session:
         if sid is None:
             return Session(user, groups=groups, token=token)
-        k = (user, groups, token, sid)
+        # A refreshed token mid-conversation keeps the conversation's
+        # Session (its limits and guards) and carries the new token.
+        k = (user, groups, sid)
         with lock:
             session = remembered.get(k)
             if session is None:
                 session = remembered[k] = Session(user, groups=groups, token=token)
+            elif token is not None and session.token != token:
+                session.token = token
                 while len(remembered) > _REMEMBERED:
                     remembered.popitem(last=False)
             else:
@@ -271,7 +275,7 @@ def session_from_header(app: _ASGIApp, *, key: str | None = None) -> _ASGIApp:
         finally:
             if sid is not None and not named and kind == "http" and scope.get("method") == "DELETE":
                 with lock:
-                    remembered.pop((user, groups, user_token, sid), None)
+                    remembered.pop((user, groups, sid), None)
 
     return wrapped
 

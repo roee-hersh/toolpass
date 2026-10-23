@@ -33,7 +33,7 @@ from toolpass.core.decision import (
 )
 from toolpass.core.declog import DecisionLog, Entry
 from toolpass.core.errors import as_error
-from toolpass.core.integration import CheckRequest, Connection, Deps, Identity, Integration, ProbeResult, Settings, User
+from toolpass.core.integration import MAX_TOKEN, CheckRequest, Connection, Deps, Identity, Integration, ProbeResult, Settings, User
 from toolpass.core.log import Logger
 
 if TYPE_CHECKING:
@@ -52,8 +52,9 @@ class Request:
     resource: str
     groups: list[str] | tuple[str, ...] | None = None
     # The user's own token from their login (an OIDC ID token), read by an
-    # oidc groups_connection. Never logged or cached in clear.
-    token: str = ""
+    # oidc groups_connection. Never logged or cached in clear, so not in
+    # the repr either.
+    token: str = field(default="", repr=False)
     # An answer straight from the upstream system: the decision cache, the
     # identity cache and the lookups integrations cache themselves are not
     # consulted, and what the request learns replaces their entries.
@@ -351,7 +352,6 @@ class Engine:
 _MAX_EMAIL = 320
 _MAX_GROUPS = 200
 _MAX_GROUP = 256
-_MAX_TOKEN = 16 << 10
 
 
 # Non-ASCII letters whose case mapping or simple case folding lands on an
@@ -407,8 +407,8 @@ def _validate_token(t: str) -> None:
     KiB)."""
     if not isinstance(t, str):
         raise ValueError("token must be a string")
-    if len(t) > _MAX_TOKEN:
-        raise ValueError(f"token is longer than {_MAX_TOKEN} bytes")
+    if len(t) > MAX_TOKEN:
+        raise ValueError(f"token is longer than {MAX_TOKEN} bytes")
     for ch in t:
         if not 0x21 <= ord(ch) <= 0x7E:
             raise ValueError("token contains whitespace, a control character or a non-ASCII character")

@@ -682,7 +682,7 @@ class AWSConnection(IdentityResolver, Connection):
             raise errorf(Code.UPSTREAM_ERROR, "SimulatePrincipalPolicy returned an unknown decision")
         return out
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
         """The Kubernetes groups (and username) EKS gives the user on
         cluster: the email's IAM principals, as resolve_identity finds them,
         each looked up with eks:DescribeAccessEntry. The groups of every
@@ -694,7 +694,8 @@ class AWSConnection(IdentityResolver, Connection):
         principal has an entry; tried names the principals without one, so
         the kubernetes connection can look them up in aws-auth."""
         validate_eks_cluster(cluster)
-        principals, missing = self._kubernetes_principals(ctx, email)
+        email = user.email
+        principals, missing = self._kubernetes_principals(ctx, user)
         if not principals:
             text = f"{email} has no IAM principal in account {self.account_id} to look up on EKS cluster {cluster}"
             if missing:
@@ -713,17 +714,21 @@ class AWSConnection(IdentityResolver, Connection):
         username, groups = merge_mappings(found, email)
         return KubernetesSubject(username=username, groups=groups, mapped=True, tried=tuple(unmapped))
 
-    def _kubernetes_principals(self, ctx: Context, email: str) -> tuple[list[Principal], list[str]]:
+    def _kubernetes_principals(self, ctx: Context, user: User) -> tuple[list[Principal], list[str]]:
+        """The user's principals, as for a check of a user who sent no
+        groups (the kubernetes connection asks only when it got none); the
+        token travels, for an oidc groups_connection of this connection."""
+        user = User(email=user.email, token=user.token)
         if self.mode == "static_map":
             assert self.role_map is not None
-            email = go_trim_space(email)
+            email = go_trim_space(user.email)
             if email == "" or "@" not in email:
                 raise user_not_found(f"{go_quote(email)} is not an email address")
-            arns = self.role_map.lookup(email, self._static_groups(ctx, User(email=email)))
+            arns = self.role_map.lookup(email, self._static_groups(ctx, user))
             if not arns:
                 raise user_not_found(f"{email} and its groups are not in role_map_file")
             return [Principal(arn=arn, kind="role", name=_role_name(arn)) for arn in arns], []
-        ident = self.resolve_identity(ctx, User(email=email))
+        ident = self.resolve_identity(ctx, user)
         if ident.attr("user_status") == "DISABLED":
             raise user_not_found(f"{ident.display} is disabled in IAM Identity Center")
         nat = ident.native if isinstance(ident.native, Native) else None

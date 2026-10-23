@@ -1227,11 +1227,11 @@ def test_user_groups_member_group_ids(env: Env) -> None:
     assert isinstance(c, Microsoft365Connection)
     f.groups[DANA_ID] = [GROUP_A, GROUP_B, GROUP_A.upper()]
     # Lower-cased object ids, once each: what an Entra groups claim carries.
-    assert c.user_groups(background(), "dana@example.com") == (GROUP_A, GROUP_B)
+    assert c.user_groups(background(), User(email="dana@example.com")) == (GROUP_A, GROUP_B)
     last = srv.last_call()
     assert last.method == "POST" and last.path == "/v1.0/users/" + DANA_ID + "/getMemberGroups", f"{last.method} {last.path}"
     assert last.json() == {"securityEnabledOnly": False}
-    assert c.user_groups(background(), "bob@example.com") == ()
+    assert c.user_groups(background(), User(email="bob@example.com")) == ()
     assert c.groups_claim_limit == 200
 
 
@@ -1240,5 +1240,5 @@ def test_user_groups_unknown_and_disabled(env: Env) -> None:
     assert isinstance(c, Microsoft365Connection)
     for email, want in (("nobody@example.com", "no Entra user"), ("off@example.com", "disabled")):
         with pytest.raises(ToolpassError) as ei:
-            c.user_groups(background(), email)
+            c.user_groups(background(), User(email=email))
         assert ei.value.code == Code.USER_NOT_FOUND and want in ei.value.text, ei.value

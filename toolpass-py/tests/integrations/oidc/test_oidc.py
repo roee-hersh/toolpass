@@ -115,6 +115,7 @@ def setup() -> Iterator[Setup]:
         deps, _ = itest.deps(srv, now=clock)
         v = {"issuer": p.issuer, "audience": AUD, "groups_claim": "groups", "email_claim": "email"}
         v.update(values or {})
+        v["issuer"] = v["issuer"].format(issuer=p.issuer)
         c = OIDC().new(background(), itest.settings("sso", "oidc", v), deps)
         assert isinstance(c, OIDCConnection)
         return p, c, clock
@@ -149,6 +150,22 @@ def test_groups_from_a_verified_token(setup: Setup) -> None:
     assert groups(c, p.token({"groups": None})) == ()
     ident = c.resolve_identity(background(), User(email="dana@example.com", token=p.token()))
     assert ident.id == "00u1" and ident.groups == ("sre", "developers")
+
+
+def test_issuer_trailing_slash(setup: Setup) -> None:
+    # Auth0's iss ends in "/"; the URL is written either way.
+    p, c, _ = setup({"issuer": "{issuer}/"})
+    assert c.issuer == p.issuer
+    p.discovery["issuer"] = p.issuer + "/"
+    assert groups(c, p.token(iss=p.issuer + "/")) == ("sre", "developers")
+    assert groups(c, p.token(iss=p.issuer)) == ("sre", "developers")
+
+
+def test_entra_overage_is_unknown(setup: Setup) -> None:
+    p, c, _ = setup()
+    tok = p.token({"groups": None, "_claim_names": {"groups": "src1"}, "_claim_sources": {"src1": {"endpoint": "https://graph.microsoft.com/..."}}})
+    e = refused(c, tok)
+    assert e.code == Code.UNSUPPORTED and "overage" in e.text, e
 
 
 def test_aud_as_a_list_and_other_claim_names(setup: Setup) -> None:

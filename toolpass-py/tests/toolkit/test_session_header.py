@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from toolpass import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, USER_HEADER, Session, current_session, session_from_header
+from toolpass import GROUPS_HEADER, KEY_HEADER, SESSION_HEADER, TOKEN_HEADER, USER_HEADER, Session, current_session, session_from_header
 
 SEEN: list[Session | None] = []
 SENT: list[dict[str, Any]] = []
@@ -58,6 +58,24 @@ def test_groups() -> None:
         "toolpass: the request carries more than one X-Toolpass-Groups header",
     )
     assert SEEN == []
+
+
+def test_token() -> None:
+    wrapped = session_from_header(app)
+    dana, sid = (b"x-toolpass-user", b"dana@example.com"), (b"mcp-session-id", b"s1")
+    assert call(wrapped, [dana, sid, (b"x-toolpass-token", b" eyJ.a.b ")]) == (200, "ok")
+    first = SEEN[0]
+    assert first is not None and first.token == "eyJ.a.b"
+    # A refreshed token keeps the conversation's session and carries the new token.
+    call(wrapped, [dana, sid, (b"x-toolpass-token", b"eyJ.c.d")])
+    assert SEEN[0] is first and first.token == "eyJ.c.d"
+    call(wrapped, [dana, sid])
+    assert SEEN[0] is first and first.token == "eyJ.c.d", "a request without the header keeps the last token"
+    assert call(wrapped, [dana, (b"x-toolpass-token", b"a"), (b"x-toolpass-token", b"b")]) == (
+        400,
+        "toolpass: the request carries more than one X-Toolpass-Token header",
+    )
+    assert "token=" not in repr(first)
 
 
 def test_no_header_means_no_session() -> None:
@@ -165,7 +183,13 @@ def test_other_scopes_pass_through() -> None:
 
 
 def test_header_names() -> None:
-    assert (USER_HEADER, GROUPS_HEADER, SESSION_HEADER, KEY_HEADER) == ("X-Toolpass-User", "X-Toolpass-Groups", "X-Toolpass-Session", "X-Toolpass-Key")
+    assert (USER_HEADER, GROUPS_HEADER, SESSION_HEADER, KEY_HEADER, TOKEN_HEADER) == (
+        "X-Toolpass-User",
+        "X-Toolpass-Groups",
+        "X-Toolpass-Session",
+        "X-Toolpass-Key",
+        "X-Toolpass-Token",
+    )
 
 
 def call_from(wrapped: Any, client: Any, headers: list[tuple[bytes, bytes]]) -> tuple[int, str]:

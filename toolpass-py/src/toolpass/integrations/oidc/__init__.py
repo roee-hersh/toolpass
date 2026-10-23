@@ -40,7 +40,7 @@ from toolpass.core.integration import (
 )
 from toolpass.net import httpx
 
-__all__ = ["CLOCK_SKEW", "INTEGRATION", "KEYS_TTL", "Integration", "OIDCConnection"]
+__all__ = ["CLOCK_SKEW", "INTEGRATION", "KEYS_RETRY", "KEYS_TTL", "OIDC", "OIDCConnection"]
 
 # How long the discovery document and the signing keys are reused.
 KEYS_TTL = 3600.0
@@ -49,9 +49,6 @@ KEYS_TTL = 3600.0
 KEYS_RETRY = 60.0
 # Tolerance on exp and nbf, as providers and systems usually allow.
 CLOCK_SKEW = 60.0
-# The largest token read: an ID token with a long groups claim is a few KiB.
-MAX_TOKEN = 16 << 10
-
 DISCOVERY_PATH = "/.well-known/openid-configuration"
 
 
@@ -148,6 +145,15 @@ class OIDCConnection(Connection):
     def _groups_of(self, claims: dict[str, Any]) -> tuple[str, ...]:
         raw = claims.get(self.groups_claim)
         if raw is None:
+            # A distributed claim (OIDC Core 5.6.2): the provider names the
+            # claim in _claim_names and leaves it for the system to fetch
+            # (Entra ID's "overage" above its group cap). What the system
+            # saw is unknown here.
+            names = claims.get("_claim_names")
+            if isinstance(names, dict) and self.groups_claim in names:
+                raise errorf(
+                    Code.UNSUPPORTED, f"the token carries its {self.groups_claim} claim by reference (an overage); which groups the system saw is unknown"
+                )
             return ()
         if not isinstance(raw, list) or not all(isinstance(g, str) for g in raw):
             raise errorf(Code.UNSUPPORTED, f"the token's {self.groups_claim} claim is not a list of strings")
@@ -166,8 +172,6 @@ class OIDCConnection(Connection):
         token = u.token
         if token == "":
             raise errorf(Code.INVALID_REQUEST, "no token: an oidc groups_connection reads the user's groups from the ID token sent in the check's token field")
-        if len(token) > MAX_TOKEN:
-            raise errorf(Code.INVALID_REQUEST, "token is too long")
         parts = token.split(".")
         if len(parts) != 3:
             raise errorf(Code.INVALID_REQUEST, "token is not a compact JWS (header.payload.signature)")
@@ -194,7 +198,7 @@ class OIDCConnection(Connection):
         return claims
 
     def _check_claims(self, claims: dict[str, Any], email: str) -> None:
-        if claims.get("iss") != self.issuer:
+        if not _same_issuer(claims.get("iss"), self.issuer):
             raise errorf(Code.INVALID_REQUEST, f"token issuer {go_quote(str(claims.get('iss')))} is not {go_quote(self.issuer)}")
         aud = claims.get("aud")
         auds = aud if isinstance(aud, list) else [aud]
@@ -240,7 +244,7 @@ class OIDCConnection(Connection):
         try:
             _, v = self.http.get_json(ctx, DISCOVERY_PATH)
             doc = jsonx.obj(v)
-            if doc.get("issuer") != self.issuer:
+            if not _same_issuer(doc.get("issuer"), self.issuer):
                 raise ValueError(f"the discovery document names issuer {go_quote(str(doc.get('issuer')))}, not {go_quote(self.issuer)}")
             uri = jsonx.s(doc, "jwks_uri")
             validate_https_url(uri)
@@ -296,6 +300,12 @@ def _select(keys: dict[str, Any], kid: str | None, alg: str) -> Any:
     kty = "EC" if alg.startswith("ES") else "RSA"
     same = [k for k in keys.values() if k.get("kty") == kty]
     return same[0] if len(same) == 1 else None
+
+
+def _same_issuer(a: Any, b: str) -> bool:
+    """Equal issuers, a trailing slash aside: a provider's iss may end in
+    one (Auth0) while its URL is written without."""
+    return isinstance(a, str) and a.rstrip("/") == b.rstrip("/")
 
 
 def _same_email(a: str, b: str) -> bool:

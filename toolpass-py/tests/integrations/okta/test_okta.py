@@ -134,12 +134,12 @@ def test_resolve_identity(setup: Setup) -> None:
 def test_user_groups(setup: Setup) -> None:
     _, _, c = setup()
     assert isinstance(c, OktaConnection)
-    assert c.user_groups(background(), "dana@example.com") == ("Everyone", "platform-team", "viewers")
-    assert c.user_groups(background(), "bob@example.com") == ("viewers",)
+    assert c.user_groups(background(), User(email="dana@example.com")) == ("Everyone", "platform-team", "viewers")
+    assert c.user_groups(background(), User(email="bob@example.com")) == ("viewers",)
     assert c.groups_claim_limit == 100
     for email in ("off@example.com", "gone@example.com", "new@example.com", "nobody@example.com"):
         with pytest.raises(ToolpassError) as ei:
-            c.user_groups(background(), email)
+            c.user_groups(background(), User(email=email))
         assert ei.value.code == Code.USER_NOT_FOUND, (email, ei.value)
 
 

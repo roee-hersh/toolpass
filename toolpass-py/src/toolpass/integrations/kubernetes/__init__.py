@@ -231,7 +231,7 @@ class Connection(integ.Connection):
         if not u.groups and self.directory is not None:
             groups.extend(self._prefixed(integ.claimed_groups(self.directory, ctx, u), " from groups_connection"))
         elif not u.groups and self.groups_source is not None:
-            subject = self._subject(ctx, u.email)
+            subject = self._subject(ctx, u)
             if subject.username != "":
                 name = subject.username
             if subject.mapped:
@@ -270,12 +270,13 @@ class Connection(integ.Connection):
             out.append(self.prefix + g)
         return out
 
-    def _subject(self, ctx: Context, email: str) -> integ.KubernetesSubject:
+    def _subject(self, ctx: Context, u: integ.User) -> integ.KubernetesSubject:
         """Ask groups_connection, then (eks_aws_auth) the aws-auth ConfigMap
         for each principal that has no access entry, as EKS falls back to
         aws-auth per principal on an API_AND_CONFIG_MAP cluster."""
         assert self.groups_source is not None
-        subject = self.groups_source.kubernetes_subject(ctx, email, self.eks_cluster)
+        email = u.email
+        subject = self.groups_source.kubernetes_subject(ctx, u, self.eks_cluster)
         tried = ", ".join(subject.tried) or "none"
         if self.eks_aws_auth and subject.tried:
             from toolpass.integrations.aws.eks import match_aws_auth, merge_mappings

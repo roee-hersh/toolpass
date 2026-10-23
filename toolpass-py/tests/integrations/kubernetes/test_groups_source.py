@@ -45,11 +45,11 @@ class Source:
     kubernetes_needs_cluster: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
-        self.calls.append((email, cluster))
-        s = self.subjects.get(email)
+    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
+        self.calls.append((user.email, cluster))
+        s = self.subjects.get(user.email)
         if s is None:
-            raise user_not_found(f"no account for {email}")
+            raise user_not_found(f"no account for {user.email}")
         return s
 
 
@@ -346,7 +346,7 @@ def test_config_accepts_every_source_and_rejects_others() -> None:
     cfg = parse_config("t.yaml", ok, registry())
     assert [s.id for s in cfg.connections] == ["d", "k"], "the source must be built first"
     bad = base + "    groups_connection: j\n  - id: j\n    integration: jira\n    url: https://x.atlassian.net\n    credential: env:J\n    username: a@b.c\n"
-    with pytest.raises(Exception, match=r"groups_connection must name a aws, fake, googleworkspace, microsoft365, okta connection, but \"j\" is jira"):
+    with pytest.raises(Exception, match=r"groups_connection must name a aws, fake, googleworkspace, microsoft365, oidc, okta connection, but \"j\" is jira"):
         parse_config("t.yaml", bad, registry())
 
 

@@ -806,13 +806,13 @@ class GoogleWorkspaceConnection(Connection):
     # kubernetes_subject needs no cluster name.
     kubernetes_needs_cluster = False
 
-    def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
+    def kubernetes_subject(self, ctx: Context, user: User, cluster: str) -> KubernetesSubject:
         """The user's groups as GKE's Google Groups for RBAC names them:
         user_groups, of which with gke_security_group set only the groups
         that are direct members of it are kept, as GKE keeps only groups
         nested in gke-security-groups; its members are reused for a minute
         across users. The username is the primary email."""
-        ident = self._active_user(ctx, email)
+        ident = self._active_user(ctx, user.email)
         groups = self._group_emails(ctx, ident)
         if self.gke_security_group != "":
             allowed_groups = self.gke_groups.do(ctx, self.gke_security_group, lambda ctx: (self._gke_groups(ctx), GKE_GROUPS_TTL))

@@ -30,7 +30,7 @@ None. toolpass reads the provider's public discovery document and signing keys.
 
 | Key | Meaning |
 |---|---|
-| `issuer` | the provider's issuer URL, exactly as the token's `iss` claim and the discovery document name it (`https://`; a trailing `/` is dropped) |
+| `issuer` | the provider's issuer URL, as the token's `iss` claim and the discovery document name it (`https://`; with or without the trailing `/` some providers, such as Auth0, put there) |
 | `audience` | the client id the system logs in with; the token's `aud` must carry it, so a token issued for another application is refused |
 | `groups_claim` | the claim holding the user's groups, as the system's own `oidc.config` names it |
 | `email_claim` | the claim holding the user's email; it must equal the check's `user`, so a token cannot be paired with someone else's email |
@@ -53,7 +53,7 @@ system uses. toolpass never logs it and keys its caches by a digest of it.
 3. The token must be a compact JWS signed with an RSA or ECDSA algorithm (`RS256`, `RS384`,
    `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`); `none` and the HMAC family are
    refused. The key is the one named by `kid`, or the provider's only key of the algorithm's type.
-4. Claims: `iss` equals `issuer`; `aud` (a string or a list) carries `audience`; `exp` is present
+4. Claims: `iss` equals `issuer` (a trailing `/` aside); `aud` (a string or a list) carries `audience`; `exp` is present
    and not past, `nbf` not future, each with a minute of tolerance; `email_claim` equals the check's
    user (ASCII case folded).
 5. The groups are `groups_claim`, a list of strings, each once; an absent claim is no groups.
@@ -67,7 +67,7 @@ the answer is unknown, never a deny or an allow.
 |---|---|
 | The token verifies | the groups go to the connection that asked |
 | No token in the check, a token that does not parse, is signed with the wrong key or algorithm, has the wrong issuer or audience, has expired or is for another email | unknown (`invalid_request`) |
-| `groups_claim` is not a list of strings | unknown (`unsupported`) |
+| `groups_claim` is not a list of strings, or is carried by reference (an Entra ID overage) | unknown (`unsupported`) |
 | The discovery document names another issuer, or the keys cannot be read | unknown (`upstream_error`) |
 | The provider cannot be reached | unknown (`upstream_timeout`, `upstream_error`, `upstream_rate_limited`) |
 
@@ -75,8 +75,8 @@ the answer is unknown, never a deny or an allow.
 
 - Whether the token has been revoked, or the user signed out or been deactivated since it was
   issued: a token is good until `exp`, as it is to the system.
-- A provider that puts the groups in an overage claim rather than the token (Entra ID above 200
-  groups) sends no `groups_claim`, which reads as a user in no group.
+- A provider that puts the groups behind a reference rather than in the token (Entra ID's overage
+  claim, above 200 groups) is answered unknown (`unsupported`): the system fetched them itself.
 - The groups of a provider that only hands them out through its API (a `groups` scope the system
   did not request): then the token carries none.
 
