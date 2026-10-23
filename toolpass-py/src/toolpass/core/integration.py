@@ -480,7 +480,10 @@ class KubernetesSubject:
 @runtime_checkable
 class KubernetesSubjectSource(Protocol):
     """A connection that can name the Kubernetes subject for an email. A
-    kubernetes connection's groups_connection must implement it."""
+    kubernetes connection's groups_connection must implement it, and so must
+    an argocd connection's, which uses only groups and found (with cluster
+    "") and so takes only directories whose groups are what an OIDC groups
+    claim carries."""
 
     # True when kubernetes_subject needs the cluster's name in the source
     # (an EKS cluster name); the kubernetes connection then requires it.

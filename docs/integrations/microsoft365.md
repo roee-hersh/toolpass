@@ -205,13 +205,15 @@ warns for any permission that allows writes (`.ReadWrite.`, `Mail.Send`, ...), f
 permissions that are missing, for the breadth of `Files.Read.All`, and when `Member.Read.Hidden` is
 absent. If it cannot read its own assignments it warns "could not verify permissions".
 
-## Kubernetes groups
+## Kubernetes and Argo CD groups
 
-As a [kubernetes](kubernetes.md#groups-from-the-email) connection's `groups_connection`, the
+As a [kubernetes](kubernetes.md#groups-from-the-email) or [argocd](argocd.md#groups-from-the-email)
+connection's `groups_connection`, the
 connection resolves the user as for a check (a disabled account is `user_not_found`), then calls
 `POST /v1.0/users/{id}/getMemberGroups` with `{"securityEnabledOnly": false}` and returns the object
 ids of every group the user belongs to, directly or transitively, lower-cased: the group names AKS's
-Entra ID integration binds to. `GroupMember.Read.All` covers it. The Kubernetes username stays the
+Entra ID integration binds to, and what an Entra ID groups claim carries to Argo CD.
+`GroupMember.Read.All` covers it. The Kubernetes username stays the
 kubernetes connection's `username_template` (the UPN on AKS).
 
 ## What it cannot see

@@ -920,7 +920,8 @@ class Microsoft365Connection(Connection):
     kubernetes_needs_cluster = False
 
     def kubernetes_subject(self, ctx: Context, email: str, cluster: str) -> KubernetesSubject:
-        """The user's groups as AKS's Entra integration names them: the
+        """The user's groups as AKS's Entra integration (and an Entra ID
+        groups claim, for an argocd groups_connection) names them: the
         object ids, lower-cased, of every group the user belongs to directly
         or transitively (getMemberGroups). The username stays the kubernetes
         connection's username_template. UNVERIFIED: AKS puts the same ids in

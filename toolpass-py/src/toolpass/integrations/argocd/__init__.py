@@ -6,8 +6,8 @@ kubernetes connection and evaluates it with the same rules as the Argo CD
 API server (see the rbac subpackage).
 
 Argo CD reads a user's groups from the identity provider's groups claim. When
-the caller sends none, a groups_connection (an Okta directory) can name them
-from the email instead.
+the caller sends none, a groups_connection (an Okta or Entra ID directory) can
+name them from the email instead.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from toolpass.core import jsonx
 from toolpass.core.cache import TTL
 from toolpass.core.catalog import Action
 from toolpass.core.context import Context
-from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported
+from toolpass.core.decision import Code, Decision, allowed, denied, errorf, unsupported, user_not_found
 from toolpass.core.errors import go_quote, go_trim_space
 from toolpass.core.routes import RouteTable
 from toolpass.integrations import kubernetes
@@ -48,9 +48,16 @@ POLICY_CACHE_TTL = 30.0
 _NAMESPACED = frozenset({rbac.RESOURCE_APPLICATIONS, rbac.RESOURCE_APPLICATION_SETS, rbac.RESOURCE_LOGS, rbac.RESOURCE_EXEC})
 
 # The integrations a groups_connection may name: directories whose groups are
-# what an OIDC groups claim carries. Each connection implements
-# integration.KubernetesSubjectSource, of which only the groups are used.
-GROUP_SOURCES = "okta|fake"
+# what an OIDC groups claim carries (Okta group names, Entra ID group object
+# ids). Each connection implements integration.KubernetesSubjectSource, of
+# which only the groups and found are used.
+GROUP_SOURCES = "okta|microsoft365|fake"
+
+# More groups than an OIDC token carries. UNVERIFIED: Okta's groups claim
+# holds at most 100 groups, and an Entra ID token for a user in more than 200
+# has an overage claim instead of groups, which Argo CD does not resolve; what
+# Argo CD saw for such a user is unknown.
+MAX_SOURCE_GROUPS = 100
 
 
 class Integration(integ.Integration):
@@ -122,7 +129,7 @@ class Integration(integ.Integration):
         ref = s.get("groups_connection")
         if ref != "":
             src = d.connection(ref)
-            if not isinstance(src, integ.KubernetesSubjectSource) or src.kubernetes_needs_cluster:
+            if not isinstance(src, integ.KubernetesSubjectSource):
                 raise ValueError(f"groups_connection {go_quote(ref)} cannot look up the groups of an OIDC login")
             c.groups_source = src
         return c
@@ -298,7 +305,16 @@ class Connection(integ.Connection):
         subject = u.email if self.user_subject == "email" else ""
         groups = tuple(u.groups)
         if not groups and self.groups_source is not None:
-            groups = self.groups_source.kubernetes_subject(ctx, u.email, "").groups
+            found = self.groups_source.kubernetes_subject(ctx, u.email, "")
+            if not found.found:
+                raise user_not_found(f"{u.email} has no account in groups_connection")
+            if len(found.groups) > MAX_SOURCE_GROUPS:
+                raise errorf(
+                    Code.UNSUPPORTED,
+                    f"{u.email} is in {len(found.groups)} groups in groups_connection, more than the {MAX_SOURCE_GROUPS} an OIDC token "
+                    "carries; which of them Argo CD saw is unknown",
+                )
+            groups = found.groups
         return integ.Identity(id=subject, display=u.email, groups=groups)
 
     def check(self, ctx: Context, r: integ.CheckRequest) -> Decision:

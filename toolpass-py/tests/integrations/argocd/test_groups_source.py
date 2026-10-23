@@ -1,5 +1,5 @@
 """groups_connection: where an argocd connection finds the user's groups when
-the caller sends none (the Okta directory behind Argo CD's OIDC login)."""
+the caller sends none (the directory behind Argo CD's OIDC login)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from toolpass.core.context import Context, background
 from toolpass.core.decision import Code, user_not_found
 from toolpass.core.integration import Connection, KubernetesSubject, User
 from toolpass.integrations import kubernetes, registry
-from toolpass.integrations.argocd import Integration
+from toolpass.integrations.argocd import MAX_SOURCE_GROUPS, Integration
 
 
 @dataclass
@@ -111,6 +111,20 @@ def test_user_not_in_source(make: Make) -> None:
     itest.expect_code(check(c, dana, "app.get", "applications:dev/web"), Code.USER_NOT_FOUND)
 
 
+def test_user_known_without_a_mapping(make: Make) -> None:
+    c = make(Source({"dana-ops@example.com": KubernetesSubject(groups=("sre",), found=False)}))
+    itest.expect_code(check(c, dana, "app.get", "applications:dev/web"), Code.USER_NOT_FOUND)
+
+
+def test_more_groups_than_a_token_carries(make: Make) -> None:
+    many = (*(f"g{i}" for i in range(MAX_SOURCE_GROUPS)), "sre")
+    d = check(make(Source({"dana-ops@example.com": KubernetesSubject(groups=many)})), dana, "app.get", "applications:dev/web")
+    itest.expect_code(d, Code.UNSUPPORTED)
+    assert "g99" not in d.text, d
+    c = make(Source({"dana-ops@example.com": KubernetesSubject(groups=many[1:])}))
+    itest.expect_code(check(c, dana, "app.get", "applications:dev/web"), Code.ALLOWED)
+
+
 def test_email_scope_and_subject_still_apply(make: Make) -> None:
     # The policy's g line for dana@example.com reaches her through the email
     # scope, with or without groups from the directory.
@@ -121,11 +135,9 @@ def test_email_scope_and_subject_still_apply(make: Make) -> None:
 def test_source_must_be_a_directory(make: Make) -> None:
     with pytest.raises(ValueError, match="cannot look up the groups of an OIDC login"):
         make(object())
-    with pytest.raises(ValueError, match="cannot look up the groups of an OIDC login"):
-        make(Source(kubernetes_needs_cluster=True))
 
 
-def test_config_accepts_okta_and_fake_and_rejects_others() -> None:
+def test_config_accepts_the_directories_and_rejects_others() -> None:
     base = (
         "api_key: env:K\nconnections:\n"
         "  - id: k\n    integration: kubernetes\n    url: https://k8s.example.com\n    credential: env:T\n"
@@ -137,6 +149,11 @@ def test_config_accepts_okta_and_fake_and_rejects_others() -> None:
     assert ids.index("d") < ids.index("a"), "the source must be built first"
     ok = base + "    groups_connection: o\n  - id: o\n    integration: okta\n    url: https://acme.okta.com\n    credential: env:O\n"
     parse_config("t.yaml", ok, registry())
+    ok = base + (
+        "    groups_connection: m\n  - id: m\n    integration: microsoft365\n    tenant_id: 00000000-0000-0000-0000-000000000000\n"
+        "    client_id: 00000000-0000-0000-0000-000000000001\n    credential: env:M\n"
+    )
+    parse_config("t.yaml", ok, registry())
     bad = base + "    groups_connection: j\n  - id: j\n    integration: jira\n    url: https://x.atlassian.net\n    credential: env:J\n    username: a@b.c\n"
-    with pytest.raises(Exception, match=r"groups_connection must name a okta, fake connection, but \"j\" is jira"):
+    with pytest.raises(Exception, match=r"groups_connection must name a okta, microsoft365, fake connection, but \"j\" is jira"):
         parse_config("t.yaml", bad, registry())

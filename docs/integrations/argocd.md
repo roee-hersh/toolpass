@@ -47,8 +47,8 @@ rules:
 | `kubernetes_connection` | id of the kubernetes connection for the cluster Argo CD runs in |
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
-| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the caller's groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
-| `groups_connection` | optional: the id of an `okta` (or `fake`) connection that names the user's groups when the caller sends none. See [Groups from the email](#groups-from-the-email) |
+| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups (the caller's, or `groups_connection`'s). `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `groups_connection` | optional: the id of an `okta` or `microsoft365` (or `fake`) connection that names the user's groups when the caller sends none. See [Groups from the email](#groups-from-the-email) |
 | `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
@@ -59,13 +59,23 @@ When users log in to Argo CD with OIDC (single sign-on), Argo CD reads their gro
 identity provider's groups claim, and the `g, <group>, role:...` lines of the policy match those
 names. toolpass never sees that token, so the groups are whatever the caller sends.
 
-With `groups_connection` set to an [okta](okta.md) connection, toolpass asks Okta for the user's
-groups whenever the caller sends none, so the email alone is enough. It uses the names of the user's
-Okta groups, which is what an Okta OIDC app's groups claim carries, whether Argo CD talks to Okta
-directly (`oidc.config` in `argocd-cm`) or through Dex. Groups the caller sends win: Okta is not
-asked. A user Okta does not know, or one who cannot sign in (staged, suspended, deprovisioned), is
-answered `user_not_found`, a deny. A user in no group gets the `policy.default` role (and the email,
-when `scopes` includes `email`).
+With `groups_connection` set, toolpass asks that directory for the user's groups whenever the
+caller sends none, so the email alone is enough:
+
+| `groups_connection` names | Groups | Fits |
+|---|---|---|
+| [`okta`](okta.md) | the names of the user's Okta groups | Argo CD logging in through an Okta OIDC app |
+| [`microsoft365`](microsoft365.md) | the object ids of the user's Entra ID groups, lower-cased, transitive | Argo CD logging in through Entra ID, with `g, <object id>, role:...` lines |
+| `fake` | the `groups` field of the fake connection | tests |
+
+That is what the identity provider puts in the groups claim, whether Argo CD talks to it directly
+(`oidc.config` in `argocd-cm`) or through Dex. Groups the caller sends win: the directory is not
+asked. A user the directory does not know, or one who cannot sign in (an Okta user who is staged,
+provisioned, suspended or deprovisioned, a disabled Entra ID account), is answered `user_not_found`,
+a deny. A user in no group gets the `policy.default` role (and the email, when `scopes` includes
+`email`). A user in more than 100 groups is answered unknown (`unsupported`): Okta's groups claim
+holds at most 100, and Entra ID leaves the groups out of a token for a user in more than 200, so
+which groups Argo CD saw is not known.
 
 ```yaml
   - id: okta-main
@@ -79,8 +89,12 @@ when `scopes` includes `email`).
     groups_connection: okta-main
 ```
 
-Okta's `sub` is the Okta user id, not the email, so keep `user_subject: none` unless your Okta app
-was set up to put the email in `sub`.
+Okta's `sub` is the Okta user id and Entra ID's an opaque id, not the email, so keep
+`user_subject: none` unless your app was set up to put the email in `sub`.
+
+When Dex has other connectors too (GitHub, LDAP), a user who logs in through one of them is not in
+the directory and is answered `user_not_found`, though Argo CD would let them in. Have the caller
+send such users' groups, or leave `groups_connection` unset.
 
 ## How the evaluation works
 
@@ -94,7 +108,8 @@ Exactly as in Argo CD:
 3. Effect: some matching `allow` and no matching `deny`.
 4. Order: `policy.default` role first, then the subject, then each group that appears as the first
    element of some `g` line.
-5. Group values are the caller's `groups`. When `scopes` in `argocd-rbac-cm` includes `email`, the
+5. Group values are the caller's `groups` or, when the caller sends none and `groups_connection` is
+   set, the directory's (see [Groups from the email](#groups-from-the-email)). When `scopes` in `argocd-rbac-cm` includes `email`, the
    email is a group value too.
 6. `server.rbac.disableApplicationFineGrainedRBACInheritance` in `argocd-cm` (default true since v3):
    when true `app.update` does not imply `app.update/<resource>`; when false the top-level verb is
@@ -199,16 +214,17 @@ Refused:
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
 | The ServiceAccount may not read the config maps or projects | unknown (`credential_rejected`) |
 | `groups_connection` has no active user with the email | deny (`user_not_found`) |
+| `groups_connection` puts the user in more than 100 groups | unknown (`unsupported`) |
 
 ## What it cannot see
 
 - Policies bound to opaque identity provider subjects (Dex `sub`, `federated_claims.user_id`).
   Use `user_subject: email` only when the subject really is the email.
 - Local Argo CD accounts, project JWT tokens.
-- With `groups_connection`: an Okta app's groups claim is usually filtered (a regex or a prefix in
-  the claim's settings). toolpass uses every group the user is in, so a `g` line naming a group the
-  claim leaves out reads as allowed here while Argo CD denies it. Write the policy only with groups
-  the claim carries.
+- With `groups_connection`: an app's groups claim is often filtered (an Okta claim's regex or
+  prefix, an Entra ID app's "groups assigned to the application"). toolpass uses every group the user
+  is in, so a `g` line naming a group the claim leaves out reads as allowed here while Argo CD denies
+  it. Write the policy only with groups the claim carries.
 - Sync windows, project source/destination restrictions, and anything else enforced outside RBAC.
 - Applications in other namespaces are addressed as `<project>/<namespace>/<name>`; toolpass does not
   look the application up to find its project.
