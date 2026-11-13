@@ -339,9 +339,8 @@ class PagerDutyConnection(Connection):
                     f"{who} has the Responder base role and no responder or manager team role on the teams of {t}; "
                     "whether a Responder may set maintenance windows account-wide is not documented"
                 )
-        elif need == Need.MANAGE:
-            if best == TEAM_ROLE_MANAGER:
-                return allowed(f"{who} is a team manager on a team of {t}, which may {t.action.desc}")
+        elif need == Need.MANAGE and best == TEAM_ROLE_MANAGER:
+            return allowed(f"{who} is a team manager on a team of {t}, which may {t.action.desc}")
         if best == "":
             return denied(f"{who} has the {role_name(role)} base role and no team role on the teams of {t}")
         return denied(f"{who} has the {role_name(role)} base role and is a team {best} on the teams of {t}, which may not {t.action.desc}")
