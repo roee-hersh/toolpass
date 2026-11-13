@@ -287,8 +287,9 @@ class Server:
             return 401, headers, b'{"error":"missing or wrong API key"}\n'
         if origin and not _same_origin(origin, host):
             # A page from another site, in a browser that holds the key or sits behind a
-            # proxy that adds it (DNS rebinding included): a browser names the page's
-            # origin on every such request, and no other MCP client sends the header.
+            # proxy that adds it: a browser names the page's origin on every such request,
+            # and no other MCP client sends the header. (Not a defence against DNS
+            # rebinding, where Origin and Host both carry the attacker's name; the key is.)
             return 403, headers, b'{"error":"cross-origin request"}\n'
         if method != "POST":
             # No stream to open (GET) and no session to end (DELETE).

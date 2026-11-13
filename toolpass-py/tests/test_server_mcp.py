@@ -239,8 +239,7 @@ def test_the_log_never_holds_an_argument_that_names_nothing(started: list[Runnin
 
 def test_a_page_from_another_site_is_refused(mcp: Running) -> None:
     """Browsers name the page's origin; only this server's own is taken, so a
-    key held by a browser or added by a proxy cannot be used by another site
-    (or by a rebound DNS name)."""
+    key held by a browser or added by a proxy cannot be used by another site."""
     body = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping"}).encode()
     here = f"{mcp.host}:{mcp.port}"
     for origin in ("https://evil.example", "null", f"http://evil.example:{mcp.port}", f"http://{here}.evil.example", "http://", "http://[::1"):
