@@ -439,8 +439,6 @@ def _routes() -> list[Route]:
     # Metrics configuration.
     for method, path, perm in (
         ("PUT", "/api/v1/metrics/{metric_name}", "metrics_metadata_write"),
-        ("POST", "/api/v2/metrics/config/bulk-tags", "metric_tags_write"),
-        ("DELETE", "/api/v2/metrics/config/bulk-tags", "metric_tags_write"),
         ("POST", "/api/v2/metrics/{metric_name}/tags", "metric_tags_write"),
         ("PATCH", "/api/v2/metrics/{metric_name}/tags", "metric_tags_write"),
         ("DELETE", "/api/v2/metrics/{metric_name}/tags", "metric_tags_write"),
@@ -449,6 +447,7 @@ def _routes() -> list[Route]:
         ("PUT", "/api/v2/metrics/tag-indexing-rules/{id}", "metric_tags_write"),
         ("DELETE", "/api/v2/metrics/tag-indexing-rules/{id}", "metric_tags_write"),
         ("POST", "/api/v2/metrics/{metric_name}/tag-indexing-rule-exemptions", "metric_tags_write"),
+        ("PUT", "/api/v2/metrics/{metric_name}/tag-indexing-rule-exemptions", "metric_tags_write"),
         ("DELETE", "/api/v2/metrics/{metric_name}/tag-indexing-rule-exemptions", "metric_tags_write"),
         ("POST", "/api/v2/metrics/derived-metrics", "metric_tags_write"),
         ("PUT", "/api/v2/metrics/derived-metrics/{metric_name}", "metric_tags_write"),
@@ -457,6 +456,9 @@ def _routes() -> list[Route]:
         ("DELETE", "/api/v2/metrics/historical-metrics-configurations/{metric_name}", "late_metrics_config_write"),
     ):
         out.append(Route(method, path, _raw(perm), _ORG))
+    # Bulk tag configuration left Datadog's API description; the endpoint may still answer.
+    for method in ("POST", "DELETE"):
+        out.append(Route(method, "/api/v2/metrics/config/bulk-tags", _raw("metric_tags_write"), _ORG, spec=False))
     # The keys' own validity: nothing about the user.
     out.append(Route("GET", "/api/v1/validate", None, "", untrusted_output=False, description="whether the API key is valid"))
     return out
@@ -546,6 +548,7 @@ _OTHER = (
     "/api/v1/security_analytics",
     "/api/v2/actions-datastores",
     "/api/v2/agentless_scanning",
+    "/api/v2/ai-guard",
     "/api/v2/ai_impact",
     "/api/v2/annotation",
     "/api/v2/anonymize_users",
@@ -553,6 +556,7 @@ _OTHER = (
     "/api/v2/apm",
     "/api/v2/audit",
     "/api/v2/bits-ai",
+    "/api/v2/budgets",
     "/api/v2/catalog",
     "/api/v2/change-management",
     "/api/v2/ci",
@@ -563,6 +567,7 @@ _OTHER = (
     "/api/v2/code-coverage",
     "/api/v2/cost",
     "/api/v2/csm",
+    "/api/v2/data-capture",
     "/api/v2/data-observability",
     "/api/v2/datasets",
     "/api/v2/ddsql",
@@ -589,6 +594,7 @@ _OTHER = (
     "/api/v2/login",
     "/api/v2/maintenance_windows",
     "/api/v2/model-lab-api",
+    "/api/v2/model-groups",
     "/api/v2/ndm",
     "/api/v2/oauth2",
     "/api/v2/obs-pipelines",
@@ -600,11 +606,15 @@ _OTHER = (
     "/api/v2/org_group_policy_overrides",
     "/api/v2/org_groups",
     "/api/v2/personal_access_tokens",
+    "/api/v2/policies",
     "/api/v2/prodlytics",
     "/api/v2/product-analytics",
+    "/api/v2/providers",
+    "/api/v2/rate-limits",
     "/api/v2/remote_config",
     "/api/v2/replay",
     "/api/v2/reporting",
+    "/api/v2/routing-rules",
     "/api/v2/saml_configurations",
     "/api/v2/scorecard",
     "/api/v2/seats",
@@ -623,6 +633,7 @@ _OTHER = (
     "/api/v2/usage",
     "/api/v2/user_authorized_clients",
     "/api/v2/web-integrations",
+    "/api/v2/wif",
     "/api/v2/widgets",
 )
 

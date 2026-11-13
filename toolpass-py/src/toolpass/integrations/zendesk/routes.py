@@ -456,7 +456,12 @@ ROUTES = RouteTable(
         **_gone("ticket pins are not modelled", f"{_A}/ticket_content_pins", f"{_A}/ticket_content_pins/{{content_pin_id}}"),
         **_gone("bookmarks are the agent's own and not modelled", f"{_A}/bookmarks", f"{_A}/bookmarks/{{bookmark_id}}"),
         **_gone("saved searches are the agent's own and not modelled", f"{_A}/saved_searches", f"{_A}/saved_searches/{{id}}"),
-        **_gone("approval requests are not modelled", f"{_A}/approval_requests"),
+        **_gone(
+            "approval requests are not modelled",
+            f"{_A}/approval_requests",
+            f"{_A}/approval_clarification_flow_messages",
+            f"{_A}/approval_workflow_instances/**",
+        ),
         **_gone("task lists are not modelled", f"{_A}/task_lists/**"),
         **_gone(
             "subscribes a user to an organization's notifications: not modelled", f"{_A}/organization_subscriptions", f"{_A}/organization_subscriptions/**"

@@ -141,6 +141,8 @@ ROUTING = [
     ("POST", "/api/v2/logs/config/archives", {}, "raw:logs_write_archives", "org", "write"),
     ("PATCH", "/api/v2/metrics/m.x/tags", {}, "raw:metric_tags_write", "org", "write"),
     ("POST", "/api/v2/metrics/derived-metrics", {}, "raw:metric_tags_write", "org", "write"),
+    ("PUT", "/api/v2/metrics/m.x/tag-indexing-rule-exemptions", {}, "raw:metric_tags_write", "org", "write"),
+    ("POST", "/api/v2/metrics/config/bulk-tags", {}, "raw:metric_tags_write", "org", "write"),
     ("PUT", "/api/v2/metrics/derived-metrics/m.x", {}, "raw:metric_tags_write", "org", "write"),
     ("DELETE", "/api/v2/metrics/derived-metrics/m.x", None, "raw:metric_tags_write", "org", "destructive"),
     ("PUT", "/api/v1/metrics/m.x", {}, "raw:metrics_metadata_write", "org", "write"),

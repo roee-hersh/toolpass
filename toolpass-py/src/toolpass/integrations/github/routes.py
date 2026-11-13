@@ -279,8 +279,15 @@ def _routes() -> list[Route]:
         ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"),
         ("DELETE", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"),
         ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers/rerequest"),
+        ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/copilot-code-review"),
+        ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts/{artifact_number}"),
     ):
         out.append(Route(method, path, tr, _REPO))
+    # An issue's artifacts need permission to update the issue, and publish their body.
+    out += [
+        Route("POST", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts", tr, _REPO, sends_out=True),
+        Route("PATCH", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts/{artifact_number}", tr, _REPO, sends_out=True),
+    ]
     # Push: the repository's contents, refs, releases, statuses and runs.
     out += [
         Route("PUT", "/repos/{owner}/{repo}/contents/{path+}", pu, _REPO_AT, body=_branch_field("branch"), sends_out=True),
@@ -406,6 +413,8 @@ def _routes() -> list[Route]:
         ("*", "/repos/{owner}/{repo}/import"),
         ("*", "/repos/{owner}/{repo}/import/{rest+}"),
         ("PATCH", "/repos/{owner}/{repo}/code-quality/setup"),
+        ("PATCH", "/repos/{owner}/{repo}/copilot/code-review/settings"),
+        ("PUT", "/repos/{owner}/{repo}/dependabot/runner-settings"),
         ("PATCH", "/repos/{owner}/{repo}/code-scanning/ai-scan"),
         ("PATCH", "/repos/{owner}/{repo}/code-scanning/default-setup"),
         ("DELETE", "/repos/{owner}/{repo}/code-scanning/analyses/{analysis_id}"),
