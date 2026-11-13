@@ -11,7 +11,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from toolpass.core.context import Context, background
 from toolpass.core.decision import Code, Decision, unknown_decision
@@ -132,6 +132,16 @@ def _decode(body: bytes) -> dict[str, Any]:
     else:
         raise _BadRequest("wrong type for field token")
     return out
+
+
+def _same_origin(origin: str, host: str) -> bool:
+    """True when an Origin header names the host the request was sent to
+    (its Host header), whatever the scheme: the page is this server's own."""
+    try:
+        netloc = urlsplit(origin.strip()).netloc
+    except ValueError:
+        return False
+    return bool(netloc) and bool(host.strip()) and netloc.lower() == host.strip().lower()
 
 
 def _client_ip(addr: str) -> str:
@@ -260,13 +270,26 @@ class Server:
         return res.status, headers, decision_body(res.decision)
 
     def handle_mcp(
-        self, method: str, auth: str, body: bytes | None, remote: str, too_large: bool = False, protocol_version: str = ""
+        self,
+        method: str,
+        auth: str,
+        body: bytes | None,
+        remote: str,
+        too_large: bool = False,
+        protocol_version: str = "",
+        origin: str = "",
+        host: str = "",
     ) -> tuple[int, dict[str, str], bytes]:
         """``POST /mcp``: the permission tools, for an MCP client that holds the API key."""
         headers = {"Content-Type": "application/json", "Cache-Control": "no-store"}
         if not self.authorized(auth):
             headers["WWW-Authenticate"] = 'Bearer realm="toolpass"'
             return 401, headers, b'{"error":"missing or wrong API key"}\n'
+        if origin and not _same_origin(origin, host):
+            # A page from another site, in a browser that holds the key or sits behind a
+            # proxy that adds it (DNS rebinding included): a browser names the page's
+            # origin on every such request, and no other MCP client sends the header.
+            return 403, headers, b'{"error":"cross-origin request"}\n'
         if method != "POST":
             # No stream to open (GET) and no session to end (DELETE).
             headers["Allow"] = "POST"
@@ -434,6 +457,8 @@ class Server:
                             _client_ip(self.client_address[0]),
                             too_large,
                             self.headers.get("MCP-Protocol-Version", ""),
+                            self.headers.get("Origin", ""),
+                            self.headers.get("Host", ""),
                         )
                         if too_large:
                             self.close_connection = True

@@ -22,6 +22,7 @@ are, and falls back.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, Protocol
 
@@ -29,14 +30,13 @@ from toolpass._version import __version__
 from toolpass.core.context import Context, background
 from toolpass.core.decision import Code
 from toolpass.core.engine import Request, Result
+from toolpass.core.integration import Integration
 from toolpass.core.log import Logger, go_json
 
 __all__ = ["PROTOCOL_VERSIONS", "PermissionTools", "clean"]
 
 # Newest first: the first is what a client asking for an unknown revision is offered.
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
-# What a request without the MCP-Protocol-Version header speaks, as the transport defines.
-_ASSUMED_VERSION = "2025-03-26"
 
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
@@ -185,6 +185,19 @@ class _Engine(Protocol):
     def check(self, ctx: Context | None, req: Request) -> Result: ...
 
 
+class _Directory(Protocol):
+    """What the list tools read; ``core.engine.Engine`` has both."""
+
+    def connections(self) -> list[str]: ...
+
+    def integration(self, id: str) -> Integration | None: ...
+
+
+def _not_json(name: str) -> Any:
+    # NaN and Infinity are not JSON; echoed in an id they would make the answer unparseable.
+    raise ValueError(name)
+
+
 class _Duplicate(ValueError):
     pass
 
@@ -253,11 +266,14 @@ class PermissionTools:
     def __init__(self, engine: _Engine, logger: Logger | None = None) -> None:
         self.engine = engine
         self.logger = logger or Logger()
+        # An engine that cannot name its connections (one wrapped in something
+        # that only checks) still answers check_permission; the list tools say so.
+        self._directory: _Directory | None = engine if hasattr(engine, "connections") and hasattr(engine, "integration") else None  # type: ignore[assignment]
 
     def handle(self, body: bytes, protocol_version: str, remote: str) -> tuple[int, dict[str, str], bytes]:
         headers = {"Content-Type": "application/json", "Cache-Control": "no-store"}
         try:
-            msg = json.loads(body.decode("utf-8", "replace"), object_pairs_hook=_no_duplicates)
+            msg = json.loads(body.decode("utf-8", "replace"), object_pairs_hook=_no_duplicates, parse_constant=_not_json)
         except _Duplicate as e:
             return 400, headers, _error(None, _INVALID_REQUEST, f"duplicate field {clean(str(e))!r}")
         except (ValueError, RecursionError):
@@ -272,7 +288,8 @@ class PermissionTools:
                 return 202, {"Cache-Control": "no-store"}, b""
             return 400, headers, _error(None, _INVALID_REQUEST, "the message has neither a method nor an id")
         rid = msg["id"]
-        if isinstance(rid, bool) or not isinstance(rid, (str, int, float)):
+        if isinstance(rid, bool) or not isinstance(rid, (str, int, float)) or (isinstance(rid, float) and not math.isfinite(rid)):
+            # 1e999 decodes to infinity, which no JSON answer can carry.
             return 400, headers, _error(None, _INVALID_REQUEST, "id must be a string or a number")
         if isinstance(rid, str):
             rid = clean(rid)
@@ -314,20 +331,26 @@ class PermissionTools:
         return 200, headers, (go_json({"jsonrpc": "2.0", "id": rid, "result": result}) + "\n").encode()
 
     def _call(self, tool: dict[str, Any], args: dict[str, Any], remote: str) -> dict[str, Any]:
+        """Run one tool. The server log gets the tool and, once they are known
+        to name something, the connection and the action: never an argument as
+        the model wrote it, which could be the email in the wrong place."""
         name = tool["name"]
-        if name == "list_connections":
-            self.logger.info("mcp tool", tool=name, remote=remote)
-            return _result({"connections": [{"id": cid, "integration": integ.name()} for cid, integ in self._connections()]})
-        if name == "list_actions":
-            self.logger.info("mcp tool", tool=name, connection=args["connection"], remote=remote)
-            integ = dict(self._connections()).get(args["connection"])
+        if name != "check_permission":
+            if self._directory is None:
+                self.logger.warn("mcp tool", tool=name, remote=remote, error="this engine cannot list its connections")
+                return _refusal("this toolpass server cannot list its connections; check_permission still answers for a connection id you know")
+            if name == "list_connections":
+                self.logger.info("mcp tool", tool=name, remote=remote)
+                ids = self._directory.connections()
+                return _result({"connections": [{"id": cid, "integration": i.name()} for cid in ids if (i := self._directory.integration(cid)) is not None]})
+            integ = self._directory.integration(args["connection"])
             if integ is None:
-                return _refusal(f"unknown connection {args['connection']!r}; list_connections names the ones there are")
+                self.logger.info("mcp tool", tool=name, code=Code.UNKNOWN_CONNECTION.value, remote=remote)
+                return _refusal(f"unknown connection {args['connection'][:200]!r}; list_connections names the ones there are")
+            self.logger.info("mcp tool", tool=name, connection=args["connection"], remote=remote)
             actions = [{"name": a.name, "description": a.description, **({"pattern": True} if a.pattern else {})} for a in integ.actions()]
             return _result({"connection": args["connection"], "integration": integ.name(), "actions": actions})
-        # check_permission. The decision log records it as it records POST /check;
-        # the user is not written to the server log here either.
-        self.logger.info("mcp tool", tool=name, connection=args["connection"], action=args["action"], remote=remote)
+        # The decision log records the check as it records POST /check.
         res = self.engine.check(
             background(),
             Request(
@@ -341,22 +364,19 @@ class PermissionTools:
             ),
         )
         d = res.decision
-        code = d.reason().split(":", 1)[0].strip()
-        out: dict[str, Any] = {"decision": d.outcome.value, "reason": d.reason(), "code": code}
-        if d.identity:
-            out["identity"] = d.identity
+        code = "" if d.code is None else d.code.value
         # A question that was not asked (a bad email, an unknown action, a resource
         # of the wrong shape) is an error, so the model corrects it rather than
         # reporting "unknown".
-        return _result(out, is_error=code in _NOT_ASKED)
-
-    def _connections(self) -> list[tuple[str, Any]]:
-        """(id, integration) of every connection; none for an engine that cannot name them."""
-        ids = getattr(self.engine, "connections", None)
-        integration = getattr(self.engine, "integration", None)
-        if ids is None or integration is None:
-            return []
-        return [(cid, integ) for cid in ids() if (integ := integration(cid)) is not None]
+        not_asked = code in _NOT_ASKED
+        if not_asked:
+            self.logger.info("mcp tool", tool=name, code=code, remote=remote)
+        else:
+            self.logger.info("mcp tool", tool=name, connection=args["connection"], action=args["action"], code=code, remote=remote)
+        out: dict[str, Any] = {"decision": d.outcome.value, "reason": d.reason(), "code": code}
+        if d.identity:
+            out["identity"] = d.identity
+        return _result(out, is_error=not_asked)
 
 
 def _error(rid: Any, code: int, message: str, data: dict[str, Any] | None = None) -> bytes:

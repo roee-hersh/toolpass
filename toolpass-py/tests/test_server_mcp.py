@@ -198,7 +198,11 @@ def test_arguments_reach_the_engine(started: list[Running]) -> None:
     rec = Recorder()
     r = Running(rec, Logger(JSONHandler(logs)))
     started.append(r)
-    assert r.call("list_connections")["structuredContent"] == {"connections": []}, "an engine that cannot name its connections"
+    # An engine that only checks cannot name its connections: the list tools say so, loudly.
+    for tool, arguments in (("list_connections", {}), ("list_actions", {"connection": "c"})):
+        out = r.call(tool, arguments)
+        assert out["isError"] is True and "cannot list its connections" in out["content"][0]["text"], out
+    assert logs.getvalue().count('"level":"WARN"') == 2
     out = r.call("check_permission", {"user": "a@x.com", "connection": "c", "action": "thing.read", "resource": "thing:1"})
     assert out["structuredContent"] == {"decision": "allow", "reason": "allowed: ok", "code": "allowed"}
     assert rec.last is not None
@@ -207,8 +211,45 @@ def test_arguments_reach_the_engine(started: list[Running]) -> None:
     r.call("check_permission", {"user": "a\ud800@x.com", "connection": "c", "action": "a", "resource": "r", "groups": ["g1", "g2"], "fresh": True})
     assert (rec.last.user, rec.last.groups, rec.last.fresh) == ("a�@x.com", ["g1", "g2"], True), "a lone surrogate never reaches the engine"
     text = logs.getvalue()
-    assert '"tool":"check_permission"' in text and '"path":"/mcp"' in text
+    assert '"tool":"check_permission","connection":"c","action":"a","code":"allowed"' in text and '"path":"/mcp"' in text
     assert KEY not in text and "a@x.com" not in text, f"log leaked: {text}"
+
+
+def test_the_log_never_holds_an_argument_that_names_nothing(started: list[Running]) -> None:
+    """A model that puts the email where the connection or the action goes
+    must not get it into the server log."""
+    logs = io.StringIO()
+    r = Running(toolpass.Toolpass(connections=CONNECTIONS)._backend.engine, Logger(JSONHandler(logs)))  # type: ignore[attr-defined]
+    started.append(r)
+    secret_mail = "leak@example.com"
+    r.call("list_actions", {"connection": secret_mail})
+    r.call("check_permission", {"user": ILYA, "connection": secret_mail, "action": "thing.read", "resource": "thing:1"})
+    r.call("check_permission", {"user": ILYA, "connection": "things", "action": secret_mail, "resource": "thing:1"})
+    r.call("check_permission", {"user": "not-an-email", "connection": "things", "action": secret_mail, "resource": "thing:1"})
+    r.call("check_permission", {"user": ILYA, "connection": "things", "action": "leak.example", "resource": "thing:1"})
+    r.call("check_permission", {"user": ILYA, "connection": "things", "action": "thing.read", "resource": "thing:1"})
+    r.call("list_actions", {"connection": "things"})
+    text = logs.getvalue()
+    assert secret_mail not in text and ILYA not in text and "leak.example" not in text, text
+    assert text.count('"code":"unknown_connection"') == 2 and '"code":"unknown_action"' in text and '"code":"invalid_request"' in text
+    assert '"tool":"check_permission","connection":"things","action":"thing.read","code":"denied"' not in text
+    assert '"tool":"check_permission","connection":"things","action":"thing.read","code":"allowed"' in text
+    assert '"tool":"list_actions","connection":"things"' in text
+
+
+def test_a_page_from_another_site_is_refused(mcp: Running) -> None:
+    """Browsers name the page's origin; only this server's own is taken, so a
+    key held by a browser or added by a proxy cannot be used by another site
+    (or by a rebound DNS name)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping"}).encode()
+    here = f"{mcp.host}:{mcp.port}"
+    for origin in ("https://evil.example", "null", f"http://evil.example:{mcp.port}", f"http://{here}.evil.example", "http://", "http://[::1"):
+        res, out = mcp.send(body, headers={"Origin": origin})
+        assert res.status == 403 and json.loads(out) == {"error": "cross-origin request"}, origin
+    for origin in (f"http://{here}", f"https://{here}", f"HTTP://{here.upper()}"):
+        assert mcp.send(body, headers={"Origin": origin})[0].status == 200, origin
+    res, _ = mcp.send(body, headers={"Origin": "https://evil.example"}, key=None)
+    assert res.status == 401, "the key still comes first"
 
 
 def test_the_api_key_comes_first(mcp: Running) -> None:
@@ -244,6 +285,11 @@ def test_bodies_that_are_not_one_request(mcp: Running) -> None:
     assert error(b'{"jsonrpc":"2.0","id":null,"method":"ping"}') == (400, None, -32600)
     assert error(b'{"jsonrpc":"2.0","id":true,"method":"ping"}') == (400, None, -32600)
     assert error(b'{"jsonrpc":"2.0","id":1,"method":7}') == (400, 1, -32600)
+    # NaN and Infinity are not JSON, and neither may come back in an id.
+    assert error(b'{"jsonrpc":"2.0","id":NaN,"method":"ping"}') == (400, None, -32700)
+    assert error(b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":-Infinity}}') == (400, None, -32700)
+    assert error(b'{"jsonrpc":"2.0","id":1e999,"method":"ping"}') == (400, None, -32600)
+    assert error(b'{"jsonrpc":"2.0","id":1.5,"method":"resources/list"}') == (200, 1.5, -32601)
     assert error(b'{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}') == (400, None, -32600), "a field given twice"
     dup = b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_permission","arguments":{"user":"a@x.com","user":"b@x.com"}}}'
     assert error(dup) == (400, None, -32600), "two users: a proxy and this server could disagree about who is asked about"

@@ -109,13 +109,16 @@ The dashboard page, with `watch.js` and `watch.css` beside it, served to anyone:
 The permission questions as [MCP](https://modelcontextprotocol.io) tools, for an assistant
 ([Ask who may do what, from your assistant](../guides/ask.md)). Send the `api_key` as a bearer
 token (`401` otherwise, for every method) and one JSON-RPC 2.0 message of at most 64 KiB (`413`
-over it).
+over it). A request with an `Origin` header that does not name the host it was sent to (its `Host`
+header) is `403`: a browser sends one for a page from another site, and MCP clients that are not
+browsers send none.
 
 This is the Streamable HTTP transport, answered with JSON only. A request is answered with one
 `application/json` object and status 200; a notification or a response is accepted with `202` and
 no body. There is no stream and no session: `GET` and `DELETE` answer `405` with `Allow: POST`,
 no `Mcp-Session-Id` is issued, and nothing is kept between requests. A body that is not one
-message (unparseable JSON, a batch, no `jsonrpc: "2.0"`, a field given twice anywhere in it) is
+message (unparseable JSON, `NaN` or `Infinity`, a batch, no `jsonrpc: "2.0"`, a field given twice
+anywhere in it) is
 `400` with a JSON-RPC error.
 
 The protocol revisions `2025-11-25`, `2025-06-18` and `2025-03-26` are served, the ones that begin

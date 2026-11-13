@@ -94,6 +94,8 @@ the key to the people who should be able to look up other people's access, and t
 
 There is one key, so the server cannot tell two askers apart. To give some people this and not
 `POST /check`, put the server behind a proxy that authenticates them and routes only `/mcp`.
+A web page on another site cannot use such a proxy, or a key a browser holds: a request whose
+`Origin` is not the server's own address is refused (`403`).
 
 ## How it is served
 
