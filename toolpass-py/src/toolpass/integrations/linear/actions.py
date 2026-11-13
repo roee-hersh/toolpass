@@ -110,7 +110,6 @@ def parse_target(action_name: str, r: Resource) -> Target:
         id = go_upper(id)
         if not ISSUE_KEY_RE.fullmatch(id):
             raise invalid("issue: takes an identifier such as ENG-123 or a Linear id")
-    elif r.type == "project":
-        if not SLUG_RE.fullmatch(id):
-            raise invalid("project: takes a slug id or a Linear id")
+    elif r.type == "project" and not SLUG_RE.fullmatch(id):
+        raise invalid("project: takes a slug id or a Linear id")
     return Target(action=a, id=id)
