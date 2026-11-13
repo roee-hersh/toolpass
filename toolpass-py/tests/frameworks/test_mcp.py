@@ -9,6 +9,10 @@ local port), where ``session_from_header`` takes the user from the
 scripted loop that makes the tool calls a model would; toolpass is a real
 in-process engine, and the wire scenario's fake GitHub decides what reached
 it.
+
+Last, the toolpass server's own MCP endpoint (``POST /mcp``, the permission
+tools), which is written without the SDK: the official client connects to it
+and calls its tools.
 """
 
 from __future__ import annotations
@@ -333,3 +337,57 @@ def test_http_user_from_access_token(wire_gh: harness.Server) -> None:
     finally:
         srv.should_exit = True
         t.join(5)
+
+
+# -- the toolpass server's own endpoint: POST /mcp, the permission tools --------------------------
+
+
+def test_the_servers_permission_tools_with_the_official_client() -> None:
+    """The client probes for the newest protocol revision, is told which ones
+    the endpoint serves, falls back to the handshake, and then lists and calls
+    the tools; it checks each result against the tool's output schema."""
+    import toolpass
+    from toolpass.core import secret
+    from toolpass.server import Server
+
+    engine = toolpass.Toolpass(connections=[{"id": "things", "integration": "fake", "users": DANA, "admins": ADMIN}])._backend.engine  # type: ignore[attr-defined]
+    srv = Server(engine, secret.literal("k-123"))
+    host, port = srv.listen("127.0.0.1:0")
+    srv.serve_in_thread()
+    url = f"http://{host}:{port}/mcp"
+    try:
+        import httpx2
+
+        async def go() -> tuple[list[str], list[CallToolResult]]:
+            async with httpx2.AsyncClient(headers={"Authorization": "Bearer k-123"}) as http:
+                async with Client(streamable_http_client(url, http_client=http)) as client:
+                    names = [t.name for t in (await client.list_tools()).tools]
+                    ask = {"connection": "things", "action": "thing.write", "resource": "thing:1"}
+                    calls: list[tuple[str, dict[str, Any]]] = [
+                        ("list_connections", {}),
+                        ("list_actions", {"connection": "things"}),
+                        ("check_permission", {"user": ADMIN, **ask}),
+                        ("check_permission", {"user": DANA, **ask}),
+                        ("check_permission", {"user": "dana", **ask}),
+                        ("check_permission", {"user": DANA}),
+                    ]
+                    return names, [await client.call_tool(name, args) for name, args in calls]
+
+        names, [connections, actions, allow, deny, not_asked, incomplete] = asyncio.run(go())
+        assert names == ["list_connections", "list_actions", "check_permission"]
+        assert connections.structured_content == {"connections": [{"id": "things", "integration": "fake"}]}
+        assert actions.structured_content is not None and [a["name"] for a in actions.structured_content["actions"]] == [
+            "thing.read",
+            "thing.write",
+            "thing.admin",
+        ]
+        assert (allow.is_error, allow.structured_content) == (
+            False,
+            {"decision": "allow", "reason": f"allowed: {ADMIN} is an admin", "code": "allowed", "identity": ADMIN},
+        )
+        assert deny.structured_content is not None and (deny.is_error, deny.structured_content["decision"]) == (False, "deny")
+        assert not_asked.structured_content is not None and (not_asked.is_error, not_asked.structured_content["code"]) == (True, "invalid_request")
+        assert (incomplete.is_error, text(incomplete)) == (True, "missing arguments: connection, action, resource")
+        assert post_raw(url, {})[0] == 401, "no key, no tools"
+    finally:
+        srv.shutdown()

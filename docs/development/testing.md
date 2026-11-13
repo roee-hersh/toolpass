@@ -17,7 +17,7 @@ tree instead).
 
 | Directory | What it tests | Needs |
 |---|---|---|
-| `tests/core`, `tests/authx`, `tests/net`, `test_cli.py`, `test_server.py` | the engine, config, caches, signing, the HTTP client, the command and the server | nothing |
+| `tests/core`, `tests/authx`, `tests/net`, `test_cli.py`, `test_server.py`, `test_server_mcp.py` | the engine, config, caches, signing, the HTTP client, the command, the server and its MCP endpoint (`POST /mcp`, spoken to as a client speaks it) | nothing |
 | `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `TOOLPASS_SPECS_DIR` to validate requests (below) |
 | `tests/integrations/test_registry.py` | the coverage gate: `test_action_<name>_allow` and `_deny` for every action | nothing |
 | `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `TOOLPASS_SPECS_DIR` for the description checks |

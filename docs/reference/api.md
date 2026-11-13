@@ -1,7 +1,8 @@
 # HTTP API reference
 
 The toolpass server (`toolpass serve`) answers permission checks (`POST /check`), collects the runs
-agents report (`POST /runs`) and serves the dashboard over them (`GET /dashboard/`). Clients: `Toolpass.remote` in the
+agents report (`POST /runs`), serves the dashboard over them (`GET /dashboard/`) and answers
+permission questions to MCP clients (`POST /mcp`). Clients: `Toolpass.remote` in the
 [`toolpass` package](client.md), [`toolpass-client`](client.md#toolpass-client-node) for Node, or any
 HTTP client. The in-process engine answers with the same decisions and codes, without HTTP.
 
@@ -102,3 +103,46 @@ The dashboard page, with `watch.js` and `watch.css` beside it, served to anyone:
 `GET /dashboard/events?since=N` returns the runs after sequence `N` (`0`: the latest 500), as
 `{"kind": "dashboard", "events": [...], "next": M}`, to holders of the `api_key` as a bearer token
 (`401` otherwise); the page asks for the key and keeps it in the browser tab.
+
+## POST /mcp
+
+The permission questions as [MCP](https://modelcontextprotocol.io) tools, for an assistant
+([Ask who may do what, from your assistant](../guides/ask.md)). Send the `api_key` as a bearer
+token (`401` otherwise, for every method) and one JSON-RPC 2.0 message of at most 64 KiB (`413`
+over it).
+
+This is the Streamable HTTP transport, answered with JSON only. A request is answered with one
+`application/json` object and status 200; a notification or a response is accepted with `202` and
+no body. There is no stream and no session: `GET` and `DELETE` answer `405` with `Allow: POST`,
+no `Mcp-Session-Id` is issued, and nothing is kept between requests. A body that is not one
+message (unparseable JSON, a batch, no `jsonrpc: "2.0"`, a field given twice anywhere in it) is
+`400` with a JSON-RPC error.
+
+The protocol revisions `2025-11-25`, `2025-06-18` and `2025-03-26` are served, the ones that begin
+with `initialize`. `initialize` answers with the revision the client asked for when it is one of
+those, and `2025-11-25` otherwise. A request whose `MCP-Protocol-Version` header names any other
+revision is `400` with error `-32022` and `data.supported`, the list; a client that speaks a newer
+revision first (the `server/discover` probe of `2026-07-28`) reads that and falls back to
+`initialize`.
+
+| Method | Result |
+|---|---|
+| `initialize` | the revision, `capabilities: {"tools": {}}`, `serverInfo` and `instructions` for the model |
+| `ping` | `{}` |
+| `tools/list` | the three tools, each with an input and an output schema and `readOnlyHint: true` |
+| `tools/call` | the tool's result, as `structuredContent` and as the same JSON in a text block |
+| anything else | error `-32601` |
+
+| Tool | Arguments | `structuredContent` |
+|---|---|---|
+| `list_connections` | none | `{"connections": [{"id", "integration"}]}` |
+| `list_actions` | `connection` | `{"connection", "integration", "actions": [{"name", "description", "pattern"}]}`; `pattern: true` marks a shape such as `raw:<verb>:<resource>` |
+| `check_permission` | `user`, `connection`, `action`, `resource`, and optionally `groups` and `fresh`, as in `POST /check` | `{"decision", "reason", "code", "identity"}` |
+
+`check_permission` runs the check `POST /check` runs, with the same validation, caches and
+decision log line; it does not take `token`. A decision is a result with `isError: false`, `unknown`
+included. A check that never reached the system (`invalid_request`, `unknown_connection`,
+`unknown_action`) has `isError: true` and the same content. Arguments that do not fit the tool's
+schema (one missing, one of the wrong type, one the tool does not take) and a `list_actions` for a
+connection that does not exist are `isError: true` with a sentence and no `structuredContent`. A
+tool that does not exist is error `-32602`.

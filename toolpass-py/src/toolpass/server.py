@@ -1,12 +1,11 @@
 """The engine over HTTP: POST /check and GET /healthz; the runs agents report
-(POST /runs) and the dashboard that shows them (GET /dashboard/). Standard
-library only."""
+(POST /runs) and the dashboard that shows them (GET /dashboard/); permission
+questions as MCP tools (POST /mcp). Standard library only."""
 
 from __future__ import annotations
 
 import hmac
 import json
-import re
 import socket
 import threading
 import time
@@ -22,6 +21,8 @@ from toolpass.core.secret import Secret
 
 __all__ = ["MAX_REQUEST_BODY", "Checker", "Server", "check_body", "decision_body"]
 
+from toolpass._mcp_endpoint import PermissionTools
+from toolpass._mcp_endpoint import clean as _clean
 from toolpass._page import PAGE, SCRIPT, STYLE
 from toolpass._runs import MAX_RUNS_BODY, RunLog, decode_runs
 
@@ -55,16 +56,6 @@ def check_body(req: Request) -> dict[str, Any]:
     if req.token:
         out["token"] = req.token
     return out
-
-
-_SURROGATE = re.compile("[\ud800-\udfff]")
-
-
-def _clean(s: str) -> str:
-    """A lone surrogate from a \\uD800 escape becomes U+FFFD, as a Go JSON
-    decoder makes it, so it can neither slip past validation nor fail an
-    encoder later."""
-    return _SURROGATE.sub("�", s)
 
 
 class _BadRequest(Exception):
@@ -216,6 +207,7 @@ class Server:
         self.api_key = api_key
         self.logger = logger or Logger()
         self.runs = runs if runs is not None else RunLog()
+        self.mcp = PermissionTools(checker, self.logger)
         self._httpd: ThreadingHTTPServer | None = None
         # Requests being answered, so shutdown can let them finish.
         self._inflight = threading.Condition()
@@ -266,6 +258,24 @@ class Server:
             ),
         )
         return res.status, headers, decision_body(res.decision)
+
+    def handle_mcp(
+        self, method: str, auth: str, body: bytes | None, remote: str, too_large: bool = False, protocol_version: str = ""
+    ) -> tuple[int, dict[str, str], bytes]:
+        """``POST /mcp``: the permission tools, for an MCP client that holds the API key."""
+        headers = {"Content-Type": "application/json", "Cache-Control": "no-store"}
+        if not self.authorized(auth):
+            headers["WWW-Authenticate"] = 'Bearer realm="toolpass"'
+            return 401, headers, b'{"error":"missing or wrong API key"}\n'
+        if method != "POST":
+            # No stream to open (GET) and no session to end (DELETE).
+            headers["Allow"] = "POST"
+            return 405, headers, b'{"error":"use POST"}\n'
+        if too_large:
+            return 413, headers, json.dumps({"error": f"body larger than {MAX_REQUEST_BODY} bytes"}).encode() + b"\n"
+        if body is None:
+            return 400, headers, b'{"error":"could not read body"}\n'
+        return self.mcp.handle(body, protocol_version, remote)
 
     def handle_runs(self, method: str, auth: str, body: bytes | None, remote: str, too_large: bool = False) -> tuple[int, dict[str, str], bytes]:
         """``POST /runs``: a batch of tool runs an agent reports, kept for the dashboard."""
@@ -411,6 +421,19 @@ class Server:
                         body, too_large = self._body()
                         status, headers, out = server.handle_runs(
                             self.command, self.headers.get("Authorization", ""), body, _client_ip(self.client_address[0]), too_large
+                        )
+                        if too_large:
+                            self.close_connection = True
+                        self._send(status, headers, out)
+                    elif path == "/mcp":
+                        body, too_large = self._body()
+                        status, headers, out = server.handle_mcp(
+                            self.command,
+                            self.headers.get("Authorization", ""),
+                            body,
+                            _client_ip(self.client_address[0]),
+                            too_large,
+                            self.headers.get("MCP-Protocol-Version", ""),
                         )
                         if too_large:
                             self.close_connection = True
