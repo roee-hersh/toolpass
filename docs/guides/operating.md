@@ -16,6 +16,10 @@ it up, see [Deploy](deploy.md). For the file format, see the
 - `GET /dashboard/` shows the runs the agents report to this server, live, with each request a
   tool made and whether the system allowed it ([the dashboard](dashboard.md)). Each batch of runs
   taken is a `runs` line in the server's log, with the reporting process's name and the count.
+- `POST /mcp` answers permission questions to an assistant ([Ask who may do what](ask.md)). Each
+  tool call is an `mcp tool` line in the server's log, with the tool, the decision code and, when
+  they name something real, the connection and the action; each check it makes is a decision log
+  line like any other.
 
 ## Decision log
 

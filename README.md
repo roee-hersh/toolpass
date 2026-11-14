@@ -156,6 +156,16 @@ Google Workspace, Google Cloud, Microsoft 365, Databricks, Salesforce, Snowflake
 Linear, Zendesk and Okta, with no policy language and no synced copy of anyone's permissions. It also
 runs on its own, in-process or as a server, with adapters for nine agent frameworks.
 
+The server answers people too. Connect Claude Code or any MCP client to its `/mcp`
+endpoint and ask "can Ilya create deployments in payments?": three read-only tools find the
+connection and the action and ask the system, now. It is for looking things up, and it stops
+nothing; the checks inside your tools do that.
+[Ask who may do what, from your assistant](docs/guides/ask.md) has the details.
+
+```sh
+claude mcp add --transport http toolpass https://toolpass.internal/mcp --header "Authorization: Bearer $TOOLPASS_API_KEY"
+```
+
 ## Install
 
 ```sh

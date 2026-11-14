@@ -107,6 +107,14 @@ In `quickstart.py`, change one line and run it again; the output is the same:
 tp = Toolpass.remote("http://localhost:8080", "change-me")  # or TOOLPASS_URL and TOOLPASS_API_KEY
 ```
 
+An assistant can ask the server too. Connect Claude Code (or any MCP client) to its `/mcp`
+endpoint and ask "may dana@example.com write thing 1 in demo?"
+([Ask who may do what, from your assistant](guides/ask.md)):
+
+```sh
+claude mcp add --transport http toolpass http://localhost:8080/mcp --header "Authorization: Bearer change-me"
+```
+
 **Node** talks to the server with `toolpass-client`. Save as `quickstart.mjs` (the `.mjs`
 extension lets it use `import`):
 

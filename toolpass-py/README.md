@@ -356,6 +356,11 @@ tp = Toolpass.remote("https://toolpass.internal", api_key)  # or TOOLPASS_URL an
 The methods are the same. The URL must be `https://`, or `http://` on localhost; redirects are not
 followed; a server that cannot be reached is `unknown`.
 
+The server also answers an assistant: its `/mcp` endpoint gives Claude Code or any
+MCP client three read-only tools (`list_connections`, `list_actions`, `check_permission`), so a
+person can ask "can Ilya create deployments in payments?". It answers questions and stops nothing.
+See [Ask who may do what, from your assistant](../docs/guides/ask.md).
+
 ### guarded
 
 Puts the check in front of one function, so its body runs only after toolpass said `allow`:
@@ -507,7 +512,7 @@ toolpass probe    -config toolpass.yaml      # each connection's credential, liv
 toolpass check    -config toolpass.yaml -connection jira-main \
   -user dana@example.com -action DELETE_ISSUES -resource issue:PAY-123
 toolpass catalog  jira                       # an integration's keys and actions
-toolpass serve    -config toolpass.yaml      # POST /check and GET /healthz on :8080
+toolpass serve    -config toolpass.yaml      # POST /check, GET /healthz, the dashboard and /mcp on :8080
 ```
 
 ### More

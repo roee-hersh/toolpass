@@ -49,7 +49,7 @@ toolpass check -server https://toolpass.internal -connection jira-main \
 `serve` also takes `-listen ADDR`, which overrides `listen` in the file, and
 `-log-level debug|info|warn|error` (default `info`).
 
-`serve` also collects the runs agents report (`POST /runs`) and serves [the dashboard](../guides/dashboard.md)
-at `/dashboard/`. `gateway off` exits 0 and prints one line per entry put back. An entry an earlier
+`serve` also collects the runs agents report (`POST /runs`), serves [the dashboard](../guides/dashboard.md)
+at `/dashboard/`, and answers permission questions to MCP clients at [`/mcp`](../guides/ask.md). `gateway off` exits 0 and prints one line per entry put back. An entry an earlier
 version rewrote starts `toolpass mcp ... -- COMMAND`, which still runs `COMMAND`, unrecorded, with
 its exit code.

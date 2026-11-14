@@ -35,6 +35,9 @@ agents in any language call.
   field, and the `oidc_*` keys that read the groups from the user's own ID token, with any provider.
 - [Operating](guides/operating.md): health, the decision log, what each `unknown` means, and
   rotating secrets.
+- [Ask who may do what, from your assistant](guides/ask.md): the server's MCP endpoint (`/mcp`),
+  where Claude Code or any MCP client asks "can Ilya create deployments?"; the
+  three read-only tools, and who can ask.
 - [The dashboard](guides/dashboard.md): every run of your toolpass tools, from every agent and MCP
   server that reports to your toolpass server, with each request it made and who it ran for; and
   the OpenTelemetry export.
@@ -47,7 +50,7 @@ agents in any language call.
   `record`, `strict` and `act_as` settings, `as_user()` and `as_agent()`, `ActionRefused`, `ObservedAction`, the
   entitlements file and the route tables.
 - [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`,
-  `POST /runs` and `GET /dashboard/`.
+  `POST /runs`, `GET /dashboard/` and `POST /mcp`.
 - [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,

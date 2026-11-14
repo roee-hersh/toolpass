@@ -86,7 +86,8 @@ sequenceDiagram
 
 1. **Server** (`toolpass/server.py`, server only). Accepts `POST /check` with a bearer API key
    compared in constant time, reads at most 64 KiB, and rejects unknown JSON fields. `GET /healthz`
-   is the only unauthenticated route.
+   is the only unauthenticated route. `POST /mcp` (`toolpass/_mcp_endpoint.py`) puts the same check in
+   front of an assistant as an MCP tool, behind the same key ([Ask who may do what](../guides/ask.md)).
 2. **Engine** (`toolpass/core/engine.py`). Validates the request (an email of at most 320 bytes, at most
    200 groups, no control characters), finds the connection and the action, and consults the
    decision cache.
@@ -218,6 +219,7 @@ Under `toolpass-py/src/toolpass/`:
 | `strands.py`, `langchain.py`, `mcp.py`, `openai_agents.py`, `claude_agent_sdk.py`, `google_adk.py`, `crewai.py`, `pydantic_ai.py`, `llamaindex.py` | the framework adapters |
 | `cli.py` | the `serve`, `validate`, `probe`, `check` and `catalog` commands |
 | `server.py` | HTTP handlers, API key, request parsing |
+| `_mcp_endpoint.py` | `POST /mcp`: the permission tools for MCP clients, over the standard library |
 | `core/engine.py` | the check flow, validation, caches |
 | `core/config.py` | the loader: strict keys, line numbers in errors, secret references |
 | `core/integration.py` | the classes every integration implements, and the registry |

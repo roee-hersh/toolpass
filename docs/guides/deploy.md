@@ -192,6 +192,8 @@ it does not know, and the clients report that as `unknown`, so nothing fails ope
 - [ ] [The dashboard](dashboard.md) at `/dashboard/` is behind your ingress's authentication when
       more people than the server's operators should open it: its runs carry tool arguments and are
       served to holders of the API key.
+- [ ] Whoever holds the API key can ask what anyone may do, from an assistant too
+      ([`/mcp`](ask.md#who-can-ask)): an assistant given the key answers everyone who can talk to it.
 - [ ] You alert on a rise in `unknown` decisions; [Operating](operating.md#when-the-answer-is-unknown)
       lists the codes.
 - [ ] The image, chart or package is pinned to a version.
