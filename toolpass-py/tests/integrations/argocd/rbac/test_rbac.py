@@ -53,6 +53,8 @@ def test_builtin_policy_enforcer() -> None:
         ("role:admin", "applications", "get", "foo/bar"),
         ("role:admin", "applications", "delete", "foo/bar"),
         ("role:admin", "applications", "sync", "foo/bar"),
+        # The builtin policy has had a rollback line since v3.6.0.
+        ("role:admin", "applications", "rollback", "foo/bar"),
     ]
     for a in allowed:
         assert e.enforce(*a), f"{a}: expected true"
@@ -60,8 +62,6 @@ def test_builtin_policy_enforcer() -> None:
         ("role:readonly", "applications", "create", "foo/bar"),
         ("role:readonly", "applications", "delete", "foo/bar"),
         ("role:readonly", "applications", "rollback", "foo/bar"),
-        # v3.5.3's builtin policy has no rollback line; unreleased master adds one.
-        ("role:admin", "applications", "rollback", "foo/bar"),
     ]
     for a in disallowed:
         assert not e.enforce(*a), f"{a}: expected false"

@@ -74,7 +74,9 @@ Exactly as in Argo CD:
    when true `app.update` does not imply `app.update/<resource>`; when false the top-level verb is
    checked first.
 7. `server.rbac.rollback.enforce.enable` in `argocd-cm` (default false): `app.rollback` checks `sync`
-   unless it is true, then it checks `rollback`.
+   unless it is true, then it checks `rollback`. The built-in policy is Argo CD v3.6's, where
+   `role:admin` may roll back; on v3.5 and earlier with this setting on, Argo CD itself refuses
+   `role:admin` a rollback that toolpass allows.
 
 ## Resources
 
