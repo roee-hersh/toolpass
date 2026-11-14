@@ -344,7 +344,9 @@ def test_detach() -> None:
     try:
         assert d.value(key) == "v", "value not kept"
         rem = d.remaining()
-        assert rem is not None and 50 <= rem <= MINUTE, f"fallback deadline {rem}"
+        # (now + 60) - now can come out one rounding step over 60 when the clock has not
+        # ticked in between, as on Windows, whose monotonic clock moves in ~15 ms steps.
+        assert rem is not None and 50 <= rem <= MINUTE + 1e-6, f"fallback deadline {rem}"
         cancel()
         assert d.err() is None, f"cancellation propagated: {d.err()}"
     finally:
@@ -353,7 +355,7 @@ def test_detach() -> None:
     d2, dcancel2 = detach(parent2, MINUTE)
     try:
         rem2 = d2.remaining()
-        assert rem2 is not None and rem2 <= 5, f"leader deadline not carried: {rem2}"
+        assert rem2 is not None and rem2 <= 5 + 1e-6, f"leader deadline not carried: {rem2}"
     finally:
         dcancel2()
         cancel2()
