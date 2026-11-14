@@ -1,11 +1,12 @@
 """Argo CD's assets/builtin-policy.csv. It defines role:readonly and
 role:admin and binds the admin user.
 
-Copied from Argo CD v3.5.3 (the latest release on 2026-09-21). It changes
+Copied from Argo CD v3.6.1 (the latest release on 2026-11-13). It changes
 rarely; diff it against the version you run if a builtin role answers
-unexpectedly. Unreleased master adds "p, role:admin, applications,
-rollback, */*, allow", which matters only with
-server.rbac.rollback.enforce.enable.
+unexpectedly. v3.6.0 added "p, role:admin, applications, rollback, */*,
+allow"; v3.5 and earlier do not have it, which matters only with
+server.rbac.rollback.enforce.enable: there, role:admin may not roll back
+and this copy says it may.
 """
 
 __all__ = ["BUILTIN_POLICY_CSV"]
@@ -36,6 +37,7 @@ p, role:admin, applications, update/*, */*, allow
 p, role:admin, applications, delete, */*, allow
 p, role:admin, applications, delete/*, */*, allow
 p, role:admin, applications, sync, */*, allow
+p, role:admin, applications, rollback, */*, allow
 p, role:admin, applications, override, */*, allow
 p, role:admin, applications, action/*, */*, allow
 p, role:admin, applicationsets, get, */*, allow

@@ -78,7 +78,6 @@ def parse_ref(action: str, r: Resource) -> str:
     elif r.type == "file":
         if not FILE_ID_RE.fullmatch(rid):
             raise _invalid("file: id must be a Drive file id")
-    elif r.type == "calendar":
-        if not CALENDAR_ID_RE.fullmatch(rid):
-            raise _invalid("calendar: id must be a calendar id (an email or primary)")
+    elif r.type == "calendar" and not CALENDAR_ID_RE.fullmatch(rid):
+        raise _invalid("calendar: id must be a calendar id (an email or primary)")
     return rid

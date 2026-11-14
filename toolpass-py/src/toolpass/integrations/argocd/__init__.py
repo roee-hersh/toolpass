@@ -373,6 +373,11 @@ class Connection(integ.Connection):
             warnings.append("the RBAC policy is invalid and every check will answer unknown: " + str(b.user_err))
         if not b.argocd_cm_seen:
             warnings.append("argocd-cm was not found; assuming Argo CD v3 defaults (no fine-grained inheritance, rollback checks sync)")
+        if b.rollback_act == rbac.ACTION_ROLLBACK:
+            warnings.append(
+                "server.rbac.rollback.enforce.enable is on: toolpass applies the built-in policy of Argo CD v3.6, where role:admin may roll back; "
+                "Argo CD v3.5 and earlier refuse role:admin a rollback that toolpass allows"
+            )
         if self.user_subject == "none" and b.user_level:
             warnings.append(
                 "the policy names individual users but user_subject is none; those rules are not evaluated "

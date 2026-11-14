@@ -562,6 +562,7 @@ SECRETSMANAGER: dict[str, _Op] = {
             ("DescribeSecret", "read"),
             ("GetResourcePolicy", "read"),
             ("GetSecretValue", "read"),
+            ("ListResourcePolicies", "read"),
             ("ListSecretVersionIds", "read"),
             ("PutResourcePolicy", "write"),
             ("PutSecretValue", "write"),
@@ -580,6 +581,8 @@ SECRETSMANAGER: dict[str, _Op] = {
     "GetRandomPassword": _Op("read"),
 }
 SECRETSMANAGER_UNROUTED: dict[str, str] = {
+    "AssociateCrossAccountReplica": "links the secret to a replica in another account, a second secret (and a replication role) one check does not cover",
+    "DisassociateCrossAccountReplica": "unlinks a replica in another account, a second secret one check does not cover",
     "BatchGetSecretValue": "reads several secrets, or the ones a filter selects",
     "CreateSecret": "the new secret's ARN carries the account id and a suffix AWS picks",
     "ValidateResourcePolicy": "authorized as both secretsmanager:PutResourcePolicy and secretsmanager:ValidateResourcePolicy",

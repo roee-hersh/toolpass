@@ -866,9 +866,8 @@ class GitHubConnection(IdentityMixin, Connection):
                 if meta.visibility != "":
                     text += "; the repository is " + meta.visibility
                 text += ")"
-        elif a.name in ("repo.push", "pr.merge"):
-            if t.branch != "":
-                return self._annotate_branch(ctx, a, t, repo_path, login, perms, text)
+        elif a.name in ("repo.push", "pr.merge") and t.branch != "":
+            return self._annotate_branch(ctx, a, t, repo_path, login, perms, text)
         return allowed(text)
 
     # -- branch rules and protection -------------------------------------
