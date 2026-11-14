@@ -376,7 +376,10 @@ def test_audit_line_after_an_allowed_tool(tp: Toolpass, tmp_path: pathlib.Path, 
     calls = [("mcp__ops__delete_thing", {"thing_id": "5", "user": ""}), ("mcp__ops__break_thing", {"thing_id": "6"})]
     r = drive(ToolpassHooks(tp, RULES, user=current_user), calls, tmp_path, user=ADMIN)
     assert RAN == [("delete_thing", "5"), ("break_thing", "6")] or RAN == [("break_thing", "6"), ("delete_thing", "5")]
-    assert r.results["toolu_0_1"] == ("the thing broke", True)
+    # The tool's own error reaches the model first; newer CLIs (SDK 0.2.18x) add a
+    # hint about the tool's input schema after it.
+    text, is_error = r.results["toolu_0_1"]
+    assert is_error and (text == "the thing broke" or text.startswith("the thing broke\n")), text
     lines = [m.getMessage() for m in caplog.records if m.getMessage().startswith("unconditional write")]
     assert any(f"{ADMIN} ran thing.write on thing:5 in things; toolpass said allow" in m and "fresh=True" in m for m in lines), lines
     assert any(f"{ADMIN} got an error result from thing.write on thing:6" in m for m in lines), lines
