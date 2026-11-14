@@ -329,6 +329,15 @@ def test_fine_grained_and_rollback_flags(setup: Setup) -> None:
     itest.expect_code(check(c, sre, "app.delete/apps/StatefulSet/default/db", "applications:dev/web"), Code.ALLOWED)
     itest.expect_code(check(c, sre, "app.delete/apps/StatefulSet/default/db", "applications:prod/web"), Code.DENIED)
     itest.expect_code(check(c, dev, "app.rollback", "applications:dev/web"), Code.DENIED)
+    # With the rollback action enforced, role:admin holds it through the built-in policy (v3.6),
+    # and the probe says which servers disagree.
+    cl.rbac_cm = {**(cl.rbac_cm or {}), "policy.csv": (cl.rbac_cm or {}).get("policy.csv", "") + "\ng, admins, role:admin\n"}
+    _, c, _ = setup(cl, "none")
+    itest.expect_code(check(c, User(email="x@example.com", groups=("admins",)), "app.rollback", "applications:dev/web"), Code.ALLOWED)
+    itest.expect_code(check(c, dev, "app.rollback", "applications:dev/web"), Code.DENIED)
+    assert any("rollback.enforce" in w and "v3.5" in w for w in c.probe(background()).warnings)
+    _, c, _ = setup(default_cluster(), "none")
+    assert not any("rollback.enforce" in w for w in c.probe(background()).warnings)
 
 
 def test_invalid_policy(setup: Setup) -> None:

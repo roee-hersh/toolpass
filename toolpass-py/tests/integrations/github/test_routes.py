@@ -37,9 +37,10 @@ def test_every_route_names_a_known_action():
         ("POST", "/repos/acme/x/issues/3/artifacts", None, "repo.triage", "repo:acme/x", "write"),
         ("PATCH", "/repos/acme/x/issues/3/artifacts/1", None, "repo.triage", "repo:acme/x", "write"),
         ("DELETE", "/repos/acme/x/issues/3/artifacts/1", None, "repo.triage", "repo:acme/x", "destructive"),
-        ("POST", "/repos/acme/x/pulls/3/copilot-code-review", None, "repo.triage", "repo:acme/x", "write"),
         ("PATCH", "/repos/acme/x/copilot/code-review/settings", None, "repo.admin", "repo:acme/x", "write"),
+        ("GET", "/repos/acme/x/copilot/code-review/settings", None, "repo.admin", "repo:acme/x", "read"),
         ("PUT", "/repos/acme/x/dependabot/runner-settings", None, "repo.admin", "repo:acme/x", "write"),
+        ("GET", "/repos/acme/x/dependabot/runner-settings", None, "repo.admin", "repo:acme/x", "read"),
         ("PUT", "/repos/acme/x/contents/a/b.txt", {"branch": "feat/1"}, "repo.push", "repo:acme/x@feat/1", "write"),
         ("PUT", "/repos/acme/x/contents/a/b.txt", {}, "repo.push", "repo:acme/x", "write"),
         ("POST", "/repos/acme/x/git/refs", {"ref": "refs/heads/new"}, "repo.push", "repo:acme/x@new", "write"),
@@ -76,6 +77,16 @@ def test_comments_send_out_and_reads_are_untrusted():
 def test_graphql_mutations_are_not_routed():
     o = ROUTES.match(req("POST", "/graphql", {"query": "mutation { createIssue(input: {}) { issue { id } } }"}))
     assert o is not None and o.unresolved is not None and "mutation" in o.unresolved
+
+
+def test_a_copilot_review_request_is_left_out():
+    assert ROUTES.match(req("POST", "/repos/acme/x/pulls/3/copilot-code-review")) is None
+    assert "no permission" in (ROUTES.is_unrouted("POST", "/repos/acme/x/pulls/3/copilot-code-review") or "")
+
+
+def test_issue_artifacts_send_out():
+    assert ROUTES.match(req("POST", "/repos/acme/x/issues/3/artifacts")).sends_out
+    assert ROUTES.match(req("PATCH", "/repos/acme/x/issues/3/artifacts/1")).sends_out
 
 
 def test_unknown_writes_have_no_route():

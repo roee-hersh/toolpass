@@ -279,11 +279,11 @@ def _routes() -> list[Route]:
         ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"),
         ("DELETE", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"),
         ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers/rerequest"),
-        ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/copilot-code-review"),
         ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts/{artifact_number}"),
     ):
         out.append(Route(method, path, tr, _REPO))
-    # An issue's artifacts need permission to update the issue, and publish their body.
+    # An issue's artifacts take whoever may update the issue: checked as triage, as
+    # PATCH on the issue is (the issue's author, who may too, is refused). They publish their body.
     out += [
         Route("POST", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts", tr, _REPO, sends_out=True),
         Route("PATCH", "/repos/{owner}/{repo}/issues/{issue_number}/artifacts/{artifact_number}", tr, _REPO, sends_out=True),
@@ -413,8 +413,9 @@ def _routes() -> list[Route]:
         ("*", "/repos/{owner}/{repo}/import"),
         ("*", "/repos/{owner}/{repo}/import/{rest+}"),
         ("PATCH", "/repos/{owner}/{repo}/code-quality/setup"),
-        ("PATCH", "/repos/{owner}/{repo}/copilot/code-review/settings"),
-        ("PUT", "/repos/{owner}/{repo}/dependabot/runner-settings"),
+        # Reading these two is for administrators as well.
+        ("*", "/repos/{owner}/{repo}/copilot/code-review/settings"),
+        ("*", "/repos/{owner}/{repo}/dependabot/runner-settings"),
         ("PATCH", "/repos/{owner}/{repo}/code-scanning/ai-scan"),
         ("PATCH", "/repos/{owner}/{repo}/code-scanning/default-setup"),
         ("DELETE", "/repos/{owner}/{repo}/code-scanning/analyses/{analysis_id}"),
@@ -466,6 +467,10 @@ ROUTES = RouteTable(
     claims=("/repos/{owner}/{repo}", "/orgs/{org}"),
     unrouted={
         ("POST", "/repos/{owner}/{repo}/actions/runners/generate-jitconfig"): "runner registration is an administrator's job, done outside agents",
+        (
+            "POST",
+            "/repos/{owner}/{repo}/pulls/{pull_number}/copilot-code-review",
+        ): "requests a Copilot review: the API description names no permission for it, and it spends the requester's Copilot quota",
         ("*", "/orgs/{org}/{security_product}/{enablement}"): "covered by the organization catch-all",
     },
     locate=_locate,

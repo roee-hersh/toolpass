@@ -76,7 +76,7 @@ Exactly as in Argo CD:
 7. `server.rbac.rollback.enforce.enable` in `argocd-cm` (default false): `app.rollback` checks `sync`
    unless it is true, then it checks `rollback`. The built-in policy is Argo CD v3.6's, where
    `role:admin` may roll back; on v3.5 and earlier with this setting on, Argo CD itself refuses
-   `role:admin` a rollback that toolpass allows.
+   `role:admin` a rollback that toolpass allows; `toolpass probe` warns when the setting is on.
 
 ## Resources
 

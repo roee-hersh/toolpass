@@ -379,7 +379,8 @@ def test_audit_line_after_an_allowed_tool(tp: Toolpass, tmp_path: pathlib.Path, 
     # The tool's own error reaches the model first; newer CLIs (SDK 0.2.18x) add a
     # hint about the tool's input schema after it.
     text, is_error = r.results["toolu_0_1"]
-    assert is_error and (text == "the thing broke" or text.startswith("the thing broke\n")), text
+    own, _, hint = text.partition("\n")
+    assert is_error and own == "the thing broke" and (hint == "" or "input schema" in hint), text
     lines = [m.getMessage() for m in caplog.records if m.getMessage().startswith("unconditional write")]
     assert any(f"{ADMIN} ran thing.write on thing:5 in things; toolpass said allow" in m and "fresh=True" in m for m in lines), lines
     assert any(f"{ADMIN} got an error result from thing.write on thing:6" in m for m in lines), lines

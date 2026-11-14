@@ -456,9 +456,6 @@ def _routes() -> list[Route]:
         ("DELETE", "/api/v2/metrics/historical-metrics-configurations/{metric_name}", "late_metrics_config_write"),
     ):
         out.append(Route(method, path, _raw(perm), _ORG))
-    # Bulk tag configuration left Datadog's API description; the endpoint may still answer.
-    for method in ("POST", "DELETE"):
-        out.append(Route(method, "/api/v2/metrics/config/bulk-tags", _raw("metric_tags_write"), _ORG, spec=False))
     # The keys' own validity: nothing about the user.
     out.append(Route("GET", "/api/v1/validate", None, "", untrusted_output=False, description="whether the API key is valid"))
     return out
@@ -536,6 +533,8 @@ _NO_PERMISSION = (
     "/api/v2/team-hierarchy-links",
     "/api/v2/tags",
     "/api/v2/logs/archive_searches",
+    "/api/v2/wif/aws",
+    "/api/v2/wif/github",
 )
 
 # Every other product's API.
@@ -593,8 +592,8 @@ _OTHER = (
     "/api/v2/llm-obs",
     "/api/v2/login",
     "/api/v2/maintenance_windows",
-    "/api/v2/model-lab-api",
     "/api/v2/model-groups",
+    "/api/v2/model-lab-api",
     "/api/v2/ndm",
     "/api/v2/oauth2",
     "/api/v2/obs-pipelines",
@@ -633,8 +632,8 @@ _OTHER = (
     "/api/v2/usage",
     "/api/v2/user_authorized_clients",
     "/api/v2/web-integrations",
-    "/api/v2/wif",
     "/api/v2/widgets",
+    "/api/v2/wif/oidc",
 )
 
 _INTAKE = "data intake authenticates with the API key alone; no user permission governs it"
@@ -651,6 +650,7 @@ _EXACT: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/application_key"): _OWN_KEYS,
     ("*", "/api/v2/current_user"): _OWN_KEYS,
     ("*", "/api/v2/current_user/**"): _OWN_KEYS,
+    ("*", "/api/v2/metrics/config/bulk-tags"): "no longer in Datadog's API description, so the permission it needs cannot be confirmed",
     ("PUT", "/api/v1/logs/config/pipeline-order"): "reorders every pipeline, including restricted ones the integration does not read",
 }
 

@@ -142,7 +142,6 @@ ROUTING = [
     ("PATCH", "/api/v2/metrics/m.x/tags", {}, "raw:metric_tags_write", "org", "write"),
     ("POST", "/api/v2/metrics/derived-metrics", {}, "raw:metric_tags_write", "org", "write"),
     ("PUT", "/api/v2/metrics/m.x/tag-indexing-rule-exemptions", {}, "raw:metric_tags_write", "org", "write"),
-    ("POST", "/api/v2/metrics/config/bulk-tags", {}, "raw:metric_tags_write", "org", "write"),
     ("PUT", "/api/v2/metrics/derived-metrics/m.x", {}, "raw:metric_tags_write", "org", "write"),
     ("DELETE", "/api/v2/metrics/derived-metrics/m.x", None, "raw:metric_tags_write", "org", "destructive"),
     ("PUT", "/api/v1/metrics/m.x", {}, "raw:metrics_metadata_write", "org", "write"),
@@ -239,6 +238,11 @@ def test_writes_left_out():
         ("POST", "/api/v2/incidents"),
         ("POST", "/api/v1/dashboard/public"),
         ("PUT", "/api/v1/logs/config/pipelines/p1"),
+        ("POST", "/api/v2/metrics/config/bulk-tags"),  # left the API description
+        ("DELETE", "/api/v2/metrics/config/bulk-tags"),
+        ("POST", "/api/v2/wif/aws/persona_mapping"),  # no permission named
+        ("DELETE", "/api/v2/wif/oidc/provider/p1"),
+        ("POST", "/api/v2/budgets"),
     ):
         assert ROUTES.match(req(method, path, {})) is None, path
         assert ROUTES.is_unrouted(method, path) is not None, path

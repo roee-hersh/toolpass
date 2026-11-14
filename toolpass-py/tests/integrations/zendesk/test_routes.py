@@ -189,6 +189,10 @@ def test_requests_that_cannot_be_read_exactly_are_unresolved(method, path, body,
         ("PUT", "/api/v2/users/20/password"),
         ("POST", "/api/v2/bookmarks"),
         ("PUT", "/api/v2/task_lists/4"),
+        ("POST", "/api/v2/approval_requests"),
+        ("POST", "/api/v2/approval_clarification_flow_messages"),
+        ("PATCH", "/api/v2/approval_workflow_instances/7/approval_requests/3/decision"),
+        ("PATCH", "/api/v2/approval_workflow_instances/7/withdraw"),
     ],
 )
 def test_unrouted_writes_have_no_route(method, path):
