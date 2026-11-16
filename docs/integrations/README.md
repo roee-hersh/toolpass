@@ -36,6 +36,6 @@ that list is long enough that you should read it first.
 | fake | for smoke tests | |
 
 Each page covers the credential to create, the minimum permissions it needs, how the email maps to
-an account, the actions and resources, and what it cannot see. `toolpass catalog <integration>`
+an account, the actions and resources, and what it cannot see. `agent-authorizer catalog <integration>`
 prints the same keys and actions from the installed package. To add a system, see
 [integration authoring](../development/integration-authoring.md).

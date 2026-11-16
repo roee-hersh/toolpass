@@ -1,6 +1,6 @@
 # azure
 
-One connection is one Entra tenant's Azure Resource Manager. toolpass authenticates as an app
+One connection is one Entra tenant's Azure Resource Manager. agent-authorizer authenticates as an app
 registration, resolves the user to an Entra object id, lists the role assignments and deny
 assignments that apply to that user at a scope (inherited from parent scopes and through group
 membership, which Azure's `assignedTo()` filter expands), reads the role definitions and evaluates
@@ -13,13 +13,13 @@ An **app registration** with a **client secret** (`credential`). Grant it:
 
 - the built-in **Reader** role (`*/read`, which includes `Microsoft.Authorization/roleAssignments/read`,
   `roleDefinitions/read` and `denyAssignments/read`) at the root management group, or at every
-  subscription toolpass is asked about. Assignments at a scope the app cannot read answer
+  subscription agent-authorizer is asked about. Assignments at a scope the app cannot read answer
   `resource_not_visible`.
 - for identity, either a `microsoft365_connection` (the microsoft365 integration's app resolves the
   user; nothing else is needed on this app), or the Graph application permission `User.Read.All`
-  on this app so toolpass can look the user up itself.
+  on this app so agent-authorizer can look the user up itself.
 
-`toolpass probe` fetches an ARM token, lists the built-in role definitions and, without a
+`agent-authorizer probe` fetches an ARM token, lists the built-in role definitions and, without a
 `microsoft365_connection`, lists one Graph user.
 
 ## Connection
@@ -62,7 +62,7 @@ memberships itself through `$filter=assignedTo('{objectId}')`.
 | `resource:/subscriptions/.../providers/<ns>/<type>/<name>[/<type>/<name>]` | the full ARM id |
 
 Every segment is limited to letters, digits, `-`, `_`, `.`, `(` and `)`, with no dot-only
-segments, so the scope toolpass builds is the one ARM spells in assignment scopes and needs no
+segments, so the scope agent-authorizer builds is the one ARM spells in assignment scopes and needs no
 escaping in the URL.
 
 ## Actions
@@ -94,7 +94,7 @@ Wildcards are not accepted in `raw:` or `data:`; role definitions carry them.
 2. When something grants (or might), `GET {scope}/providers/Microsoft.Authorization/denyAssignments?$filter=assignedTo('{oid}')`.
    Each deny whose scope is the target or an ancestor (honouring `doNotApplyToChildScopes`) and
    whose `actions` minus `notActions` (or data equivalents) match the operation **denies**, unless
-   `excludePrincipals` names the user. A deny with a `condition`, one excluding a **group** (toolpass
+   `excludePrincipals` names the user. A deny with a `condition`, one excluding a **group** (agent-authorizer
    does not read group membership), or one whose scope cannot be placed, makes the answer
    `unsupported` instead of allowed.
 3. Otherwise the first unconditional grant **allows**, naming the role, whether it was assigned
@@ -106,7 +106,7 @@ Wildcards are not accepted in `raw:` or `data:`; role definitions carry them.
 
 ## Requests a tool makes
 
-The route table (`toolpass routes azure`) maps a toolpass tool's requests to the connection's `url`
+The route table (`agent-authorizer routes azure`) maps an agent-authorizer tool's requests to the connection's `url`
 to the operation ARM authorizes them as, read from the path: `{ns}/{type}[/{type}...]/read` for GET
 and HEAD, `/write` for PUT and PATCH, `/delete` for DELETE, `/{action}/action` for a POST to
 `.../{name}/{action}`; a GET of a collection is the type's read on its parent. Paths without a
@@ -165,16 +165,16 @@ it matters:
 
 - Operation matching is case-insensitive and `*` spans slashes, as the documentation's examples
   imply.
-- Whether `assignedTo()` on deny assignments already applies `excludePrincipals` (toolpass applies
+- Whether `assignedTo()` on deny assignments already applies `excludePrincipals` (agent-authorizer applies
   them again, which is safe).
 - The tenant-root listing `GET /providers/Microsoft.Authorization/roleDefinitions` used by the probe
   is not in the specification file, though `az role definition list` uses it.
 
 ## Test
 
-`python -m pytest tests/integrations/azure` (in `toolpass-py`) runs a fake token endpoint, Graph and ARM validated
+`python -m pytest tests/integrations/azure` (in `agent-authorizer-py`) runs a fake token endpoint, Graph and ARM validated
 against `authorization-RoleAssignmentsCalls`, `authorization-RoleDefinitionsCalls`,
-`authorization-DenyAssignmentCalls` and the Graph description when `TOOLPASS_SPECS_DIR` holds them
+`authorization-DenyAssignmentCalls` and the Graph description when `AGENT_AUTHORIZER_SPECS_DIR` holds them
 (`test/specs/fetch.sh`). The fake has Reader, Contributor, Owner, a data-plane role and a custom
 role, assignments direct and through a group at management-group, subscription, resource-group and
 resource scopes, a conditional assignment, and deny assignments with exclusions, conditions and

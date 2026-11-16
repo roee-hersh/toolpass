@@ -1,10 +1,10 @@
 # googleworkspace
 
-toolpass authenticates as a service account with domain-wide delegation. Directory calls impersonate
+agent-authorizer authenticates as a service account with domain-wide delegation. Directory calls impersonate
 one admin (`admin_email`) with read-only scopes to find the user and to answer group membership.
 Drive, Calendar and Gmail calls impersonate **the user being asked about**, so Google itself
 evaluates that user's access: a file's `capabilities`, a calendar's `accessRole`, the user's send-as
-addresses. One access token is minted per (impersonated user, scope) and cached. toolpass never
+addresses. One access token is minted per (impersonated user, scope) and cached. agent-authorizer never
 performs an action and nothing is persisted.
 
 ## Credential
@@ -39,13 +39,13 @@ performs an action and nothing is persisted.
    ```
 
    Listing a user's groups (`groups.list?userKey=`) needs it; `group.member.readonly` is not enough.
-   `toolpass probe` warns when it cannot be minted, saying it is needed only for that use.
+   `agent-authorizer probe` warns when it cannot be minted, saying it is needed only for that use.
 3. Make `admin_email` an admin whose custom role has only **Users > Read** and **Groups > Read**.
-   A super admin works but is far more than toolpass needs.
+   A super admin works but is far more than agent-authorizer needs.
 4. Enable the Admin SDK, Drive, Calendar and (optionally) Gmail APIs in the service account's
    project.
 
-Signing with a service-account key needs `cryptography`: install `toolpass[crypto]` (the Docker image has it).
+Signing with a service-account key needs `cryptography`: install `agent-authorizer[crypto]` (the Docker image has it).
 
 ## Connection
 
@@ -53,10 +53,10 @@ Signing with a service-account key needs `cryptography`: install `toolpass[crypt
   - id: gws-example
     integration: googleworkspace
     credential: file:/secrets/gws-sa.json       # service-account key JSON (auth_mode key)
-    admin_email: toolpass-admin@example.com
+    admin_email: agent-authorizer-admin@example.com
     customer_id: my_customer                   # optional
     auth_mode: key                             # or keyless
-    service_account_email: toolpass@proj.iam.gserviceaccount.com   # keyless only
+    service_account_email: agent-authorizer@proj.iam.gserviceaccount.com   # keyless only
     enable_gmail_settings: "false"             # optional
     gke_security_group: gke-security-groups@example.com   # optional, kubernetes groups on GKE
 ```
@@ -82,7 +82,7 @@ below). There is no separate key for the Admin SDK host.
 
 In `key` mode every token is a JWT bearer exchange: RS256 with `kid` = `private_key_id`, `iss` =
 `client_email`, one `scope`, `aud` = `token_url`, `sub` = the impersonated user, one hour lifetime.
-In `keyless` mode toolpass reads the runtime identity's token from the metadata server and asks
+In `keyless` mode agent-authorizer reads the runtime identity's token from the metadata server and asks
 `iamcredentials.googleapis.com` to `signJwt` the same claims; the runtime identity needs
 `roles/iam.serviceAccountTokenCreator` on the service account. A 401 from an API invalidates that
 token and retries once.
@@ -124,7 +124,7 @@ address.
 
 ## Decisions
 
-| Situation | toolpass answers |
+| Situation | agent-authorizer answers |
 |---|---|
 | capability true, role sufficient, member | allow |
 | send-as entry `verificationStatus: accepted`, or the mailbox's own `isPrimary` entry; delegate `accepted` | allow |
@@ -155,15 +155,15 @@ Google error messages are never copied into a decision text; only `errors[].reas
 
 ## Probe
 
-`toolpass probe` mints the admin Directory token (which proves delegation for that scope), lists
+`agent-authorizer probe` mints the admin Directory token (which proves delegation for that scope), lists
 one user with `customer={customer_id}`, then mints a token per remaining scope as `admin_email` and
 warns, naming the scope, for each one the token endpoint refuses. It warns that
 `enable_gmail_settings` grants a write-capable scope when on, and always reminds that domain-wide
 delegation is a broad grant. The summary names the service account and the admin.
 
-## Requests a toolpass tool makes
+## Requests an agent-authorizer tool makes
 
-The integration's route table (`toolpass routes googleworkspace`) maps the requests a toolpass tool
+The integration's route table (`agent-authorizer routes googleworkspace`) maps the requests an agent-authorizer tool
 sends to Google's APIs to an action and a resource, so the toolkit checks the session's user before
 each request inside `as_user()` leaves. It covers `www.googleapis.com`, `content.googleapis.com`, the `drive`, `gmail`,
 `admin`, `docs`, `sheets` and `slides` hosts under `googleapis.com`, and `api_url` when it names
@@ -219,7 +219,7 @@ every Gmail request is refused as unknown.
 - **Send-as aliases without a verification status** (Workspace domain aliases, `treatAsAlias`
   entries): Gmail does not say whether they are usable, so they are unknown.
 - **Why Drive answered 404**: with reason `notFound` Drive does not distinguish "no access" from
-  "does not exist", and toolpass answers deny for both.
+  "does not exist", and agent-authorizer answers deny for both.
 
 ## Kubernetes groups
 
@@ -238,7 +238,7 @@ still matches the user's RoleBindings.
 Each item is marked `# UNVERIFIED:` in the code.
 
 - `groups.list?userKey=` returns the groups the user is a direct member of. GKE also honours a
-  group the user reaches through nesting; such a group is missing from toolpass's list, which can
+  group the user reaches through nesting; such a group is missing from agent_authorizer's list, which can
   only deny.
 
 - The IAM Credentials `signJwt` request `{"payload": "<claims JSON>"}` and response
@@ -254,7 +254,7 @@ Each item is marked `# UNVERIFIED:` in the code.
   not enabled") to Gmail settings calls.
 - A Gmail `403 forbidden`, or a 403 without a reason, on a call made as the user ("Delegation
   denied for <user>") is assumed to be about that account and is unknown (`unsupported`); only
-  `insufficientPermissions` and `accessNotConfigured` are taken as toolpass's credential.
+  `insufficientPermissions` and `accessNotConfigured` are taken as agent_authorizer's credential.
 - Whether `www.googleapis.com` serves the Directory API at `/admin/directory/v1`; the canonical host
   is `admin.googleapis.com`. Production leaves `api_url` at its default.
 

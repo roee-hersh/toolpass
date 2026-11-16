@@ -1,6 +1,6 @@
-# Operating toolpass
+# Operating agent-authorizer
 
-Running toolpass day to day: what it logs, how to watch it, and what each `unknown` means. Most of
+Running agent-authorizer day to day: what it logs, how to watch it, and what each `unknown` means. Most of
 it applies to the in-process engine as well as the server. To set
 it up, see [Deploy](deploy.md). For the file format, see the
 [configuration reference](../reference/configuration.md).
@@ -10,9 +10,9 @@ it up, see [Deploy](deploy.md). For the file format, see the
 - `GET /healthz` answers `{"status":"ok"}` while the server runs. Use it for liveness and readiness.
 - At startup `serve` probes every connection and logs a warning for each one that fails. A broken
   connection never stops the service from starting; its checks answer `unknown`.
-- `toolpass probe -config FILE [-connection ID]` repeats that probe on demand, for example after
+- `agent-authorizer probe -config FILE [-connection ID]` repeats that probe on demand, for example after
   rotating a credential. In-process, `tp.probe()` returns `(connection id, ok, summary or error)`
-  for each connection; building a `Toolpass` does not probe.
+  for each connection; building an `AgentAuthorizer` does not probe.
 - `GET /dashboard/` shows the runs the agents report to this server, live, with each request a
   tool made and whether the system allowed it ([the dashboard](dashboard.md)). Each batch of runs
   taken is a `runs` line in the server's log, with the reporting process's name and the count.
@@ -24,7 +24,7 @@ it up, see [Deploy](deploy.md). For the file format, see the
 ## Decision log
 
 Every answered check is one JSON line in `decision_log` (a path, `stderr`, `stdout` or `none`). The
-in-process engine writes the same lines, with `"remote":"in-process"`; `Toolpass(connections=[...])`
+in-process engine writes the same lines, with `"remote":"in-process"`; `AgentAuthorizer(connections=[...])`
 writes none unless you pass `decision_log=`.
 
 ```json
@@ -64,14 +64,14 @@ Every `unknown` carries a code. What each one usually means and what to do:
 | `upstream_timeout` | The system took longer than the connection's `timeout` | Check the system's status; raise `timeout` if it is routinely slow |
 | `upstream_rate_limited` | The system returned 429 | Keep the decision cache on and ask the vendor for a higher limit |
 | `upstream_error` | The system returned 5xx or an unexpected body | Check the system's status; the decision log shows the call and its status |
-| `credential_rejected` | toolpass's own credential was refused | Rotate or re-grant it as the integration page describes; `toolpass probe` confirms |
-| `resource_not_visible` | toolpass's credential cannot see that resource | Grant the read permission the integration page lists for it |
+| `credential_rejected` | agent-authorizer's own credential was refused | Rotate or re-grant it as the integration page describes; `agent-authorizer probe` confirms |
+| `resource_not_visible` | agent-authorizer's credential cannot see that resource | Grant the read permission the integration page lists for it |
 | `user_ambiguous` | Several accounts match the email | Fix the directory, or use the integration's mapping file |
-| `unsupported` | A policy construct toolpass does not evaluate, such as an IAM condition | Expected; the integration page lists these |
+| `unsupported` | A policy construct agent-authorizer does not evaluate, such as an IAM condition | Expected; the integration page lists these |
 | `not_configured` | The connection cannot ask as configured, such as a github connection with no identity source its credential can read | Configure one, as the integration page describes; nothing about the user was checked |
-| `unauthorized` (HTTP 401) | The caller's API key is wrong or missing (server only) | Check the agent's `TOOLPASS_API_KEY` |
-| `client_error` | `Toolpass.remote` or the Node client got no usable answer: the server is unreachable, timed out, redirected, or sent something that is not a decision | Check that the server is up and the URL is right; nothing reached the decision log |
-| `unknown_connection`, `unknown_action`, `invalid_request` (HTTP 400) | A mistake in the request | `toolpass catalog <integration>` lists the actions |
+| `unauthorized` (HTTP 401) | The caller's API key is wrong or missing (server only) | Check the agent's `AGENT_AUTHORIZER_API_KEY` |
+| `client_error` | `AgentAuthorizer.remote` or the Node client got no usable answer: the server is unreachable, timed out, redirected, or sent something that is not a decision | Check that the server is up and the URL is right; nothing reached the decision log |
+| `unknown_connection`, `unknown_action`, `invalid_request` (HTTP 400) | A mistake in the request | `agent-authorizer catalog <integration>` lists the actions |
 
 `deny` with `user_not_found` is not an error: the person has no account in that system.
 
@@ -81,5 +81,5 @@ Every `unknown` carries a code. What each one usually means and what to do:
   behind it, is enough.
 - An `env:` credential comes from the process environment, which does not change while the
   process runs. Restart to pick up a new value.
-- To rotate the API key without downtime, run a second toolpass server with the new key, move the
+- To rotate the API key without downtime, run a second agent-authorizer server with the new key, move the
   agents across, then stop the old one.

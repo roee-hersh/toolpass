@@ -1,11 +1,11 @@
 # Ask who may do what, from your assistant
 
-The toolpass server answers permission questions to an AI assistant too. Connect Claude Code or
+The agent-authorizer server answers permission questions to an AI assistant too. Connect Claude Code or
 any other MCP client to it, and a person can ask in their own words:
 
 > Can Ilya create deployments in the payments namespace on prod-eu?
 
-The assistant finds the connection and the action, asks toolpass, and toolpass asks the cluster,
+The assistant finds the connection and the action, asks agent-authorizer, and agent-authorizer asks the cluster,
 now, exactly as [`POST /check`](../reference/api.md#post-check) does:
 
 > No. Kubernetes denies `deployment.create` in `namespace:payments` for `ilya@example.com`:
@@ -17,20 +17,20 @@ refused, whether an offboarded account can still do anything.
 ## What it is not
 
 It does not stop anything. A model cannot be relied on to ask before it acts, so a tool that acts
-for a person is held to that person's permissions by [`toolpass.tool`](agent-tools.md), inside the
+for a person is held to that person's permissions by [`agent_authorizer.tool`](agent-tools.md), inside the
 tool, whether or not anyone asked first. The tools here only read, and nothing an assistant does
 with them changes what a secured tool allows.
 
 ## Connect
 
-The endpoint is `/mcp` on the server you already run (`toolpass serve`), with nothing to switch on.
+The endpoint is `/mcp` on the server you already run (`agent-authorizer serve`), with nothing to switch on.
 It takes the server's `api_key` as a bearer token, like every other route.
 
 Claude Code:
 
 ```sh
-claude mcp add --transport http toolpass https://toolpass.internal/mcp \
-  --header "Authorization: Bearer $TOOLPASS_API_KEY"
+claude mcp add --transport http agent-authorizer https://agent-authorizer.internal/mcp \
+  --header "Authorization: Bearer $AGENT_AUTHORIZER_API_KEY"
 ```
 
 Or in a project's `.mcp.json`:
@@ -38,10 +38,10 @@ Or in a project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "toolpass": {
+    "agent-authorizer": {
       "type": "http",
-      "url": "https://toolpass.internal/mcp",
-      "headers": { "Authorization": "Bearer ${TOOLPASS_API_KEY}" }
+      "url": "https://agent-authorizer.internal/mcp",
+      "headers": { "Authorization": "Bearer ${AGENT_AUTHORIZER_API_KEY}" }
     }
   }
 }
@@ -55,7 +55,7 @@ Try it against the [quickstart](../quickstart.md#3-run-it-as-a-server) server wi
 | Tool | Takes | Answers |
 |---|---|---|
 | `list_connections` | nothing | each connection's id and the kind of system it is (`k8s-prod-eu`, `kubernetes`) |
-| `list_actions` | `connection` | the actions that can be asked about there, each with a one-line description, as `toolpass catalog` prints them |
+| `list_actions` | `connection` | the actions that can be asked about there, each with a one-line description, as `agent-authorizer catalog` prints them |
 | `check_permission` | `user` (an email), `connection`, `action`, `resource`; optionally `groups` and `fresh` | `decision` (`allow`, `deny` or `unknown`), `reason`, its `code`, and `identity`, the account the email resolved to |
 
 `check_permission` takes the fields of `POST /check` and gives its answer, with the same decision
@@ -69,7 +69,7 @@ codes, caches and decision log line. Three things differ:
   question (the reason names the resource shapes the system takes) or asks the person.
 - **There is no `token`.** A person's ID token should not pass through a model. For a connection
   that reads groups from the token ([Groups from the user's token](groups.md)), give `groups` when
-  you know them, or ask with [`toolpass check`](../reference/cli.md).
+  you know them, or ask with [`agent-authorizer check`](../reference/cli.md).
 
 The user is an email address. The assistant is told to ask for it rather than guess one from a
 name, and to ask which namespace, repository or project is meant when the question does not say.
@@ -87,7 +87,7 @@ the key to the people who should be able to look up other people's access, and t
 - `reason` and `identity` carry text from the system that was asked (an account's display name,
   for example). The assistant is told to treat them as data; do not connect this endpoint to an
   agent that also holds tools able to act on what it reads without the
-  [toolkit's guards](../../toolpass-py/README.md#the-exfiltration-guard).
+  [toolkit's guards](../../agent-authorizer-py/README.md#the-exfiltration-guard).
 - Every question is a line in the [decision log](operating.md#decision-log), with the user asked
   about and the caller's address, and each tool call is an `mcp tool` line in the server's log
   (without the user).

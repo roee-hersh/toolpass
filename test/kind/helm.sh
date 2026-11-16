@@ -14,8 +14,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 . test/kind/cluster.sh
-RELEASE=toolpass
-NS=toolpass-helm
+RELEASE=agent-authorizer
+NS=agent-authorizer-helm
 KEY=ci-key
 PF_PID=
 
@@ -27,13 +27,13 @@ trap cleanup EXIT
 
 kubectl apply -f test/kind/fixtures.yaml
 
-docker build -t toolpass:e2e .
-kind load docker-image toolpass:e2e --name "$CLUSTER"
+docker build -t agent-authorizer:e2e .
+kind load docker-image agent-authorizer:e2e --name "$CLUSTER"
 
-helm lint deploy/helm/toolpass --strict --set apiKey.value=x
-helm upgrade --install "$RELEASE" deploy/helm/toolpass \
+helm lint deploy/helm/agent-authorizer --strict --set apiKey.value=x
+helm upgrade --install "$RELEASE" deploy/helm/agent-authorizer \
   --namespace "$NS" --create-namespace --wait --timeout 120s \
-  --set image.repository=toolpass --set image.tag=e2e --set image.pullPolicy=Never \
+  --set image.repository=agent-authorizer --set image.tag=e2e --set image.pullPolicy=Never \
   --set apiKey.value="$KEY" \
   --set serviceAccount.automountToken=true \
   --set rbac.subjectAccessReview.create=true \
@@ -52,7 +52,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 if [ -z "$ready" ]; then
-  echo "toolpass never answered /healthz through the port-forward"
+  echo "agent-authorizer never answered /healthz through the port-forward"
   kubectl -n "$NS" get pods
   kubectl -n "$NS" logs "deploy/$RELEASE" --tail=50 || true
   exit 1

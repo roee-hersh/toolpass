@@ -1,6 +1,6 @@
 # kubernetes
 
-toolpass asks the API server with a `SubjectAccessReview`: "may user U with groups G do verb V on
+agent-authorizer asks the API server with a `SubjectAccessReview`: "may user U with groups G do verb V on
 resource R in namespace N?". The API server answers from RBAC and every other authorizer it has
 (webhooks, ABAC, Node). Nothing is persisted.
 
@@ -15,11 +15,11 @@ rules:
     verbs: ["create"]
 ```
 
-`test/kind/toolpass-rbac.yaml` has the full ServiceAccount, ClusterRole and ClusterRoleBinding. This
+`test/kind/agent-authorizer-rbac.yaml` has the full ServiceAccount, ClusterRole and ClusterRoleBinding. This
 is tighter than the built-in `system:auth-delegator`, which also allows TokenReviews.
 
-A projected token (`kubectl create token toolpass -n toolpass`, or a projected volume in a pod) expires;
-reference it with `credential: file:/path` and toolpass re-reads it on every use.
+A projected token (`kubectl create token agent-authorizer -n agent-authorizer`, or a projected volume in a pod) expires;
+reference it with `credential: file:/path` and agent-authorizer re-reads it on every use.
 
 ## Connection
 
@@ -27,7 +27,7 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
   - id: k8s-prod-eu
     integration: kubernetes
     url: https://10.20.0.5:6443
-    ca_file: /etc/toolpass/ca/prod-eu.pem     # the cluster CA
+    ca_file: /etc/agent-authorizer/ca/prod-eu.pem     # the cluster CA
     tls_server_name: kubernetes                # when the URL is an IP
     credential: file:/secrets/k8s-prod-eu-token
     username_template: "oidc:{email}"          # optional, default {email}
@@ -50,7 +50,7 @@ reference it with `credential: file:/path` and toolpass re-reads it on every use
 | `eks_cluster` | The EKS cluster name. Required when `groups_connection` is an `aws` connection, refused otherwise |
 | `eks_aws_auth` | `true` also reads the `kube-system/aws-auth` ConfigMap for principals with no access entry (default `false`; needs one more RBAC rule, below) |
 
-toolpass has no user directory to consult. The Kubernetes username is a pure transform of the email, so
+agent-authorizer has no user directory to consult. The Kubernetes username is a pure transform of the email, so
 the template must match the API server's `--oidc-username-prefix` / `--oidc-username-claim` flags or its
 structured authentication config. A wrong template silently denies everyone. Run one check for a user
 you know is allowed after configuring.
@@ -67,10 +67,10 @@ server reserves. Without a prefix, groups starting with `system:` are rejected w
 
 ## Groups from the email
 
-With `groups_connection` set, toolpass asks that connection for the user's groups whenever the
+With `groups_connection` set, agent-authorizer asks that connection for the user's groups whenever the
 caller sends none, so the email alone is enough:
 
-| `groups_connection` names | What toolpass sends | Fits |
+| `groups_connection` names | What agent-authorizer sends | Fits |
 |---|---|---|
 | [`aws`](aws.md) (with `eks_cluster`) | the `kubernetesGroups` of the EKS access entries of the user's IAM principals (the Identity Center roles of their permission sets, their IAM user, or their `role_map_file` roles), unioned; the entry's `username` when exactly one entry matched | EKS |
 | [`googleworkspace`](googleworkspace.md) | the email addresses of the user's Google groups (`gke_security_group` on that connection keeps only the groups GKE honours), and the account's primary email as the username | GKE with Google Groups for RBAC |
@@ -97,7 +97,7 @@ directory user in no group is checked by username alone.
   - id: k8s-eks-prod
     integration: kubernetes
     url: https://ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com
-    ca_file: /etc/toolpass/ca/eks-prod.pem
+    ca_file: /etc/agent-authorizer/ca/eks-prod.pem
     credential: file:/secrets/eks-prod-token
     groups_connection: aws-prod
     eks_cluster: prod
@@ -119,7 +119,7 @@ usernames are lost, since no single username applies then.
 
 With `eks_aws_auth: "true"`, each principal with no access entry is also looked up in the `mapRoles`
 and `mapUsers` of the `kube-system/aws-auth` ConfigMap, as EKS falls back to aws-auth per principal.
-The ConfigMap is read with toolpass's own ServiceAccount and reused for a minute across users; the
+The ConfigMap is read with agent-authorizer's own ServiceAccount and reused for a minute across users; the
 ServiceAccount then needs one more rule, a Role in `kube-system`:
 
 ```yaml
@@ -130,7 +130,7 @@ rules:
     verbs: ["get"]
 ```
 
-`toolpass probe` accepts that rule without the over-privilege warning when `eks_aws_auth` is on, and
+`agent-authorizer probe` accepts that rule without the over-privilege warning when `eks_aws_auth` is on, and
 warns when the ConfigMap is missing or unreadable.
 
 ## Resources
@@ -165,7 +165,7 @@ When both the action and the request name a resource they must agree.
 
 ## Decisions
 
-| API server says | toolpass answers |
+| API server says | agent-authorizer answers |
 |---|---|
 | `allowed: true` | allow |
 | `allowed: false`, no `evaluationError` | deny |
@@ -175,14 +175,14 @@ When both the action and the request name a resource they must agree.
 
 ## Probe
 
-`toolpass probe` posts a SubjectAccessReview for a throwaway subject to prove the token may create
+`agent-authorizer probe` posts a SubjectAccessReview for a throwaway subject to prove the token may create
 them, then a SelfSubjectRulesReview (any authenticated subject may) and warns when the token can do
 anything beyond that one rule, listing the extra verbs and resources.
 
 ## What it cannot see
 
 - Admission: ValidatingAdmissionPolicy, admission webhooks, Pod Security admission and resource quotas
-  run after authorization and can still reject a request toolpass allowed.
+  run after authorization and can still reject a request agent-authorizer allowed.
 - A wrong `username_template` denies everyone silently.
 - Groups are whatever the caller sends, or what `groups_connection` names when the caller sends none.
   Only the `system:` namespace is protected, and only when `group_prefix` is unset.
@@ -192,7 +192,7 @@ anything beyond that one rule, listing the extra verbs and resources.
 - **EKS**: set `groups_connection` to an aws connection and `eks_cluster` (above). EKS access
   *policies* (`AmazonEKSClusterAdminPolicy` and the other AWS-managed policies associated with an
   access entry) are evaluated by EKS's own authorizer, not RBAC; whether a SubjectAccessReview sees
-  them is unverified. A user whose access comes only from an access policy may be denied by toolpass
+  them is unverified. A user whose access comes only from an access policy may be denied by agent-authorizer
   and allowed by the cluster. Give access through `kubernetesGroups` and RBAC bindings to be sure.
 - **GKE**: the username is the Google email; set `groups_connection` to a googleworkspace connection
   with `gke_security_group`. Whether IAM-granted access (roles/container.*) appears in a review is
@@ -204,8 +204,8 @@ anything beyond that one rule, listing the extra verbs and resources.
 ## Test
 
 Unit tests run against a fake API server, including a groups source of every kind and the aws-auth
-fallback. `test/kind/run.sh` creates a kind cluster, applies `test/kind/toolpass-rbac.yaml` and
-`test/kind/fixtures.yaml`, and runs the end-to-end tests (`toolpass-py/tests/e2e`) against it: among
+fallback. `test/kind/run.sh` creates a kind cluster, applies `test/kind/agent-authorizer-rbac.yaml` and
+`test/kind/fixtures.yaml`, and runs the end-to-end tests (`agent-authorizer-py/tests/e2e`) against it: among
 them, a connection whose `groups_connection` is a fake directory putting dana in `platform-team`, so
 dana is allowed `deployment.create` with no groups sent (denied on the connection without one), and
 a mapped `system:masters` group that the real API server honours. The directory halves (EKS, Google,

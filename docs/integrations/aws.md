@@ -1,6 +1,6 @@
 # aws
 
-One connection is one AWS account. toolpass assumes a read-only role in that account, works out which
+One connection is one AWS account. agent-authorizer assumes a read-only role in that account, works out which
 IAM principals the user can act as (the `AWSReservedSSO_*` roles of their IAM Identity Center permission
 sets, a static email/group -> role map, or an IAM user), and asks `iam:SimulatePrincipalPolicy` whether
 each principal may perform the action on the ARN. IAM evaluates the principal's identity policies,
@@ -8,7 +8,7 @@ permissions boundary and the organization's SCPs. Any principal allowed answers 
 
 ## Credential
 
-toolpass needs two things: a credential to start from, and a role to assume in the account.
+agent-authorizer needs two things: a credential to start from, and a role to assume in the account.
 
 ### The starting credential
 
@@ -17,7 +17,7 @@ toolpass needs two things: a credential to start from, and a role to assume in t
 - JSON static keys: `{"access_key_id":"AKIA...","secret_access_key":"...","session_token":"..."}`
   (`session_token` optional), or
 - the literal `ambient:auto`, `ambient:container`, `ambient:web_identity` or `ambient:imds`, meaning
-  "use the credentials of the environment toolpass runs in": environment keys, the ECS/EKS Pod Identity
+  "use the credentials of the environment agent-authorizer runs in": environment keys, the ECS/EKS Pod Identity
   container endpoint, IRSA (`AWS_ROLE_ARN` + `AWS_WEB_IDENTITY_TOKEN_FILE`) or the EC2 instance metadata
   service. `auto` tries them in that order.
 
@@ -25,11 +25,11 @@ The config loader only accepts `env:`/`file:` references for secrets, so an ambi
 reference to a variable holding the literal:
 
 ```sh
-export TOOLPASS_AWS_CRED=ambient:imds
+export AGENT_AUTHORIZER_AWS_CRED=ambient:imds
 ```
 
 ```yaml
-    credential: env:TOOLPASS_AWS_CRED
+    credential: env:AGENT_AUTHORIZER_AWS_CRED
 ```
 
 The secret is re-read whenever the assumed-role credentials are refreshed (about every 55 minutes), so a
@@ -86,11 +86,11 @@ trusting the same starting credential:
 }
 ```
 
-`toolpass probe` assumes both roles, reports the caller ARN, counts the `AWSReservedSSO_*` roles in the
+`agent-authorizer probe` assumes both roles, reports the caller ARN, counts the `AWSReservedSSO_*` roles in the
 account and, in `identity_center` mode, checks that `sso_instance_arn` and `identity_store_id` match what
 `sso:ListInstances` returns. It always warns that `iam:SimulatePrincipalPolicy` discloses information
-about the permissions granted to other users: that is what toolpass is for, but the role should be held
-by toolpass alone.
+about the permissions granted to other users: that is what agent-authorizer is for, but the role should be held
+by agent-authorizer alone.
 
 ## Connection
 
@@ -98,26 +98,26 @@ by toolpass alone.
   - id: aws-prod
     integration: aws
     account_id: "123456789012"
-    role_arn: arn:aws:iam::123456789012:role/toolpass-read
+    role_arn: arn:aws:iam::123456789012:role/agent-authorizer-read
     external_id: 7f3a...                          # optional
     partition: aws                                # aws (default), aws-us-gov, aws-cn
     region: eu-west-1                             # STS endpoint region
-    credential: env:TOOLPASS_AWS_CRED             # JSON keys, or ambient:<mode>
+    credential: env:AGENT_AUTHORIZER_AWS_CRED             # JSON keys, or ambient:<mode>
     identity_mode: identity_center                # identity_center (default), static_map, iam_user
-    identity_center_role_arn: arn:aws:iam::999999999999:role/toolpass-identity-center-read
+    identity_center_role_arn: arn:aws:iam::999999999999:role/agent-authorizer-identity-center-read
     identity_center_region: eu-west-1
     identity_store_id: d-936712345a
     sso_instance_arn: arn:aws:sso:::instance/ssoins-1234567890abcdef
     context_entries: "aws:MultiFactorAuthPresent=boolean:true;aws:SourceIp=ip:10.0.0.1"   # optional
     implicit_deny_as: deny                        # deny (default) or unknown
-    session_name: toolpass                        # optional
+    session_name: agent-authorizer                        # optional
     eks_region: eu-west-1                         # optional: EKS clusters' region, default region
 ```
 
 | Key | Meaning |
 |---|---|
 | `account_id` | the 12-digit account this connection answers for. `role_arn` must be in it |
-| `role_arn` | toolpass's read role in the account |
+| `role_arn` | agent-authorizer's read role in the account |
 | `external_id` | sent as `ExternalId` on every `AssumeRole` (both roles) |
 | `partition` | `aws`, `aws-us-gov` or `aws-cn`; picks the endpoints and must match every ARN |
 | `region` | region of the STS endpoint used for `AssumeRole` |
@@ -131,7 +131,7 @@ by toolpass alone.
 | `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | `static_map`: read the user's groups from the ID token sent with the check when the caller sends none; see [Groups from the user's token](../guides/groups.md) |
 | `context_entries` | condition keys for the simulation: `key=type:value;key=type:value`; types `string`, `stringList` (comma-separated values), `numeric`, `boolean`, `ip`, `binary`, `date` |
 | `implicit_deny_as` | what "no statement matched" (and, for `identity_center`, "no permission set assigned") answers: `deny` (default) or `unknown` |
-| `session_name` | `RoleSessionName`, default `toolpass` |
+| `session_name` | `RoleSessionName`, default `agent-authorizer` |
 | `eks_region` | region of the EKS clusters a kubernetes connection looks up through this connection; default `region` |
 
 Endpoints: STS `https://sts.<region>.amazonaws.com`, IAM `https://iam.amazonaws.com` (signed for
@@ -168,7 +168,7 @@ platform-team           arn:aws:iam::123456789012:role/PlatformAdmin
 platform-team           arn:aws:iam::123456789012:role/ReadOnly
 ```
 
-The file must exist and parse when toolpass starts and is re-read at most every 60 seconds; a broken
+The file must exist and parse when agent-authorizer starts and is re-read at most every 60 seconds; a broken
 re-read keeps the last good map and logs a warning. Groups come from the caller's `groups` field or,
 when it sends none and `oidc_issuer` is set, from the user's ID token.
 
@@ -179,7 +179,7 @@ when it sends none and `oidc_issuer` is set, from the user's ID token.
 | `arn:<partition>:<service>:<region>:<account>:<resource>` | that ARN, verbatim (`arn:aws:s3:::bucket/key`, `arn:aws:ec2:eu-west-1:123456789012:instance/i-0abc`). The account field is empty or 12 digits; the partition must match the connection |
 | `all` | every resource (`*`); the simulation then reports the action's overall decision |
 
-`catalog.ParseResource` splits at the first colon, so an ARN arrives as type `arn`; toolpass uses the raw
+`catalog.ParseResource` splits at the first colon, so an ARN arrives as type `arn`; agent-authorizer uses the raw
 string. An ARN whose account field names another account answers `unsupported`: cross-account access
 depends on the resource policy in that account, which the simulation does not see.
 
@@ -202,7 +202,7 @@ One check costs one `SimulatePrincipalPolicy` per candidate principal until one 
 
 ## Requests a tool makes
 
-The route table (`toolpass routes aws`) maps a toolpass tool's requests to `raw:<service>:<Action>` on
+The route table (`agent-authorizer routes aws`) maps an agent-authorizer tool's requests to `raw:<service>:<Action>` on
 the ARN the request acts on, so a boto3 call needs no declaration. The service comes from the host
 (every region of the connection's `partition`, S3's dualstack and dash-style regional hosts such as
 `s3-us-west-2.amazonaws.com`, and the global IAM, STS, S3 and S3 Transfer Acceleration hosts), the
@@ -248,7 +248,7 @@ ARN are merged: `allowed` only when both say so, otherwise the more restrictive 
 `implicitDeny` > `allowed`). An `allowed` whose result lists `MissingContextValues` is not an allow: IAM
 skipped every statement conditioned on those keys, Deny statements included. Across principals:
 
-| IAM says | toolpass answers |
+| IAM says | agent-authorizer answers |
 |---|---|
 | any principal `allowed` with no `MissingContextValues` | allow, naming the permission set / role / user |
 | a principal `allowed` but with `MissingContextValues`, and no principal allowed outright | unknown (`unsupported`), naming the keys; set `context_entries` |
@@ -285,7 +285,7 @@ The simulation covers identity-based policies, permissions boundaries and SCPs. 
 ## EKS access entries
 
 A [kubernetes](kubernetes.md#eks) connection with `groups_connection` set to this connection and
-`eks_cluster` set asks it for the Kubernetes groups of a user who sent none. toolpass resolves the
+`eks_cluster` set asks it for the Kubernetes groups of a user who sent none. agent-authorizer resolves the
 email to IAM principals by `identity_mode`, as for a check (in `static_map` only the rows for the
 email itself, since no groups were sent), then calls `eks:DescribeAccessEntry`
 (`GET /clusters/{name}/access-entries/{principalArn}`) for each principal ARN, first as it is, then
@@ -313,21 +313,21 @@ mode has no access entries; set `eks_aws_auth` on the kubernetes connection for 
 Marked `# UNVERIFIED:` in the code:
 
 - That EKS matches an `AWSReservedSSO_*` role's access entry by the ARN without its
-  `/aws-reserved/sso.amazonaws.com/[<region>/]` path; toolpass tries the full ARN first and then the
+  `/aws-reserved/sso.amazonaws.com/[<region>/]` path; agent-authorizer tries the full ARN first and then the
   short one.
 - That `DescribeAccessEntry` answers `InvalidRequestException` on a cluster whose authentication mode
-  is `CONFIG_MAP`; toolpass reads that as "no access entry".
+  is `CONFIG_MAP`; agent-authorizer reads that as "no access entry".
 
 - `identitystore:DescribeUser` returning a `UserStatus` field; when present and `DISABLED` the user is
   denied every action, otherwise the field is ignored.
 - Whether `sso:ListAccountAssignmentsForPrincipal` for a `USER` already includes assignments inherited
-  through groups; toolpass asks for the user and for every group and unions the result, so the answer is
+  through groups; agent-authorizer asks for the user and for every group and unions the result, so the answer is
   the same either way at the cost of extra calls.
 - `AWSReservedSSO_*` roles under `/aws-reserved/sso.amazonaws.com/<region>/`; `iam:ListRoles` with the
   parent `PathPrefix` is a prefix match so they are expected to be listed.
 - For resource `all`, `ResourceArns` is omitted so IAM applies its documented default of `*`, rather than
   sending `*` as an ARN.
-- The China partition IAM endpoint and signing region (`toolpass/authx`).
+- The China partition IAM endpoint and signing region (`agent_authorizer/authx`).
 - Whether SCP evaluation (`OrganizationsDecisionDetail`) needs any `organizations:*` permission on
   `role_arn`; none is granted in the policy above.
 
@@ -336,9 +336,9 @@ Marked `# UNVERIFIED:` in the code:
 Unit tests run against one fake server that serves STS, IAM (Query/XML), Identity Store and SSO Admin
 (JSON 1.1 by `X-Amz-Target`), EKS `DescribeAccessEntry` (REST-JSON) and IMDSv2, checking the SigV4
 credential scope of every call, and validating every request against the botocore models (`aws-eks`
-included) when `TOOLPASS_SPECS_DIR` is set. The REST signature (the escaped ARN label escaped again in
+included) when `AGENT_AUTHORIZER_SPECS_DIR` is set. The REST signature (the escaped ARN label escaped again in
 the canonical URI) is compared with one botocore produced. There is no
-live test; after configuring, run `toolpass probe` and one check for a user you know is allowed.
+live test; after configuring, run `agent-authorizer probe` and one check for a user you know is allowed.
 
 `tests/integrations/aws/test_routes.py` holds the route table to the botocore models of IAM, STS, S3,
 Lambda and Secrets Manager (`aws-*` in `test/specs/fetch.sh`): every operation is routed or left out with

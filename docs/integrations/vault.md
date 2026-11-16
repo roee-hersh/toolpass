@@ -1,6 +1,6 @@
 # vault
 
-One connection is one HashiCorp Vault (one namespace). toolpass authenticates with a token or an
+One connection is one HashiCorp Vault (one namespace). agent-authorizer authenticates with a token or an
 AppRole, finds the identity entity whose alias on the configured auth mount is the user's email,
 collects the ACL policies attached to the entity, its groups (direct and inherited) and the auth
 role (declared in the connection), reads each policy and evaluates the requested path and
@@ -11,9 +11,9 @@ capability with Vault's own rules. Nothing is written.
 Either of:
 
 1. A **token** (`auth_mode: token`, the default), for instance a periodic service token.
-2. An **AppRole** (`auth_mode: approle`): `role_id` and the `secret_id` as `credential`; toolpass
+2. An **AppRole** (`auth_mode: approle`): `role_id` and the `secret_id` as `credential`; agent-authorizer
    logs in at `auth/<approle_mount>/login` and logs in again when the token expires or is revoked
-   (at most once per token, so a permission denied on a path toolpass needs does not spend
+   (at most once per token, so a permission denied on a path agent-authorizer needs does not spend
    `secret_id` uses on every check).
 
 Attach a policy with exactly these capabilities:
@@ -31,7 +31,7 @@ path "auth/token/lookup-self"     { capabilities = ["read"] }
 `sys/auth` resolves the alias mount's accessor, `sys/mounts` the KV version of a mount. Nothing
 under the secrets engines themselves is read.
 
-`toolpass probe` looks the token up and resolves the alias mount's accessor.
+`agent-authorizer probe` looks the token up and resolves the alias mount's accessor.
 
 ## Connection
 
@@ -69,10 +69,10 @@ group names so that policy templates can be resolved. Groups sent by the caller 
 
 ### Which policies
 
-Vault attaches policies to a token from three places. toolpass sees two of them and takes the third
+Vault attaches policies to a token from three places. agent-authorizer sees two of them and takes the third
 from configuration:
 
-| Source | Read by toolpass |
+| Source | Read by agent-authorizer |
 |---|---|
 | the entity's `policies` | yes |
 | the policies of the entity's groups, direct and inherited (external groups included) | yes |
@@ -81,7 +81,7 @@ from configuration:
 
 A policy named `root` on an entity or group answers `unsupported`: Vault refuses `root` alongside
 other policies and never issues it through auth methods, so its presence is a misconfiguration
-toolpass does not turn into allow (`root` is rejected in `token_policies`). A policy a token names
+agent-authorizer does not turn into allow (`root` is rejected in `token_policies`). A policy a token names
 but Vault does not have contributes nothing, as in Vault.
 
 ## Resources
@@ -90,7 +90,7 @@ but Vault does not have contributes nothing, as in Vault.
 |---|---|
 | `kv:<mount>/<key>` | a secret in a KV engine; the mount is the longest `sys/mounts` prefix (mounts may span several segments), its KV version decides the API path (`<mount>/data/<key>`, `metadata`, `destroy` on v2; the logical path on v1) |
 | `path:<api path>` | any API path, checked as written (`sys/seal`, `pki/issue/web`, `secret/data/x`) |
-| `path:<api path>?namespace=<ns>` | the API path of a request made in namespace `<ns>` (its `X-Vault-Namespace` header; empty for none), as the [route table](#requests-a-toolpass-tool-makes) writes it |
+| `path:<api path>?namespace=<ns>` | the API path of a request made in namespace `<ns>` (its `X-Vault-Namespace` header; empty for none), as the [route table](#requests-an-agent-authorizer-tool-makes) writes it |
 
 Paths are plain segments (letters, digits, `_ . - @ : ~ =`); wildcards and dot-only segments are
 rejected. `LIST` questions are evaluated both with the trailing slash Vault adds and without it, as
@@ -138,18 +138,18 @@ Vault's documented rules, applied to the union of the policies' stanzas:
    a slash or wildcard) the stanza matches everything under its literal prefix, and if such a stanza
    matches the request at all the answer is `unsupported`.
 5. `allowed_parameters`, `denied_parameters`, `required_parameters`, `min_wrapping_ttl` and
-   `max_wrapping_ttl` on the winning stanza answer `unsupported`: toolpass does not see the request's
+   `max_wrapping_ttl` on the winning stanza answer `unsupported`: agent-authorizer does not see the request's
    parameters (reads carry them too, such as KV's `version`).
 
 Policies in HCL (including the deprecated `policy = "read|write|sudo|deny"` attribute,
 `path = { ... }` maps and nested `control_group` blocks, which are skipped) and in JSON (object and
 list forms) are parsed. Heredocs and other syntax answer `unsupported`.
 
-## Requests a toolpass tool makes
+## Requests an agent-authorizer tool makes
 
 The [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a tool's body sends
 to `<url>/v1/...` to the capability Vault itself checks on the path, whatever engine is mounted
-there, and checks the ones inside `as_user()` for the session's user (`toolpass routes vault` prints
+there, and checks the ones inside `as_user()` for the session's user (`agent-authorizer routes vault` prints
 the table):
 
 | Request | Action | Effect |
@@ -174,7 +174,7 @@ operator named need both, since such a mount may be KV v1, where every path has 
 Name the namespace in the `X-Vault-Namespace` header rather than the path for this to apply inside
 one: `team/sys/...` may be a mount named `team`. A policy that grants only `update` on a path that
 needs both (a KV write, `transit/encrypt`, which creates a missing key, or `pki/issue`, whose mount
-toolpass cannot tell from a KV mount) answers unknown: grant `create` too or make the call outside
+agent-authorizer cannot tell from a KV mount) answers unknown: grant `create` too or make the call outside
 `as_user()`, on the agent's authority. `auth/token/lookup-self`, `sys/capabilities-self`, `sys/internal/ui/resultant-acl`
 (the agent's own token) and `sys/health`, `sys/seal-status`, `sys/leader` need no user permission.
 
@@ -191,7 +191,7 @@ Refused, at any depth of the path, since a leading part may be a namespace (`tea
   `<mount>/root/sign-self-issued`; a KV key named `root` is refused on delete with it).
 - **Operator operations** Vault does not authorize by policy: init, unseal, rekey, root generation,
   writes to `sys/replication/*` and `sys/license/*`.
-- **What toolpass cannot read exactly**: an empty or dot-only segment, characters outside the plain
+- **What agent-authorizer cannot read exactly**: an empty or dot-only segment, characters outside the plain
   set, a trailing slash on anything but a list, a `?list=` that is not a boolean or is given twice,
   a query Go would read differently, a namespace header that is not a namespace path.
 
@@ -204,10 +204,10 @@ rarely allow it: log in before the tool runs, or outside `as_user()`.
 |---|---|
 | `allowed` | the winning stanza grants the capability |
 | `denied` | no stanza matches; the winning stanza denies or lacks the capability; the entity is disabled |
-| `unsupported` | a parameter or wrapping constraint; an unresolvable template; a policy toolpass cannot parse; the `root` policy; a KV v2 question on a v1 mount; a non-KV mount asked with `kv:`; a mixed create/update write; a `?namespace=` path outside the connection's namespace, or with a namespace on a connection without one |
+| `unsupported` | a parameter or wrapping constraint; an unresolvable template; a policy agent-authorizer cannot parse; the `root` policy; a KV v2 question on a v1 mount; a non-KV mount asked with `kv:`; a mixed create/update write; a `?namespace=` path outside the connection's namespace, or with a namespace on a connection without one |
 | `resource_not_visible` | `kv:` names no mount `sys/mounts` lists, or a mount without a key |
 | `user_not_found` | no entity has the alias |
-| `credential_rejected` | 403 permission denied on a read toolpass needs; the AppRole login fails |
+| `credential_rejected` | 403 permission denied on a read agent-authorizer needs; the AppRole login fails |
 | `invalid_request` | a malformed path or resource; `alias_mount` is not an enabled auth method |
 | `upstream_*` | 5xx, 429, 412, timeouts, a sealed Vault |
 
@@ -222,7 +222,7 @@ rarely allow it: log in before the tool runs, or outside `as_user()`.
   policy Vault does not have is skipped, as Vault skips it.
 - **Token-specific state**: TTLs, uses, bound CIDRs, `sudo` paths' `x-vault-sudo` requirement is
   not checked unless asked with `raw:sudo`.
-- **Path aliases** resolved by engines (e.g. `secret/foo` on KV v2 rewritten by the CLI): toolpass
+- **Path aliases** resolved by engines (e.g. `secret/foo` on KV v2 rewritten by the CLI): agent-authorizer
   checks the API path, so use `kv:` for KV engines.
 - **Policies held inside a child namespace** for a request into it: the connection namespace's
   policies are evaluated on the child path. When the entity lists a group that lives in the child
@@ -243,8 +243,8 @@ matters:
 
 ## Test
 
-`python -m pytest tests/integrations/vault` (in `toolpass-py`) runs a fake Vault validated against the OpenAPI document
-when `TOOLPASS_SPECS_DIR` holds `vault.spec` (`test/specs/fetch.sh`). The fake has an OIDC mount,
+`python -m pytest tests/integrations/vault` (in `agent-authorizer-py`) runs a fake Vault validated against the OpenAPI document
+when `AGENT_AUTHORIZER_SPECS_DIR` holds `vault.spec` (`test/specs/fetch.sh`). The fake has an OIDC mount,
 entities with direct and inherited groups, a disabled entity, a `root` entity, HCL and JSON
 policies with globs, `+` segments, templates, a legacy `policy` attribute, parameter and wrapping
 constraints, KV v1 and v2 mounts and a PKI mount, and an AppRole login. Property tests

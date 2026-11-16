@@ -1,0 +1,35 @@
+# The one permission agent-authorizer needs on a cluster: create SubjectAccessReviews.
+# SubjectAccessReviews are never persisted; creating one only asks the
+# API server "may this subject do that?".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-authorizer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-authorizer
+  namespace: agent-authorizer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-authorizer-subjectaccessreview
+rules:
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-authorizer-subjectaccessreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-authorizer-subjectaccessreview
+subjects:
+  - kind: ServiceAccount
+    name: agent-authorizer
+    namespace: agent-authorizer

@@ -1,6 +1,6 @@
 # googlecloud
 
-toolpass authenticates as a service account and asks the Policy Troubleshooter API
+agent-authorizer authenticates as a service account and asks the Policy Troubleshooter API
 (`POST https://policytroubleshooter.googleapis.com/v3/iam:troubleshoot`) whether a principal holds an
 IAM permission on a full resource name. Google evaluates the allow policies and the deny policies of
 the resource and every ancestor (project, folder, organization), expanding group membership, and
@@ -15,18 +15,18 @@ call. Nothing is written and no user credential is ever used.
    policy reads. The troubleshooter can only explain policies the caller can read, so a role granted
    too low in the hierarchy makes every check `UNKNOWN_INFO` (unknown).
 3. Either create a key for the service account and store the JSON in a file (`auth_mode: key`), or
-   run toolpass on GCE/GKE as that service account and use `auth_mode: keyless`: toolpass then takes
+   run agent-authorizer on GCE/GKE as that service account and use `auth_mode: keyless`: agent-authorizer then takes
    the runtime identity's token from the metadata server and no key exists.
 4. If the credential's own project cannot be billed for the API (the API is disabled there, or the
    service account belongs to another organization), set `quota_project` to a project where the
-   API is enabled; toolpass sends it as `X-Goog-User-Project`, and the service account needs
+   API is enabled; agent-authorizer sends it as `X-Goog-User-Project`, and the service account needs
    `serviceusage.services.use` on that project.
 
-`toolpass probe` warns when the role is missing under `scope` and always reminds that the
-troubleshooter discloses which permissions other principals hold: that is what toolpass is for, but
-the service account should be held by toolpass alone.
+`agent-authorizer probe` warns when the role is missing under `scope` and always reminds that the
+troubleshooter discloses which permissions other principals hold: that is what agent-authorizer is for, but
+the service account should be held by agent-authorizer alone.
 
-Signing with a service-account key (`auth_mode: key`) needs `cryptography`: install `toolpass[crypto]` (the Docker image has it).
+Signing with a service-account key (`auth_mode: key`) needs `cryptography`: install `agent-authorizer[crypto]` (the Docker image has it).
 
 ## Connection
 
@@ -34,9 +34,9 @@ Signing with a service-account key (`auth_mode: key`) needs `cryptography`: inst
   - id: gcp-acme
     integration: googlecloud
     scope: organization:123456789012             # or folder:<number>, project:<id>
-    credential: file:/secrets/gcp-toolpass.json   # service-account key JSON (auth_mode key)
+    credential: file:/secrets/gcp-agent-authorizer.json   # service-account key JSON (auth_mode key)
     auth_mode: key                                # or keyless
-    quota_project: acme-toolpass                  # optional
+    quota_project: acme-agent-authorizer                  # optional
     googleworkspace_connection: gws-acme          # optional, see Identity
 ```
 
@@ -120,13 +120,13 @@ whether the user may delete objects anywhere in the project's buckets (as far as
 
 ## Decisions
 
-| Troubleshooter says | toolpass answers |
+| Troubleshooter says | agent-authorizer answers |
 |---|---|
 | `overallAccessState: CAN_ACCESS` | allow |
 | `CANNOT_ACCESS` with `denyPolicyExplanation.denyAccessState: DENY_ACCESS_STATE_DENIED` | deny ("a deny policy denies ...") |
 | `CANNOT_ACCESS` otherwise | deny ("no allow policy grants ...") |
 | `UNKNOWN_CONDITIONAL` (a binding or deny rule has a condition Google could not evaluate without a request context) | unknown (`unsupported`) |
-| `UNKNOWN_INFO` (toolpass cannot read one of the policies, or the resource does not exist) | unknown (`resource_not_visible`) |
+| `UNKNOWN_INFO` (agent-authorizer cannot read one of the policies, or the resource does not exist) | unknown (`resource_not_visible`) |
 | any other or missing state, unreadable body | unknown (`upstream_error`) |
 | suspended / archived account (with `googleworkspace_connection`) | deny |
 | no Workspace account (with `googleworkspace_connection`) | deny (`user_not_found`) |
@@ -141,15 +141,15 @@ Error bodies are read whole so the reason is found even after a long message; on
 
 ## Probe
 
-`toolpass probe` mints a token, then asks the troubleshooter whether the service account itself may
+`agent-authorizer probe` mints a token, then asks the troubleshooter whether the service account itself may
 `resourcemanager.<type>.get` the `scope` resource. `CAN_ACCESS` or `CANNOT_ACCESS` proves the API
 is enabled and the policies under `scope` are readable; `UNKNOWN_INFO` warns that
 `roles/iam.securityReviewer` is missing there. Without `googleworkspace_connection` it warns that an
 unknown email is answered as deny rather than `user_not_found`.
 
-## Requests a toolpass tool makes
+## Requests an agent-authorizer tool makes
 
-The integration's route table (`toolpass routes googlecloud`) maps the REST requests a toolpass tool
+The integration's route table (`agent-authorizer routes googlecloud`) maps the REST requests an agent-authorizer tool
 sends to Google Cloud to the IAM permission each needs on the resource in its path, so the toolkit
 asks the troubleshooter about the session's user before a request inside `as_user()` leaves. A request uses the
 named action when one asks exactly that permission (`storage.read`, `secret.read`, `compute.start`,
@@ -175,7 +175,7 @@ needs `bigquery.tables.setCategory`) and any schema change on an existing table 
 without its policy tags loses them), batch requests, Cloud Run deploys and Compute changes that run code as a service account
 (`iam.serviceAccounts.actAs`), instance creation, token minting through `delegates`, project moves,
 metadata fields that need a permission of their own (object retention, bucket IP filters), object
-names that contain `?` (a toolpass resource ends its id there, so the object cannot be named), and
+names that contain `?` (an agent-authorizer resource ends its id there, so the object cannot be named), and
 any read on these hosts the table does not know. `X-HTTP-Method-Override` and `useAdminAccess` are
 refused. Query parameters are read in every spelling Google accepts, camelCase or snake_case
 (`delete_contents`, `predefined_acl`, `if_generation_match`) and `$`-prefixed for system parameters;
@@ -217,7 +217,7 @@ Marked `# UNVERIFIED:` in the code:
   policy under `scope`, or whether a `policytroubleshooter.*` permission is needed as well; the probe
   reports `UNKNOWN_INFO` if the role is not enough.
 - Group expansion: the troubleshooter expands Google Groups only when the caller can see the
-  membership; for groups it cannot read the state is `UNKNOWN_INFO`, which toolpass reports as
+  membership; for groups it cannot read the state is `UNKNOWN_INFO`, which agent-authorizer reports as
   `resource_not_visible` like an unreadable policy.
 - A principal that is not a Google Account or a service account: assumed to answer `CANNOT_ACCESS`
   or HTTP 400 rather than some other state.
@@ -227,7 +227,7 @@ Marked `# UNVERIFIED:` in the code:
 Unit tests run against one fake server that serves the token endpoint, the metadata server and
 `/v3/iam:troubleshoot`, verifying the JWT assertion, the bearer, the quota header and every request
 against the API's discovery document (`google-policytroubleshooter` in `test/specs/fetch.sh`). There is
-no live test; after configuring, run `toolpass probe` and one check for a user you know is allowed.
+no live test; after configuring, run `agent-authorizer probe` and one check for a user you know is allowed.
 
 `tests/integrations/googlecloud/test_routes.py` maps requests to every routed service, checks that
 each resource parses into the full resource name the troubleshooter is asked about, and covers the

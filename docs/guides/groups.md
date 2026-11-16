@@ -3,7 +3,7 @@
 Some systems grant access by group: Kubernetes RBAC binds roles to the groups in the user's login,
 Argo CD's policy matches `g, <group>, role:...` lines against them, and an aws `static_map` maps
 groups to IAM roles. Those systems read the groups from the token the user logged in with, which the
-identity provider fills from its groups claim. toolpass never sees that login, so for these systems
+identity provider fills from its groups claim. agent-authorizer never sees that login, so for these systems
 a check needs the user's groups as well as the email. There are two ways to supply them, and they
 combine: groups the caller sends always win.
 
@@ -36,7 +36,7 @@ The same four keys go on every integration that grants by group: [argocd](../int
 [kubernetes](../integrations/kubernetes.md) and [aws](../integrations/aws.md) with
 `identity_mode: static_map`. They work with every provider that publishes an OpenID Connect
 discovery document, with no credential and no provider API, and see exactly the groups the system
-saw, including whatever the provider filtered out of the claim. Nothing in toolpass knows one
+saw, including whatever the provider filtered out of the claim. Nothing in agent-authorizer knows one
 provider from another.
 
 ### How the token is checked
@@ -69,9 +69,9 @@ system fetched the groups itself.
 | `POST /check` | the `token` field: printable ASCII without spaces, at most 16 KiB |
 | Python client | `check(..., token=...)`, and `require`, `allowed`, `acheck`, `arequire` |
 | Node client | `{ token }` in the options |
-| The toolkit | `Session(user, token=...)`; `session_from_header` reads `X-Toolpass-Token`; `toolpass.mcp.token_session` passes the access token the MCP caller signed in with, which serves a connection whose `oidc_audience` is that token's audience |
+| The toolkit | `Session(user, token=...)`; `session_from_header` reads `X-Agent-Authorizer-Token`; `agent_authorizer.mcp.token_session` passes the access token the MCP caller signed in with, which serves a connection whose `oidc_audience` is that token's audience |
 
-The token is never logged; toolpass keys its caches on a digest of it, and nothing read from a
+The token is never logged; agent-authorizer keys its caches on a digest of it, and nothing read from a
 token is cached past its `exp`.
 
 ### What it cannot see
@@ -79,7 +79,7 @@ token is cached past its `exp`.
 - Whether the token has been revoked, or the user signed out or been deactivated since it was
   issued: a token is good until `exp`, as it is to the system.
 - A groups claim the provider did not put in the token (a scope the system did not request, or a
-  distributed claim): then the token carries none, or toolpass answers unknown.
+  distributed claim): then the token carries none, or agent-authorizer answers unknown.
 
 ## Kubernetes only: groups from the email
 

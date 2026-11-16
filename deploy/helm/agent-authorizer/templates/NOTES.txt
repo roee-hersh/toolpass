@@ -1,0 +1,30 @@
+agent-authorizer is starting.
+
+  Service:  {{ include "agent-authorizer.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+  Config:   ConfigMap {{ include "agent-authorizer.configMapName" . }}, key agent-authorizer.yaml
+  API key:  Secret {{ include "agent-authorizer.apiKeySecretName" . }}, key {{ .Values.apiKey.key }}
+{{- if .Values.apiKey.value }}
+
+  apiKey.value is set, so the key sits in this release's stored values. For
+  anything beyond a try-out, create a Secret yourself and set
+  apiKey.existingSecret instead.
+{{- end }}
+
+Ask it a question from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent-authorizer.fullname" . }} 8080:{{ .Values.service.port }} &
+  export AGENT_AUTHORIZER_API_KEY="$(kubectl -n {{ .Release.Namespace }} get secret {{ include "agent-authorizer.apiKeySecretName" . }} -o jsonpath="{.data['{{ .Values.apiKey.key }}']}" | base64 -d)"
+  curl -X POST localhost:8080/check \
+    -H "Authorization: Bearer $AGENT_AUTHORIZER_API_KEY" -H 'Content-Type: application/json' \
+    -d '{"user":"dana@example.com","connection":"demo","action":"thing.write","resource":"thing:1"}'
+
+The dashboard, with every run the agents report: http://localhost:8080/dashboard/
+(it asks for the API key; put the Service behind your ingress's authentication
+before more people than its operators can open it).
+
+Check the pod: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Then replace the demo connection in `config.connections` with your own systems.
+Every credential in the config is an env:NAME or file:/path reference; add the
+variable under extraEnv or mount the Secret under extraVolumes. See
+deploy/helm/agent-authorizer/README.md.

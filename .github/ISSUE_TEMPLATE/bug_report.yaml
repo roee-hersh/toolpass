@@ -1,12 +1,12 @@
 name: Bug report
-description: toolpass returned a wrong decision, crashed or misbehaved
+description: agent-authorizer returned a wrong decision, crashed or misbehaved
 labels: [bug]
 body:
   - type: input
     id: version
     attributes:
       label: Version
-      description: Output of `toolpass version`, or the commit
+      description: Output of `agent-authorizer version`, or the commit
     validations:
       required: true
   - type: input

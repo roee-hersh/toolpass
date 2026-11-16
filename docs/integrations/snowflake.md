@@ -1,6 +1,6 @@
 # snowflake
 
-One connection is one Snowflake account. toolpass authenticates as a service user with a key pair
+One connection is one Snowflake account. agent-authorizer authenticates as a service user with a key pair
 through the SQL REST API, finds the user with `SHOW USERS`, lists the roles granted to the user with
 `SHOW GRANTS TO USER`, walks the role hierarchy with `SHOW GRANTS TO ROLE` (database roles
 included), and looks for the privilege the question needs on the object, with `OWNERSHIP` counting
@@ -10,17 +10,17 @@ need no warehouse. Nothing is written.
 ## Credential
 
 A **service user** with an RSA key pair: the public key registered on the user
-(`ALTER USER TOOLPASS SET RSA_PUBLIC_KEY = '...'`), the unencrypted private key as `credential`.
-toolpass signs a key-pair JWT (`iss` `<ACCOUNT>.<USER>.SHA256:<fingerprint>`, `sub`
+(`ALTER USER AGENT_AUTHORIZER SET RSA_PUBLIC_KEY = '...'`), the unencrypted private key as `credential`.
+agent-authorizer signs a key-pair JWT (`iss` `<ACCOUNT>.<USER>.SHA256:<fingerprint>`, `sub`
 `<ACCOUNT>.<USER>`, 50-minute lifetime) the way the official drivers do.
 
 The user's `role` must be able to run `SHOW GRANTS TO USER` and `SHOW GRANTS TO ROLE` for **other**
 users and roles, which takes the **MANAGE GRANTS** privilege: `SECURITYADMIN`, or a custom role:
 
 ```sql
-CREATE ROLE TOOLPASS_READER;
-GRANT MANAGE GRANTS ON ACCOUNT TO ROLE TOOLPASS_READER;
-GRANT ROLE TOOLPASS_READER TO USER TOOLPASS;
+CREATE ROLE AGENT_AUTHORIZER_READER;
+GRANT MANAGE GRANTS ON ACCOUNT TO ROLE AGENT_AUTHORIZER_READER;
+GRANT ROLE AGENT_AUTHORIZER_READER TO USER AGENT_AUTHORIZER;
 ```
 
 `MANAGE GRANTS` also lets its holder grant and revoke; there is no read-only equivalent for live
@@ -28,9 +28,9 @@ grants. The `SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS` and `GRANTS_TO_ROLES` view
 lag up to two hours and need a warehouse; a `source: account_usage` mode reading them is not
 implemented here.
 
-`toolpass probe` lists toolpass's own roles and warns when none holds `MANAGE GRANTS`.
+`agent-authorizer probe` lists agent-authorizer's own roles and warns when none holds `MANAGE GRANTS`.
 
-Signing with the key pair needs `cryptography`: install `toolpass[crypto]` (the Docker image has it).
+Signing with the key pair needs `cryptography`: install `agent-authorizer[crypto]` (the Docker image has it).
 
 ## Connection
 
@@ -38,9 +38,9 @@ Signing with the key pair needs `cryptography`: install `toolpass[crypto]` (the 
   - id: snowflake-prod
     integration: snowflake
     account: myorg-myaccount
-    user: TOOLPASS
+    user: AGENT_AUTHORIZER
     role: SECURITYADMIN
-    credential: file:/secrets/snowflake-toolpass.p8
+    credential: file:/secrets/snowflake-agent_authorizer.p8
     # url: https://myorg-myaccount.snowflakecomputing.com
 ```
 
@@ -99,7 +99,7 @@ statement at all: it is compared against `SHOW GRANTS` output.
 | `raw:<PRIVILEGE>` | any typed resource | the privilege, spelled with underscores (`raw:CREATE_STAGE`) |
 
 `OWNERSHIP` of the object answers every question on it. An object in a schema also needs `USAGE`
-(or `OWNERSHIP`) on its database and schema, which toolpass checks; a grant on the object without
+(or `OWNERSHIP`) on its database and schema, which agent-authorizer checks; a grant on the object without
 them answers `denied` and says which `USAGE` is missing.
 
 ## Decisions
@@ -109,17 +109,17 @@ them answers `denied` and says which `USAGE` is missing.
 | `allowed` | a reachable role holds the privilege (or `OWNERSHIP`) on the object, and `USAGE` on its parents |
 | `denied` | no reachable role holds it (or the object does not exist: `SHOW GRANTS` says nothing about existence); `USAGE` on a parent is missing; the user is disabled |
 | `unsupported` | `SHOW USERS` did not report `disabled`; more than 500 roles |
-| `resource_not_visible` | a granted role's grants cannot be read by toolpass's role (Snowflake error 002003) |
+| `resource_not_visible` | a granted role's grants cannot be read by agent-authorizer's role (Snowflake error 002003) |
 | `user_not_found` / `user_ambiguous` | the user search |
-| `credential_rejected` | the key-pair token is rejected (401, error 390144), the private key does not parse, or toolpass's role lacks the privilege for a `SHOW` (error 003001) |
+| `credential_rejected` | the key-pair token is rejected (401, error 390144), the private key does not parse, or agent-authorizer's role lacks the privilege for a `SHOW` (error 003001) |
 | `invalid_request` | a malformed identifier, the wrong number of name parts, a resource type the action does not take |
 | `upstream_*` | 5xx, 429, a statement that does not finish, other Snowflake errors (reported by code only; the message may echo identifiers) |
 
 ## Intercepted requests
 
-A toolpass tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
+An agent-authorizer tool's requests to the SQL API (`POST /api/v2/statements`) and the Python connector
 (`POST /queries/v1/query-request`) are read statement by statement
-(`src/toolpass/integrations/snowflake/routes.py`, `toolpass routes snowflake`). One statement on one
+(`src/agent_authorizer/integrations/snowflake/routes.py`, `agent-authorizer routes snowflake`). One statement on one
 table is checked: `SELECT ... FROM <table>` as `table.select`, `INSERT INTO <table> ... VALUES` as
 `table.insert`, `UPDATE` as `table.update`, `DELETE FROM` as `table.delete`, `TRUNCATE` as
 `table.truncate`, on `table:DB.SCHEMA.NAME`. On the SQL API an unqualified name takes the body's
@@ -139,7 +139,7 @@ statement runs on is not checked.
 Results are read only from the response to the statement itself. Reading a statement's results or
 status by handle (`GET /api/v2/statements/{handle}`, the connector's `GET /queries/{id}/result` and
 `GET /monitoring/queries/{id}`) is refused: the agent's credential is shared, so a handle may name
-any statement run with it, and toolpass cannot tie it to one it checked. A statement must therefore
+any statement run with it, and agent-authorizer cannot tie it to one it checked. A statement must therefore
 finish within its own request: on the SQL API, without `async=true` and within the wait the API
 gives a synchronous call (a statement still running comes back `202` with a handle that cannot be
 read), and with its rows in the first partition (later partitions are read by handle; use `LIMIT`).
@@ -170,8 +170,8 @@ of `SHOW GRANTS`, `SHOW USERS` and access control; not run against a live accoun
 
 ## Test
 
-`python -m pytest tests/integrations/snowflake` (in `toolpass-py`) runs a fake SQL API validated against the
-specification when `TOOLPASS_SPECS_DIR` holds `snowflake-sqlapi.spec` (`test/specs/fetch.sh`). The
+`python -m pytest tests/integrations/snowflake` (in `agent-authorizer-py`) runs a fake SQL API validated against the
+specification when `AGENT_AUTHORIZER_SPECS_DIR` holds `snowflake-sqlapi.spec` (`test/specs/fetch.sh`). The
 fake verifies the key-pair JWT's signature and claims with the test key, answers `SHOW USERS` (with
 `LIKE`, `LIMIT` and `FROM` paging), `SHOW GRANTS TO USER` in both shapes, `SHOW GRANTS TO ROLE` and
 `SHOW GRANTS TO DATABASE ROLE`, and can answer asynchronously (202 and polling) and in partitions.

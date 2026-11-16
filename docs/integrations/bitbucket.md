@@ -3,13 +3,13 @@
 One connection is one Bitbucket Cloud workspace (`edition: cloud`, the default) or one Bitbucket Data
 Center instance (`edition: datacenter`). Both answer the same actions.
 
-**Cloud**: toolpass finds the user among the workspace's members by email, reads the user's effective
+**Cloud**: agent-authorizer finds the user among the workspace's members by email, reads the user's effective
 repository permission (the highest of direct, group and project grants, as Bitbucket computes it),
 the user's explicit project permission, whether the user is a workspace owner, and for `@branch`
-questions the repository's branch restrictions. **Data Center**: toolpass finds the user by email,
+questions the repository's branch restrictions. **Data Center**: agent-authorizer finds the user by email,
 lists the groups the user belongs to, and combines the direct, group, project, project-default,
 public and global grants into the effective level itself, then the ref restrictions for `@branch`
-questions. Every call is a read with toolpass's own token; nothing is written.
+questions. Every call is a read with agent-authorizer's own token; nothing is written.
 
 ## Credential
 
@@ -30,10 +30,10 @@ administrator, an integration or a workspace access token.
 An **HTTP access token** of a user with the global `ADMIN` permission, sent as a bearer. Listing
 repository and project permissions needs `REPO_ADMIN` or `PROJECT_ADMIN` on each object, listing
 global permissions needs `ADMIN`, and listing a user's groups needs `LICENSED_USER`; a global
-administrator has them all. With a lesser token, objects and grants toolpass cannot read answer
+administrator has them all. With a lesser token, objects and grants agent-authorizer cannot read answer
 `unknown`, never `deny`.
 
-`toolpass probe` checks the token: on Cloud that it can look members up by email, on Data Center
+`agent-authorizer probe` checks the token: on Cloud that it can look members up by email, on Data Center
 that it authenticates and whether it can read global permissions.
 
 ## Connection
@@ -144,15 +144,15 @@ both editions.
 
 ## Decisions
 
-| Situation | toolpass answers |
+| Situation | agent-authorizer answers |
 |---|---|
 | level held, and for `@branch` no restriction stops the user | allow, naming the source (direct, group, project, default, public, owner, global) |
 | level not held | deny ("has read, needs write") |
 | a restriction matches and the user is not exempt | deny, naming the restriction |
-| a matching restriction exempts a group toolpass cannot resolve (Cloud always; Data Center without `LICENSED_USER`) | unknown (`unsupported`) |
+| a matching restriction exempts a group agent-authorizer cannot resolve (Cloud always; Data Center without `LICENSED_USER`) | unknown (`unsupported`) |
 | a `branching_model` restriction, a pattern with character classes, or on Cloud a pattern whose glob semantics are ambiguous for the branch, could apply | unknown (`unsupported`) |
 | Cloud project: explicit permission insufficient, not an owner, a group grant would suffice | unknown (`unsupported`) |
-| Data Center: level insufficient and a group or global grant toolpass could not read would matter | unknown (`unsupported`) |
+| Data Center: level insufficient and a group or global grant agent-authorizer could not read would matter | unknown (`unsupported`) |
 | deactivated user (Data Center) | deny |
 | no member / user with the email | deny (`user_not_found`) |
 | repository or project answers 404 | unknown (`resource_not_visible`) |
@@ -168,7 +168,7 @@ Error bodies are never copied into a decision text.
   `unknown` (repository permissions are the exception: Bitbucket folds groups into the effective
   permission itself).
 - Cloud project-level grants folded into a repository answer are trusted as Bitbucket reports them;
-  toolpass does not recompute them.
+  agent-authorizer does not recompute them.
 - Branching-model branch types, merge checks other than who may merge (approvals, builds, tasks), and
   Data Center access keys as exemptions.
 - Data Center: the `permission` filters of `/rest/api/latest/users`, personal repository visibility
@@ -182,14 +182,14 @@ Marked `# UNVERIFIED:` in the code:
   says the list "may be filtered by user" and documents only `permission>"read"`. A 400 falls back to
   reading the list whole, so a wrong grammar costs calls, not correctness.
 - Cloud: whether `*` in a branch restriction pattern matches across `/`; both editions: whether a
-  pattern without `/` matches inside folders. toolpass answers `unknown` whenever the readings differ
+  pattern without `/` matches inside folders. agent-authorizer answers `unknown` whenever the readings differ
   for the branch asked about.
 - Data Center: repository creation in a project is taken to need `PROJECT_ADMIN`. If Bitbucket lets
   `PROJECT_WRITE` create repositories, users with write are denied `repo.create` although they could.
 
 ## Observed requests
 
-For toolpass tools, the route table (`toolpass routes bitbucket`) maps requests to
+For agent-authorizer tools, the route table (`agent-authorizer routes bitbucket`) maps requests to
 `api.bitbucket.org/2.0` (Cloud) or to the instance's `/rest/api/1.0`, `/rest/api/latest` and
 `/rest/branch-utils` (Data Center) to this integration's actions:
 
@@ -218,4 +218,4 @@ official description (`bitbucket-cloud` in `test/specs/fetch.sh`, with the undec
 and paging parameters allowed) and serves members, permissions, branch restrictions and projects;
 the Data Center fake serves users, groups, grant listings with substring filters, defaults, public
 flags, restrictions and start/limit paging. There is no live test; after configuring, run
-`toolpass probe` and one check for a user you know is allowed.
+`agent-authorizer probe` and one check for a user you know is allowed.

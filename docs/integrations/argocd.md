@@ -1,7 +1,7 @@
 # argocd
 
 Argo CD has no API that asks "may user X do Y" for another user (`account/can-i` is only for the
-caller). toolpass therefore reads the RBAC policy from the cluster and evaluates it locally with the
+caller). agent-authorizer therefore reads the RBAC policy from the cluster and evaluates it locally with the
 same rules as the Argo CD API server. The evaluator is a port of `argo-cd/util/rbac` and
 `argo-cd/server/rbacpolicy` (v3), verified against upstream master in September 2026, and its tests
 are ported from Argo CD's own.
@@ -15,7 +15,7 @@ the Argo CD namespace:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: toolpass-argocd-reader
+  name: agent-authorizer-argocd-reader
   namespace: argocd
 rules:
   - apiGroups: [""]
@@ -48,9 +48,9 @@ rules:
 | `kubernetes_connection` | id of the kubernetes connection for the cluster Argo CD runs in |
 | `namespace` | Argo CD's namespace |
 | `rbac_configmap` | name of the RBAC config map |
-| `user_subject` | what Argo CD sees as the user's subject. `none`: toolpass evaluates only the default role and the groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
+| `user_subject` | what Argo CD sees as the user's subject. `none`: agent-authorizer evaluates only the default role and the groups. `email`: the email is also the subject, as when your identity provider's `sub` claim is the email |
 | `oidc_issuer`, `oidc_audience`, `oidc_groups_claim`, `oidc_email_claim` | optional: read the user's groups from the ID token sent with the check when the caller sends none; the issuer and client id of Argo CD's `oidc.config`. See [Groups from the user's token](../guides/groups.md) |
-| `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-a-toolpass-tool-makes) maps requests to it to actions; toolpass itself never calls it |
+| `url` | optional: the Argo CD API server, so that the [secure-tools toolkit](#requests-an-agent-authorizer-tool-makes) maps requests to it to actions; agent-authorizer itself never calls it |
 
 The policy (config maps and AppProjects) is cached for 30 seconds.
 
@@ -76,7 +76,7 @@ Exactly as in Argo CD:
 7. `server.rbac.rollback.enforce.enable` in `argocd-cm` (default false): `app.rollback` checks `sync`
    unless it is true, then it checks `rollback`. The built-in policy is Argo CD v3.6's, where
    `role:admin` may roll back; on v3.5 and earlier with this setting on, Argo CD itself refuses
-   `role:admin` a rollback that toolpass allows; `toolpass probe` warns when the setting is on.
+   `role:admin` a rollback that agent-authorizer allows; `agent-authorizer probe` warns when the setting is on.
 
 ## Resources
 
@@ -108,13 +108,13 @@ The `*_with_get` actions are what Argo CD checks for a patch, a delete, a sync a
 Both are answered for the user; the answer is deny when either denies, unknown when either is
 unknown and neither denies.
 
-## Requests a toolpass tool makes
+## Requests an agent-authorizer tool makes
 
 With `url` set, the [secure-tools toolkit](../guides/intercepted-actions.md) maps every request a
 tool's body sends to the Argo CD REST API to the action and object Argo CD's RBAC checks, and
-checks the ones inside `as_user()` for the session's user (`toolpass routes argocd` prints the table).
+checks the ones inside `as_user()` for the session's user (`agent-authorizer routes argocd` prints the table).
 
-Argo CD's paths name an application but not its project, and toolpass checks applications under
+Argo CD's paths name an application but not its project, and agent-authorizer checks applications under
 their project. A request about an application must name the project: `?project=` on reads,
 deletes, updates and resource changes, `project` in the body of a sync, rollback, patch or
 `resource/actions/v2`. Argo CD answers "not found" when the application is in another project than
@@ -159,7 +159,7 @@ Refused:
 - **The agent's own account**: its password, `DELETE /api/v1/session`.
 - **Anything else** under `/api`, exec (`/terminal`), proxy extensions, and the argocd CLI's gRPC-web
   calls (a `POST` to `/<service>/<method>`: a write with no route).
-- **What toolpass cannot read exactly**: a body that is not JSON, a member given twice or in another
+- **What agent-authorizer cannot read exactly**: a body that is not JSON, a member given twice or in another
   case (Go's decoder takes either), a query Go would read differently, a name that is not a valid
   Kubernetes name.
 
@@ -169,7 +169,7 @@ Refused:
 |---|---|
 | A rule allows and none denies | allow |
 | No rule allows, or a rule denies | deny |
-| `user_subject: none` and the policy has user-level rules toolpass cannot reach through groups | unknown (`unsupported`) rather than deny |
+| `user_subject: none` and the policy has user-level rules agent-authorizer cannot reach through groups | unknown (`unsupported`) rather than deny |
 | A `*_with_get` action (two checks) | deny when either denies, else unknown when either is unknown |
 | The policy is invalid (Argo CD would refuse it too) | unknown (`unsupported`) |
 | An AppProject's role policy is invalid | evaluated without it, as Argo CD does |
@@ -182,7 +182,7 @@ Refused:
   Use `user_subject: email` only when the subject really is the email.
 - Local Argo CD accounts, project JWT tokens.
 - Sync windows, project source/destination restrictions, and anything else enforced outside RBAC.
-- Applications in other namespaces are addressed as `<project>/<namespace>/<name>`; toolpass does not
+- Applications in other namespaces are addressed as `<project>/<namespace>/<name>`; agent-authorizer does not
   look the application up to find its project.
 - The route table relies on Argo CD refusing a request whose `project` is not the application's
   (`getAppEnforceRBAC`, written from Argo CD's server source; UNVERIFIED against a live server).
@@ -191,8 +191,8 @@ Refused:
 
 ## Test
 
-Unit tests run against a fake API server. `toolpass-py/tests/integrations/argocd/rbac` contains the
-ported Argo CD tests. `toolpass-py/tests/integrations/argocd/test_routes.py` holds the route table
+Unit tests run against a fake API server. `agent-authorizer-py/tests/integrations/argocd/rbac` contains the
+ported Argo CD tests. `agent-authorizer-py/tests/integrations/argocd/test_routes.py` holds the route table
 to Argo CD's Swagger document (`argocd.spec` from `test/specs/fetch.sh`), its refusals, and its
-resources to the check itself. `toolpass-py/tests/differential/test_argocd.py` compares the evaluator with
+resources to the check itself. `agent-authorizer-py/tests/differential/test_argocd.py` compares the evaluator with
 `argocd admin settings rbac can` when the `argocd` binary is on the PATH.

@@ -1,26 +1,26 @@
 # Check what a tool does, not what it says
 
-A toolpass tool used to be safe to the extent its declaration was right: `effect="write"`,
+An agent-authorizer tool used to be safe to the extent its declaration was right: `effect="write"`,
 `authorize=permission_check(tp, "github-acme", "pr.create", "repo:{repo}")`. The declaration is a
 claim. If the body also deletes a branch, nothing notices; and writing it correctly means knowing
 GitHub's permission model.
 
-toolpass can instead watch the requests a tool's body makes. Every HTTP request that leaves the
-process while a toolpass tool runs is mapped to the integration action and resource the permission
+agent-authorizer can instead watch the requests a tool's body makes. Every HTTP request that leaves the
+process while an agent-authorizer tool runs is mapped to the integration action and resource the permission
 engine already answers for (`POST /repos/acme/x/pulls` is `pr.create` on `repo:acme/x`). The
 requests inside `as_user()` are checked and refused before they are sent when the session's user may
 not make them. The tool declares nothing:
 
 ```python
-import toolpass
-from toolpass import Session, Toolpass, as_user
+import agent_authorizer
+from agent_authorizer import Session, AgentAuthorizer, as_user
 from github import Github
 
-tp = Toolpass.from_config("toolpass.yaml")       # the github-acme connection, among others
-toolpass.configure(permissions=tp)
+tp = AgentAuthorizer.from_config("agent-authorizer.yaml")       # the github-acme connection, among others
+agent_authorizer.configure(permissions=tp)
 
 
-@toolpass.tool()
+@agent_authorizer.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     r = Github(auth=token).get_repo(repo)
     current = r.get_contents(path)               # the agent reads on its own authority
@@ -41,13 +41,13 @@ read allowed and the pull request refused.
 ## How a request is understood
 
 1. **Which system.** The request's host is matched against the connections of the `permissions`
-   engine (`Toolpass.from_config` or `Toolpass(connections=[...])`): `api.github.com` or a GitHub
+   engine (`AgentAuthorizer.from_config` or `AgentAuthorizer(connections=[...])`): `api.github.com` or a GitHub
    Enterprise Server URL is the `github-acme` connection, `slack.com` is `slack-main`. A remote
    engine knows no connections; name them with `connections=[{"id": ..., "integration": ...,
    "url": ...}]` then.
 2. **Which action.** The integration's route table maps the method and path (and, where the path
    does not carry it, the body: Slack's `channel`) to an action, a resource and an effect.
-   `toolpass routes github` prints the table.
+   `agent-authorizer routes github` prints the table.
 3. **The checks**, in the toolkit's usual order: the tool's `resources=` scope, limits, the
    permission check of the session's user, the untrusted-input check on the outgoing URL and
    body, the exfiltration guard for routes that send data out.
@@ -75,7 +75,7 @@ branch, and then opens a pull request the user must be allowed to open. `as_user
 part. Inside it, every request is checked against the session's user; outside it, the permission
 check against the user is skipped and nothing else: scope, limits, the untrusted-input and
 exfiltration checks and entitlements still apply, and each action is audited with `as_agent`. The
-block covers only requests made inside it, not a nested toolpass tool, which starts from the
+block covers only requests made inside it, not a nested agent-authorizer tool, which starts from the
 toolkit's setting again.
 
 `act_as` sets whose authority a request outside both blocks runs on. `"agent"`, the default, is the
@@ -83,10 +83,10 @@ one above. `"user"` turns it around: every request is checked against the user, 
 marks the ones that run on the agent's authority.
 
 ```python
-toolpass.configure(permissions=tp, act_as="user")
+agent_authorizer.configure(permissions=tp, act_as="user")
 
 
-@toolpass.tool()
+@agent_authorizer.tool()
 def propose_fix(repo: str, path: str, fix: str) -> str:
     r = Github(auth=token).get_repo(repo)
     with as_agent():                             # the agent may read what the user cannot
@@ -107,7 +107,7 @@ A refusal at the wire lands mid-body: a tool that created a branch, pushed and t
 request refused leaves the branch behind. Recorded entitlements move the refusal before the body:
 
 ```python
-toolpass.configure(permissions=tp, record="toolpass-tools.yaml")     # in development or tests
+agent_authorizer.configure(permissions=tp, record="agent-authorizer-tools.yaml")     # in development or tests
 ```
 
 Every call writes the actions its body performed to the file, with argument values turned back
@@ -130,7 +130,7 @@ tools:
 In production, the file is what the tool may do:
 
 ```python
-toolpass.configure(permissions=tp, entitlements="toolpass-tools.yaml")
+agent_authorizer.configure(permissions=tp, entitlements="agent-authorizer-tools.yaml")
 ```
 
 Before the body runs, every `as: user` action whose resource fills from the arguments is checked
@@ -151,7 +151,7 @@ agent loop for eight of them, and for the Claude Agent SDK its in-process MCP se
 runs a tool when the agent calls it. In every one the call's context reaches the body, the refused
 request never leaves the process, and the allowed one does. What differs is how each framework hands
 a tool's exception to the model. Where it masks or re-raises it, set
-`toolpass.configure(on_refuse=str)` so the refusal is the tool's result and the model reads why:
+`agent_authorizer.configure(on_refuse=str)` so the refusal is the tool's result and the model reads why:
 
 | Framework | Without `on_refuse=str` | Needs `on_refuse=str` |
 |---|---|---|
@@ -173,11 +173,11 @@ With `on_refuse=str` the refusal arrives as an ordinary tool result in every fra
   httpx and aiohttp are covered; gRPC is not yet), or a custom httpx transport.
 - A request made from a thread the SDK started (boto3's managed transfers, pubsub's `publish()`,
   Azure's pollers): the call's context does not reach it, so it is not attributed to the call and
-  not checked. toolpass cannot tell such a request from the application's own traffic in another
+  not checked. agent-authorizer cannot tell such a request from the application's own traffic in another
   thread, so it does not refuse it either. `TransferConfig(use_threads=False)` keeps boto3's
   transfers in the caller's thread; `contextvars.copy_context().run(...)` carries the context into
   a thread you start yourself.
-- The response: toolpass does not read what comes back. A read from an untrusted route marks the
+- The response: agent-authorizer does not read what comes back. A read from an untrusted route marks the
   session as having seen untrusted content; the tool's return value is recorded and fenced as
   always.
 - Meaning in a body it cannot parse: a GraphQL mutation or an SQL statement is refused until a route

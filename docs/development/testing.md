@@ -1,36 +1,36 @@
-# Testing toolpass
+# Testing agent-authorizer
 
-The Python package lives in `toolpass-py/`; run these from there, in a virtual environment with
+The Python package lives in `agent-authorizer-py/`; run these from there, in a virtual environment with
 Python 3.10 or later:
 
 ```sh
 pip install -e ".[crypto]" pytest pytest-timeout hypothesis ruff mypy types-PyYAML build
 ruff format --check src tests examples && ruff check src tests examples
-mypy --strict src/toolpass
+mypy --strict src/agent_authorizer
 python -m pytest -q                        # unit, integration, harness and server tests
 ```
 
-This is what CI's `toolpass-py` job runs, on Python 3.10 and 3.13, on Linux and Windows; on Linux
+This is what CI's `agent-authorizer-py` job runs, on Python 3.10 and 3.13, on Linux and Windows; on Linux
 it then builds the wheel, installs it into a clean environment and runs the tests again from
-outside the checkout (`TOOLPASS_REQUIRE_INSTALLED=1` makes them fail if they picked up the source
+outside the checkout (`AGENT_AUTHORIZER_REQUIRE_INSTALLED=1` makes them fail if they picked up the source
 tree instead).
 
 | Directory | What it tests | Needs |
 |---|---|---|
 | `tests/core`, `tests/authx`, `tests/net`, `test_cli.py`, `test_server.py`, `test_server_mcp.py` | the engine, config, caches, signing, the HTTP client, the command, the server and its MCP endpoint (`POST /mcp`, spoken to as a client speaks it) | nothing |
-| `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `TOOLPASS_SPECS_DIR` to validate requests (below) |
+| `tests/integrations/<name>` | each integration against a fake of its API over TLS, with injected failures (500, 429, 401, timeout), and a check that no secret reaches a log line | nothing; `AGENT_AUTHORIZER_SPECS_DIR` to validate requests (below) |
 | `tests/integrations/test_registry.py` | the coverage gate: `test_action_<name>_allow` and `_deny` for every action | nothing |
-| `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `TOOLPASS_SPECS_DIR` for the description checks |
+| `tests/integrations/<name>/test_routes.py` | the integration's route table (requests mapped to actions): every route names an operation of the vendor's API description, and every write operation under the table's claims is routed or listed as left out | `AGENT_AUTHORIZER_SPECS_DIR` for the description checks |
 | `tests/dashboard` | the server collecting the runs agents report (`POST /runs`, bounds, the key) and serving them to the page; a toolkit reporting to its server, in-process or remote, without ever waiting on it; `gateway off` putting back entries 0.8 and 0.9 rewrote | nothing |
 | `tests/demo` | `examples/demo`: each stand-in system answers the real integration's permission checks for Dana and Sam, and the tour records every run with its requests | nothing |
 | `tests/toolkit` | the secure-tools toolkit: every check, the hook under the SDKs (`test_wire.py`), recorded entitlements, the examples | nothing |
-| `tests/sdks` | real SDKs (PyGithub, slack_sdk) under a toolpass tool, against the fake upstreams | `pip install PyGithub slack_sdk`; each file skips without its SDK |
+| `tests/sdks` | real SDKs (PyGithub, slack_sdk) under an agent-authorizer tool, against the fake upstreams | `pip install PyGithub slack_sdk`; each file skips without its SDK |
 | `tests/harness`, `tests/harness_tests` | the fake upstream, spec validation, the stand-in permission engine of the wire tests (`wire.py`), and their own tests | nothing |
 | `tests/frameworks` | each framework adapter through the framework's real agent loop, with a scripted model and a real in-process engine; and the wire hook through the same path (`wire_scenario.py` and the `wire_gh` fixture in `conftest.py`: a tool that declares nothing, refused at the wire; for the Claude Agent SDK through its in-process MCP server, which needs no CLI) | the framework's extra, e.g. `pip install -e ".[strands]"`, and `pip install mcp` for `test_mcp.py`; each file skips without it. `ANTHROPIC_API_KEY` for the live tests, which drive the same scenario with Claude |
-| `tests/real` | the vault integration against a real Vault dev server in Docker, every answer compared with Vault's own `sys/capabilities` | Docker and the `hashicorp/vault:1.17` image, present locally (never pulled); `TOOLPASS_REAL=1` turns a skip into a failure |
-| `tests/e2e` | the kubernetes integration and the server against a real cluster, with groups sent by the caller and named by a `groups_connection` | a cluster named in `TOOLPASS_E2E_KUBERNETES_URL`, `_TOKEN_FILE` and `_CA_FILE`; `test/kind/run.sh` creates a kind cluster, seeds it and exports them |
-| `tests/contract` | integrations against Prism, a mock server that answers from the vendor's OpenAPI description and rejects requests that violate it | `TOOLPASS_SPECS_DIR` and `npx` on the PATH (Prism is fetched by npx) |
-| `tests/live` | your own cases against real systems ([below](#against-your-own-systems)) | `TOOLPASS_LIVE_CASES` naming a cases file, and the credentials |
+| `tests/real` | the vault integration against a real Vault dev server in Docker, every answer compared with Vault's own `sys/capabilities` | Docker and the `hashicorp/vault:1.17` image, present locally (never pulled); `AGENT_AUTHORIZER_REAL=1` turns a skip into a failure |
+| `tests/e2e` | the kubernetes integration and the server against a real cluster, with groups sent by the caller and named by a `groups_connection` | a cluster named in `AGENT_AUTHORIZER_E2E_KUBERNETES_URL`, `_TOKEN_FILE` and `_CA_FILE`; `test/kind/run.sh` creates a kind cluster, seeds it and exports them |
+| `tests/contract` | integrations against Prism, a mock server that answers from the vendor's OpenAPI description and rejects requests that violate it | `AGENT_AUTHORIZER_SPECS_DIR` and `npx` on the PATH (Prism is fetched by npx) |
+| `tests/live` | your own cases against real systems ([below](#against-your-own-systems)) | `AGENT_AUTHORIZER_LIVE_CASES` naming a cases file, and the credentials |
 | `tests/differential` | the Argo CD RBAC evaluator against `argocd admin settings rbac can` | the `argocd` binary on the PATH |
 | `tests/scenarios` | recorded decision scenarios (connections, a scripted upstream, checks with the expected code), each run through the engine | nothing |
 
@@ -40,21 +40,21 @@ path, method, required parameters, body fields, AWS operation members, GraphQL f
 arguments.
 
 ```sh
-../test/specs/fetch.sh ../.specs                         # from toolpass-py/
-TOOLPASS_SPECS_DIR=$PWD/../.specs python -m pytest -q tests/integrations
+../test/specs/fetch.sh ../.specs                         # from agent-authorizer-py/
+AGENT_AUTHORIZER_SPECS_DIR=$PWD/../.specs python -m pytest -q tests/integrations
 ```
 
 Every resource parser has property tests (`tests/integrations/<name>/test_fuzz.py`, Hypothesis)
 that assert an accepted resource is made only of validated pieces before it reaches a URL or query.
 They run at Hypothesis's default size with the rest of the suite; `HYPOTHESIS_PROFILE=nightly` and
-`TOOLPASS_FUZZ_SCALE=<n>` make them run much longer.
+`AGENT_AUTHORIZER_FUZZ_SCALE=<n>` make them run much longer.
 
-Outside `toolpass-py`:
+Outside `agent-authorizer-py`:
 
 ```sh
 test/kind/run.sh                          # kubernetes end to end on a kind cluster
 test/kind/helm.sh                         # the Helm chart and the Docker image on a kind cluster
-(cd toolpass-ts && npm ci && npm test)    # the Node client
+(cd agent-authorizer-ts && npm ci && npm test)    # the Node client
 (cd examples/agent-ts && npm ci && npm test)
 python3 test/docs/linkcheck.py            # relative links and anchors in every Markdown file
 ```
@@ -66,9 +66,9 @@ that names a config file and the answers you expect from your own systems; run i
 setting up each connection:
 
 ```sh
-TOOLPASS_LIVE_CASES=$PWD/cases.yaml python -m pytest tests/live      # from toolpass-py/
+AGENT_AUTHORIZER_LIVE_CASES=$PWD/cases.yaml python -m pytest tests/live      # from agent-authorizer-py/
 ```
 
 It probes every connection first and ends with a summary per connection: passed, failed, or not
 configured, naming the environment variables or files that were missing on this machine.
-`TOOLPASS_LIVE_REQUIRE=1` turns a connection that is not configured into a failure.
+`AGENT_AUTHORIZER_LIVE_REQUIRE=1` turns a connection that is not configured into a failure.

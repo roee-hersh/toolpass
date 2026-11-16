@@ -1,6 +1,6 @@
 # Quickstart
 
-In about five minutes: install toolpass, ask it a question, put it in front of an agent tool, then
+In about five minutes: install agent-authorizer, ask it a question, put it in front of an agent tool, then
 run the same thing as a server. You need Python 3.10 or later; step 3 also uses Docker (or
 nothing more than the same `pip install`) and, for the Node client, Node 18.17 or later. Nothing
 here touches a real system; step 4 connects one.
@@ -9,8 +9,8 @@ here touches a real system; step 4 connects one.
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install toolpass
-curl -sO https://raw.githubusercontent.com/roee-hersh/toolpass/main/examples/toolpass.yaml
+pip install agent-authorizer
+curl -sO https://raw.githubusercontent.com/roee-hersh/toolpass/main/examples/agent-authorizer.yaml
 ```
 
 The example config has a `demo` connection that talks to nothing. In it, `admin@example.com` may
@@ -18,8 +18,8 @@ write and `dana@example.com` may not. The engine runs in your process:
 
 ```sh
 python3 -c '
-from toolpass import Toolpass
-tp = Toolpass.from_config("toolpass.yaml")
+from agent_authorizer import AgentAuthorizer
+tp = AgentAuthorizer.from_config("agent-authorizer.yaml")
 print(tp.check("dana@example.com", "demo", "thing.write", "thing:1"))
 '
 ```
@@ -35,20 +35,20 @@ Change the user to `admin@example.com` and the answer is `allow`. Try `nobody@ex
 The command line asks the same question without any code:
 
 ```sh
-toolpass check -config toolpass.yaml -connection demo \
+agent-authorizer check -config agent-authorizer.yaml -connection demo \
   -user dana@example.com -action thing.write -resource thing:1
 ```
 
 ## 2. Guard a tool
 
-Wrap the function your agent calls, so it runs only after toolpass said `allow`. The user comes from
+Wrap the function your agent calls, so it runs only after agent-authorizer said `allow`. The user comes from
 your application, never from the model. Save as `quickstart.py`:
 
 ```python
 from contextvars import ContextVar
-from toolpass import Toolpass, PermissionDenied, guarded
+from agent_authorizer import AgentAuthorizer, PermissionDenied, guarded
 
-tp = Toolpass.from_config("toolpass.yaml")
+tp = AgentAuthorizer.from_config("agent-authorizer.yaml")
 current_user: ContextVar[str] = ContextVar("current_user")
 
 @guarded(tp, "demo", "thing.write", "thing:{thing_id}", user=current_user)
@@ -73,22 +73,22 @@ dana@example.com -> refused: denied: dana@example.com is not an admin
 ```
 
 In a real agent, use your framework's adapter instead, configured once on the agent
-(`toolpass.strands`, `toolpass.langchain`, ...), or put the framework's tool
+(`agent_authorizer.strands`, `agent_authorizer.langchain`, ...), or put the framework's tool
 decorator on top of `guarded`. The [agent guide](guides/agent-tools.md) covers each framework and
 where the user comes from.
 
 ## 3. Run it as a server
 
-In-process, the agent's process holds toolpass's lookup credentials. To keep them out of it, run
+In-process, the agent's process holds agent-authorizer's lookup credentials. To keep them out of it, run
 the same engine as a service and point the agent at it:
 
 ```sh
-docker run --rm -p 8080:8080 -e TOOLPASS_API_KEY=change-me \
-  -v "$PWD/toolpass.yaml:/etc/toolpass/toolpass.yaml:ro" ghcr.io/roee-hersh/toolpass
+docker run --rm -p 8080:8080 -e AGENT_AUTHORIZER_API_KEY=change-me \
+  -v "$PWD/agent-authorizer.yaml:/etc/agent-authorizer/agent-authorizer.yaml:ro" ghcr.io/roee-hersh/agent-authorizer
 ```
 
 No Docker? The package you installed is the server too:
-`TOOLPASS_API_KEY=change-me toolpass serve -config toolpass.yaml`.
+`AGENT_AUTHORIZER_API_KEY=change-me agent-authorizer serve -config agent-authorizer.yaml`.
 
 In a second terminal:
 
@@ -104,7 +104,7 @@ curl -X POST localhost:8080/check -H 'Authorization: Bearer change-me' \
 In `quickstart.py`, change one line and run it again; the output is the same:
 
 ```python
-tp = Toolpass.remote("http://localhost:8080", "change-me")  # or TOOLPASS_URL and TOOLPASS_API_KEY
+tp = AgentAuthorizer.remote("http://localhost:8080", "change-me")  # or AGENT_AUTHORIZER_URL and AGENT_AUTHORIZER_API_KEY
 ```
 
 An assistant can ask the server too. Connect Claude Code (or any MCP client) to its `/mcp`
@@ -112,21 +112,21 @@ endpoint and ask "may dana@example.com write thing 1 in demo?"
 ([Ask who may do what, from your assistant](guides/ask.md)):
 
 ```sh
-claude mcp add --transport http toolpass http://localhost:8080/mcp --header "Authorization: Bearer change-me"
+claude mcp add --transport http agent-authorizer http://localhost:8080/mcp --header "Authorization: Bearer change-me"
 ```
 
-**Node** talks to the server with `toolpass-client`. Save as `quickstart.mjs` (the `.mjs`
+**Node** talks to the server with `agent-authorizer-client`. Save as `quickstart.mjs` (the `.mjs`
 extension lets it use `import`):
 
 ```sh
-npm install toolpass-client
+npm install agent-authorizer-client
 ```
 
 ```js
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Toolpass, PermissionDenied, guarded } from "toolpass-client";
+import { AgentAuthorizer, PermissionDenied, guarded } from "agent-authorizer-client";
 
-const tp = new Toolpass(); // reads TOOLPASS_URL and TOOLPASS_API_KEY
+const tp = new AgentAuthorizer(); // reads AGENT_AUTHORIZER_URL and AGENT_AUTHORIZER_API_KEY
 const currentUser = new AsyncLocalStorage();
 
 const writeThing = guarded(tp, "demo", "thing.write", "thing:{thingId}", { user: currentUser })(
@@ -144,20 +144,20 @@ for (const who of ["admin@example.com", "dana@example.com"]) {
 ```
 
 ```sh
-TOOLPASS_URL=http://localhost:8080 TOOLPASS_API_KEY=change-me node quickstart.mjs
+AGENT_AUTHORIZER_URL=http://localhost:8080 AGENT_AUTHORIZER_API_KEY=change-me node quickstart.mjs
 ```
 
 ## 4. Connect a real system
 
 Pick the system your agent acts in, follow its [integration page](integrations/README.md) to create
-a read-only credential, and add a connection to `toolpass.yaml`. For example, Jira:
+a read-only credential, and add a connection to `agent-authorizer.yaml`. For example, Jira:
 
 ```yaml
 connections:
   - id: jira-main
     integration: jira
     url: https://acme.atlassian.net
-    username: toolpass-bot@acme.com
+    username: agent-authorizer-bot@acme.com
     credential: env:JIRA_TOKEN
 ```
 
@@ -165,21 +165,21 @@ Then check the file and the credential before you rely on it:
 
 ```sh
 export JIRA_TOKEN=...              # the token from the integration page
-export TOOLPASS_API_KEY=change-me  # validate reads api_key when the file has one
-toolpass validate -config toolpass.yaml
-toolpass probe    -config toolpass.yaml -connection jira-main
-toolpass check    -config toolpass.yaml -connection jira-main \
+export AGENT_AUTHORIZER_API_KEY=change-me  # validate reads api_key when the file has one
+agent-authorizer validate -config agent-authorizer.yaml
+agent-authorizer probe    -config agent-authorizer.yaml -connection jira-main
+agent-authorizer check    -config agent-authorizer.yaml -connection jira-main \
   -user you@acme.com -action DELETE_ISSUES -resource issue:PAY-123
 ```
 
-`toolpass catalog jira` lists the actions you can ask about. The integrations that sign with a
+`agent-authorizer catalog jira` lists the actions you can ask about. The integrations that sign with a
 private key (a GitHub App, Google service accounts, Snowflake key pairs, Salesforce JWT, Microsoft
-365 certificates) need `pip install "toolpass[crypto]"`; the Docker image has it.
+365 certificates) need `pip install "agent-authorizer[crypto]"`; the Docker image has it.
 
 ## Next
 
 - [Architecture](concepts/architecture.md): how a check flows, what is cached, and the trust boundaries.
 - [Deploy](guides/deploy.md): in-process or as a server, with Docker, pip or Helm, and how to reach it over TLS.
-- [Add toolpass to your agent](guides/agent-tools.md): the adapters for Strands, LangChain and
+- [Add agent-authorizer to your agent](guides/agent-tools.md): the adapters for Strands, LangChain and
   LangGraph, MCP, the OpenAI Agents SDK, the Claude Agent SDK, Google ADK, CrewAI, Pydantic AI,
   LlamaIndex, and the TypeScript client.

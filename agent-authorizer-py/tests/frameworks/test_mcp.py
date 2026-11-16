@@ -1,0 +1,393 @@
+"""Secured tools in a real MCP server, with a real MCP client.
+
+The server is the official ``mcp`` SDK's ``MCPServer``; the tools are plain
+functions under the toolkit's decorator, so the server needs no adapter.
+Transports: in-memory (``Client(server)``), stdio (the example server as a
+subprocess, the user from ``AGENT_USER``) and Streamable HTTP (uvicorn on a
+local port), where ``session_from_header`` takes the user from the
+``X-Agent-Authorizer-User`` header the agent sends. The client is driven by a
+scripted loop that makes the tool calls a model would; agent-authorizer is a real
+in-process engine, and the wire scenario's fake GitHub decides what reached
+it.
+
+Last, the agent-authorizer server's own MCP endpoint (``POST /mcp``, the permission
+tools), which is written without the SDK: the official client connects to it
+and calls its tools.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import socket
+import sys
+import threading
+import time
+from collections.abc import Iterator, Sequence
+from typing import Any
+
+import pytest
+
+pytest.importorskip("mcp.server.mcpserver")
+
+from mcp import Client
+from mcp.client.stdio import StdioServerParameters
+from mcp.client.streamable_http import streamable_http_client
+from mcp.server.mcpserver import MCPServer
+from mcp_types import CallToolResult
+
+from agent_authorizer import Session, Toolkit, session_from_header
+from agent_authorizer.mcp import token_session
+from tests import harness
+from tests.frameworks.wire_scenario import ADMIN, DANA, REFUSAL_WORDS, REPO, propose_body, requests_seen, wire_engine
+
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+KEY = "agent-key-1"
+
+
+def text(res: CallToolResult) -> str:
+    [block] = res.content
+    return str(block.text)  # type: ignore[union-attr]
+
+
+async def drive(client: Client, calls: Sequence[tuple[str, dict[str, Any]]]) -> list[CallToolResult]:
+    """The scripted model: make each call over MCP and hand back what the client got."""
+    return [await client.call_tool(name, args) for name, args in calls]
+
+
+def run(server: Any, calls: Sequence[tuple[str, dict[str, Any]]]) -> list[CallToolResult]:
+    async def go() -> list[CallToolResult]:
+        async with Client(server) as client:
+            return await drive(client, calls)
+
+    return asyncio.run(go())
+
+
+def wire_server(gh: harness.Server) -> tuple[MCPServer[Any], Any]:
+    """The wire scenario's secured tool, registered as an MCP tool. The SDK
+    reports an unexpected exception as only ``Error executing tool <name>``,
+    so ``on_refuse=str`` hands the refusal to the model as the tool's result."""
+    engine = wire_engine(gh)
+    tools = Toolkit(audit=None, permissions=engine, on_refuse=str)
+    server: MCPServer[Any] = MCPServer("fw-mcp-wire")
+
+    @server.tool()
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    return server, engine
+
+
+# -- in-memory ------------------------------------------------------------------------
+
+
+def test_wire_hook_through_the_server(wire_gh: harness.Server) -> None:
+    """No rule and no guard: a ``@tools.tool()`` body registered as an MCP tool
+    has its own HTTP requests mapped to actions and checked against the
+    session's user at the wire. The MCP SDK runs a sync tool on a worker thread
+    under a copy of the handler's context, so the session made current around
+    the client call reaches the hook."""
+    gh = wire_gh
+    server, engine = wire_server(gh)
+
+    with Session(DANA).active():
+        [refused] = run(server, [("propose_fix", {"repo": REPO})])
+    for word in REFUSAL_WORDS:
+        assert word in text(refused), text(refused)
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never left the process"
+    assert [a[2] for a in engine.asked] == ["pr.create"]
+
+    with Session(ADMIN).active():
+        [opened] = run(server, [("propose_fix", {"repo": REPO})])
+    assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+    assert requests_seen(gh) == ["GET /api/v3/repos/acme/x", "GET /api/v3/repos/acme/x", "POST /api/v3/repos/acme/x/pulls"]
+
+
+def test_no_session_refuses(wire_gh: harness.Server) -> None:
+    server, _ = wire_server(wire_gh)
+    [refused] = run(server, [("propose_fix", {"repo": REPO})])
+    assert "no_session" in text(refused), text(refused)
+    assert requests_seen(wire_gh) == []
+
+
+# -- stdio: the example server, one process per user ------------------------------------------
+
+
+def test_stdio_example_server() -> None:
+    async def go(user: str) -> list[CallToolResult]:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=[os.path.join(EXAMPLES, "mcp_server.py")],
+            env={"AGENT_USER": user, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)},
+        )
+        async with Client(params) as client:
+            return await drive(client, [("write_thing", {"thing_id": "1", "content": "hi"}), ("read_thing", {"thing_id": "1"})])
+
+    admin_write, admin_read = asyncio.run(go(ADMIN))
+    assert (admin_write.is_error, text(admin_write)) == (False, "wrote 2 bytes to thing:1")
+    assert (admin_read.is_error, text(admin_read)) == (False, "thing:1 says hello")
+    dana_write, dana_read = asyncio.run(go(DANA))
+    assert text(dana_write) == (
+        "write_thing refused (not_authorized): dana@example.com may not run write_thing: "
+        "agent-authorizer deny thing.write on thing:1 in demo: denied: dana@example.com is not an admin"
+    )
+    assert (dana_read.is_error, text(dana_read)) == (False, "thing:1 says hello")
+
+
+# -- Streamable HTTP: the user from the X-Agent-Authorizer-User header ---------------------------------
+
+
+@contextlib.contextmanager
+def _http_server(app: Any) -> Iterator[str]:
+    uvicorn = pytest.importorskip("uvicorn")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=srv.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10
+    while not srv.started:
+        assert time.monotonic() < deadline, "uvicorn did not start"
+        time.sleep(0.02)
+    try:
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        srv.should_exit = True
+        t.join(5)
+
+
+def call_http(url: str, headers: dict[str, str], calls: Sequence[tuple[str, dict[str, Any]]]) -> list[CallToolResult]:
+    import httpx2
+
+    async def go() -> list[CallToolResult]:
+        async with httpx2.AsyncClient(headers=headers) as http:
+            async with Client(streamable_http_client(url, http_client=http)) as client:
+                return await drive(client, calls)
+
+    return asyncio.run(go())
+
+
+def post_raw(url: str, headers: dict[str, str]) -> tuple[int, str]:
+    import httpx2
+
+    r = httpx2.post(url, headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    return r.status_code, r.text
+
+
+def test_http_user_from_header(wire_gh: harness.Server) -> None:
+    """The header names the user; the body's requests are checked against that
+    user at the wire, in the SDK's own request handling under uvicorn."""
+    gh = wire_gh
+    server, engine = wire_server(gh)
+    with _http_server(session_from_header(server.streamable_http_app())) as url:
+        [refused] = call_http(url, {"X-Agent-Authorizer-User": DANA}, [("propose_fix", {"repo": REPO})])
+        for word in REFUSAL_WORDS:
+            assert word in text(refused), text(refused)
+        assert requests_seen(gh) == ["GET /api/v3/repos/acme/x"], "the POST never left the process"
+        [opened] = call_http(url, {"X-Agent-Authorizer-User": ADMIN}, [("propose_fix", {"repo": REPO})])
+        assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "pr.create"), (ADMIN, "pr.create")]
+
+
+def test_http_one_session_per_conversation(wire_gh: harness.Server) -> None:
+    """The requests of one conversation, named by the agent in
+    X-Agent-Authorizer-Session, share one Session, so a tool's ``limit`` holds across
+    its calls; another conversation starts afresh. (This SDK's client speaks
+    the sessionless protocol, so there is no Mcp-Session-Id to go by.)"""
+    tools = Toolkit(audit=None, on_refuse=str)
+    server: MCPServer[Any] = MCPServer("fw-mcp-limit")
+
+    @server.tool()
+    @tools.tool(effect="write", limit=1)
+    def bump(n: int) -> str:
+        """Bump a counter."""
+        return f"bumped {n}"
+
+    with _http_server(session_from_header(server.streamable_http_app())) as url:
+        chat = {"X-Agent-Authorizer-User": DANA, "X-Agent-Authorizer-Session": "chat-1"}
+        first, second = call_http(url, chat, [("bump", {"n": 1}), ("bump", {"n": 2})])
+        assert (first.is_error, text(first)) == (False, "bumped 1")
+        assert "limit_reached" in text(second), text(second)
+        [third] = call_http(url, chat, [("bump", {"n": 3})])
+        assert "limit_reached" in text(third), "a new MCP client in the same conversation: the same session"
+        [again] = call_http(url, {"X-Agent-Authorizer-User": DANA, "X-Agent-Authorizer-Session": "chat-2"}, [("bump", {"n": 4})])
+        assert (again.is_error, text(again)) == (False, "bumped 4")
+        [alone] = call_http(url, {"X-Agent-Authorizer-User": DANA}, [("bump", {"n": 5})])
+        assert (alone.is_error, text(alone)) == (False, "bumped 5"), "no conversation named: a session of its own"
+
+
+def test_http_without_header_has_no_session(wire_gh: harness.Server) -> None:
+    """A request without the header runs under no session: the secured tool
+    refuses, and a session active in the server's process does not leak in."""
+    server, _ = wire_server(wire_gh)
+    with Session(ADMIN).active(), _http_server(session_from_header(server.streamable_http_app())) as url:
+        [refused] = call_http(url, {}, [("propose_fix", {"repo": REPO})])
+    assert "no_session" in text(refused), text(refused)
+    assert requests_seen(wire_gh) == []
+
+
+def test_http_bad_user_headers_are_refused(wire_gh: harness.Server) -> None:
+    server, _ = wire_server(wire_gh)
+    with _http_server(session_from_header(server.streamable_http_app())) as url:
+        status, body = post_raw(url, {"X-Agent-Authorizer-User": ""})
+        assert (status, body) == (400, "agent-authorizer: the X-Agent-Authorizer-User header is empty")
+        import httpx2
+
+        r = httpx2.post(url, headers=httpx2.Headers([("X-Agent-Authorizer-User", DANA), ("X-Agent-Authorizer-User", ADMIN)]), json={})
+        assert (r.status_code, r.text) == (400, "agent-authorizer: the request carries more than one X-Agent-Authorizer-User header")
+    assert requests_seen(wire_gh) == []
+
+
+def test_http_key(wire_gh: harness.Server) -> None:
+    """With ``key``, only a request carrying it in X-Agent-Authorizer-Key gets in; a
+    missing, wrong or doubled key is refused before the server sees it."""
+    server, _ = wire_server(wire_gh)
+    with _http_server(session_from_header(server.streamable_http_app(), key=KEY)) as url:
+        for headers in ({}, {"X-Agent-Authorizer-Key": "wrong"}, {"X-Agent-Authorizer-User": ADMIN}):
+            status, body = post_raw(url, headers)
+            assert status == 403, (headers, status, body)
+            assert body == "agent-authorizer: this server needs the X-Agent-Authorizer-Key header, and this request's is missing or wrong"
+        [opened] = call_http(url, {"X-Agent-Authorizer-User": ADMIN, "X-Agent-Authorizer-Key": KEY}, [("propose_fix", {"repo": REPO})])
+        assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+
+
+# -- Streamable HTTP with the SDK's token auth: the user from the verified access token -------
+
+
+class Tokens:
+    """A token verifier: each bearer token names one user, in its claims."""
+
+    def __init__(self, tokens: dict[str, dict[str, Any]]) -> None:
+        self.tokens = tokens
+
+    async def verify_token(self, token: str) -> Any:
+        from mcp.server.auth.provider import AccessToken
+
+        claims = self.tokens.get(token)
+        if claims is None:
+            return None
+        return AccessToken(token=token, client_id="fw-mcp-client", scopes=[], subject=claims.get("sub"), claims=claims)
+
+
+def test_http_user_from_access_token(wire_gh: harness.Server) -> None:
+    """A server people sign in to: each call is checked as its own token's
+    user, a token whose email is unverified or missing names no one, and the
+    calls made with one token share one session."""
+    from mcp.server.auth.settings import AuthSettings
+
+    gh = wire_gh
+    engine = wire_engine(gh)
+    tools = Toolkit(audit=None, permissions=engine, on_refuse=str, session=token_session(groups_claim="groups"))
+    tokens = Tokens(
+        {
+            "admin-token": {"sub": "u-admin", "email": ADMIN, "groups": ["platform-team"]},
+            "dana-token": {"sub": "u-dana", "email": DANA, "groups": ["platform-team"]},
+            "no-email-token": {"sub": "u-nobody", "groups": []},
+            "unverified-token": {"sub": "u-mallory", "email": ADMIN, "email_verified": False, "groups": ["platform-team"]},
+        }
+    )
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    url = f"http://127.0.0.1:{port}/mcp"
+    server: MCPServer[Any] = MCPServer(
+        "fw-mcp-token",
+        token_verifier=tokens,
+        auth=AuthSettings(issuer_url="https://auth.example.com", resource_server_url=url, validate_token_resource=False),  # type: ignore[arg-type]
+    )
+
+    @server.tool()
+    @tools.tool()
+    def propose_fix(repo: str) -> str:
+        """Open a pull request fixing a file."""
+        return propose_body(gh, repo)
+
+    @server.tool()
+    @tools.tool(effect="write", limit=1)
+    def bump(n: int) -> str:
+        """Bump a counter."""
+        return f"bumped {n}"
+
+    uvicorn = pytest.importorskip("uvicorn")
+    srv = uvicorn.Server(uvicorn.Config(server.streamable_http_app(), host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=srv.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10
+    while not srv.started:
+        assert time.monotonic() < deadline, "uvicorn did not start"
+        time.sleep(0.02)
+    try:
+        bearer = lambda t: {"Authorization": "Bearer " + t}  # noqa: E731
+        [refused] = call_http(url, bearer("dana-token"), [("propose_fix", {"repo": REPO})])
+        for word in REFUSAL_WORDS:
+            assert word in text(refused), text(refused)
+        [opened] = call_http(url, bearer("admin-token"), [("propose_fix", {"repo": REPO})])
+        assert (opened.is_error, text(opened)) == (False, f"opened #7 in {REPO}")
+        assert [(a[0], a[2]) for a in engine.asked] == [(DANA, "pr.create"), (ADMIN, "pr.create")]
+        for nobody in ("no-email-token", "unverified-token"):
+            [res] = call_http(url, bearer(nobody), [("propose_fix", {"repo": REPO})])
+            assert "no_session" in text(res), (nobody, text(res))
+        first, second = call_http(url, bearer("dana-token"), [("bump", {"n": 1}), ("bump", {"n": 2})])
+        assert (first.is_error, text(first)) == (False, "bumped 1")
+        assert "limit_reached" in text(second), "one token, one session"
+    finally:
+        srv.should_exit = True
+        t.join(5)
+
+
+# -- the agent-authorizer server's own endpoint: POST /mcp, the permission tools --------------------------
+
+
+def test_the_servers_permission_tools_with_the_official_client() -> None:
+    """The client probes for the newest protocol revision, is told which ones
+    the endpoint serves, falls back to the handshake, and then lists and calls
+    the tools; it checks each result against the tool's output schema."""
+    import agent_authorizer
+    from agent_authorizer.core import secret
+    from agent_authorizer.server import Server
+
+    engine = agent_authorizer.AgentAuthorizer(connections=[{"id": "things", "integration": "fake", "users": DANA, "admins": ADMIN}])._backend.engine  # type: ignore[attr-defined]
+    srv = Server(engine, secret.literal("k-123"))
+    host, port = srv.listen("127.0.0.1:0")
+    srv.serve_in_thread()
+    url = f"http://{host}:{port}/mcp"
+    try:
+        import httpx2
+
+        async def go() -> tuple[list[str], list[CallToolResult]]:
+            async with httpx2.AsyncClient(headers={"Authorization": "Bearer k-123"}) as http:
+                async with Client(streamable_http_client(url, http_client=http)) as client:
+                    names = [t.name for t in (await client.list_tools()).tools]
+                    ask = {"connection": "things", "action": "thing.write", "resource": "thing:1"}
+                    calls: list[tuple[str, dict[str, Any]]] = [
+                        ("list_connections", {}),
+                        ("list_actions", {"connection": "things"}),
+                        ("check_permission", {"user": ADMIN, **ask}),
+                        ("check_permission", {"user": DANA, **ask}),
+                        ("check_permission", {"user": "dana", **ask}),
+                        ("check_permission", {"user": DANA}),
+                    ]
+                    return names, [await client.call_tool(name, args) for name, args in calls]
+
+        names, [connections, actions, allow, deny, not_asked, incomplete] = asyncio.run(go())
+        assert names == ["list_connections", "list_actions", "check_permission"]
+        assert connections.structured_content == {"connections": [{"id": "things", "integration": "fake"}]}
+        assert actions.structured_content is not None and [a["name"] for a in actions.structured_content["actions"]] == [
+            "thing.read",
+            "thing.write",
+            "thing.admin",
+        ]
+        assert (allow.is_error, allow.structured_content) == (
+            False,
+            {"decision": "allow", "reason": f"allowed: {ADMIN} is an admin", "code": "allowed", "identity": ADMIN},
+        )
+        assert deny.structured_content is not None and (deny.is_error, deny.structured_content["decision"]) == (False, "deny")
+        assert not_asked.structured_content is not None and (not_asked.is_error, not_asked.structured_content["code"]) == (True, "invalid_request")
+        assert (incomplete.is_error, text(incomplete)) == (True, "missing arguments: connection, action, resource")
+        assert post_raw(url, {})[0] == 401, "no key, no tools"
+    finally:
+        srv.shutdown()

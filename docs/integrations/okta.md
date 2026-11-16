@@ -1,6 +1,6 @@
 # okta
 
-One connection is one Okta org. toolpass authenticates with an Okta API token, finds the user by
+One connection is one Okta org. agent-authorizer authenticates with an Okta API token, finds the user by
 login (the email) and lists the groups the user belongs to. It answers one action, `group.member`,
 and serves as a [kubernetes](kubernetes.md#groups-from-the-email) connection's `groups_connection`
 for an API server whose OIDC groups claim comes from Okta. Nothing is written.
@@ -11,7 +11,7 @@ An **API token** (Security, API, Tokens) created while signed in as a **Read-onl
 an Okta token acts with the admin role of the admin who created it, and a read-only admin can read
 users and groups. Reference it with `env:` or `file:`; it is sent as `Authorization: SSWS <token>`.
 
-`toolpass probe` lists one user to prove the token works and always reminds that the token carries
+`agent-authorizer probe` lists one user to prove the token works and always reminds that the token carries
 its creator's admin role.
 
 ## Connection
@@ -49,7 +49,7 @@ another login, is `user_not_found`. Groups sent by the caller are ignored.
 
 ## Decisions
 
-| Okta says | toolpass answers |
+| Okta says | agent-authorizer answers |
 |---|---|
 | the group (by name or id) is in the user's list | allow |
 | it is not | deny |
@@ -74,7 +74,7 @@ sees, untrusted.
 
 ## What it cannot see
 
-- An app's groups claim is usually filtered (a regex or a prefix in the claim's settings); toolpass
+- An app's groups claim is usually filtered (a regex or a prefix in the claim's settings); agent-authorizer
   returns every group, so a binding to a group the claim leaves out reads as allowed here while the
   cluster denies it.
 - Group rules and app assignments that are pending are not in the user's list until Okta applies them.

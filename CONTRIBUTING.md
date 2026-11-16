@@ -1,4 +1,4 @@
-# Contributing to toolpass
+# Contributing to agent-authorizer
 
 Thanks for taking the time. Bug reports, integration requests and pull requests are all welcome.
 
@@ -11,17 +11,17 @@ Thanks for taking the time. Bug reports, integration requests and pull requests 
 
 ## Development
 
-toolpass is a Python package in `toolpass-py/` (Python 3.10 or later). From there:
+agent-authorizer is a Python package in `agent-authorizer-py/` (Python 3.10 or later). From there:
 
 ```sh
 pip install -e ".[crypto]" pytest pytest-timeout hypothesis ruff mypy types-PyYAML
 ruff format --check src tests examples   # must report nothing to reformat
 ruff check src tests examples
-mypy --strict src/toolpass
+mypy --strict src/agent_authorizer
 python -m pytest -q             # unit tests against fake upstreams
 ```
 
-The Node client is in `toolpass-ts/` (`npm ci && npm test`). CI also validates every integration's
+The Node client is in `agent-authorizer-ts/` (`npm ci && npm test`). CI also validates every integration's
 requests against the vendors' API descriptions, runs a Kubernetes end-to-end test on kind and an
 Argo CD differential test. See [docs/development/testing.md](docs/development/testing.md) to run
 them locally.

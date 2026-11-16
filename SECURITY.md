@@ -1,6 +1,6 @@
 # Security policy
 
-toolpass makes authorization decisions, so security reports are taken seriously.
+agent-authorizer makes authorization decisions, so security reports are taken seriously.
 
 ## Reporting a vulnerability
 
@@ -12,5 +12,5 @@ You should get a first response within a few days.
 
 ## Scope
 
-Of particular interest: any case where toolpass answers `allow` when the upstream system would not,
+Of particular interest: any case where agent-authorizer answers `allow` when the upstream system would not,
 credential leakage, and bypasses of the API key check.

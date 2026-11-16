@@ -1,9 +1,9 @@
 /**
- * An MCP server that checks with toolpass before it acts.
+ * An MCP server that checks with agent-authorizer before it acts.
  *
  * Two tools:
  *
- *   check_permission   ask toolpass whether the current user may do something
+ *   check_permission   ask agent-authorizer whether the current user may do something
  *   write_thing        an example action that runs only after an allow
  *
  * The user the agent acts for is fixed when the server starts (AGENT_USER),
@@ -13,7 +13,7 @@
  *
  * Run:
  *
- *     export TOOLPASS_URL=http://localhost:8080 TOOLPASS_API_KEY=change-me
+ *     export AGENT_AUTHORIZER_URL=http://localhost:8080 AGENT_AUTHORIZER_API_KEY=change-me
  *     export AGENT_USER=dana@example.com
  *     node mcp_server.ts           # speaks MCP over stdio
  *
@@ -24,9 +24,9 @@ import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Toolpass, guarded } from "../../toolpass-ts/src/index.ts"; // in your project: from "toolpass-client"
+import { AgentAuthorizer, guarded } from "../../agent-authorizer-ts/src/index.ts"; // in your project: from "agent-authorizer-client"
 
-const tp = new Toolpass();
+const tp = new AgentAuthorizer();
 const AGENT_USER = process.env.AGENT_USER ?? "";
 if (!AGENT_USER) {
   throw new Error("AGENT_USER missing: set it to the email of the user this server acts for");
@@ -38,7 +38,7 @@ const AGENT_GROUPS = (process.env.AGENT_GROUPS ?? "")
   .filter((g) => g !== "");
 
 export const server = new McpServer(
-  { name: "toolpass", version: "1.0.0" },
+  { name: "agent-authorizer", version: "1.0.0" },
   {
     instructions:
       `Tools act on behalf of ${AGENT_USER}. Call check_permission before ` +
@@ -51,12 +51,12 @@ server.registerTool(
   "check_permission",
   {
     description:
-      "Ask toolpass whether the current user may perform an action. " +
-      "connection: the toolpass connection id, e.g. \"jira-main\" or \"k8s-prod-eu\". " +
+      "Ask agent-authorizer whether the current user may perform an action. " +
+      "connection: the agent-authorizer connection id, e.g. \"jira-main\" or \"k8s-prod-eu\". " +
       "action: an action of that integration, e.g. \"DELETE_ISSUES\". " +
       "resource: the target, e.g. \"issue:PAY-123\" or \"namespace:payments\". " +
       "Returns decision (allow / deny / unknown), reason and allowed. Only " +
-      "allowed=true permits the action; unknown means toolpass could not tell " +
+      "allowed=true permits the action; unknown means agent-authorizer could not tell " +
       "and must be treated as deny.",
     inputSchema: { connection: z.string(), action: z.string(), resource: z.string() },
     outputSchema: { decision: z.string(), reason: z.string(), allowed: z.boolean() },

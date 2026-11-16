@@ -1,10 +1,10 @@
-# toolpass documentation
+# agent-authorizer documentation
 
-These pages cover toolpass's permission checks: the engine behind `Toolpass`, `guarded` and
+These pages cover agent-authorizer's permission checks: the engine behind `AgentAuthorizer`, `guarded` and
 `permission_check`. For the secure-tools toolkit (scope limits, the untrusted-input and
-exfiltration guards, credential injection), see [the package README](../toolpass-py/README.md).
+exfiltration guards, credential injection), see [the package README](../agent-authorizer-py/README.md).
 
-toolpass answers one question before your agent acts for someone: *may this user do this action on
+agent-authorizer answers one question before your agent acts for someone: *may this user do this action on
 this resource in this system?* It asks the system itself, live, and answers `allow`, `deny` or
 `unknown`. It is a Python package: the engine runs in your agent's process, or as a server that
 agents in any language call.
@@ -13,7 +13,7 @@ agents in any language call.
 
 - [Permission checks](permission-checks.md): what they do, how they differ from policy engines
   and OAuth, and its security model.
-- [Quickstart](quickstart.md): install toolpass, ask a question, guard an agent tool, and run it as
+- [Quickstart](quickstart.md): install agent-authorizer, ask a question, guard an agent tool, and run it as
   a server, in five minutes.
 
 ## Concepts
@@ -25,7 +25,7 @@ agents in any language call.
 
 - [Deploy](guides/deploy.md): in-process, sidecar or shared service, TLS, Docker, pip, Kubernetes
   with Helm, scaling and a production checklist.
-- [Add toolpass to your agent](guides/agent-tools.md): which tools to guard, where the user comes
+- [Add agent-authorizer to your agent](guides/agent-tools.md): which tools to guard, where the user comes
   from, and the adapters for Strands, LangChain and LangGraph, the OpenAI Agents SDK, the
   Claude Agent SDK, Google ADK, CrewAI, Pydantic AI, LlamaIndex and the Vercel AI SDK.
 - [Check what a tool does, not what it says](guides/intercepted-actions.md): the requests a tool's
@@ -38,27 +38,27 @@ agents in any language call.
 - [Ask who may do what, from your assistant](guides/ask.md): the server's MCP endpoint (`/mcp`),
   where Claude Code or any MCP client asks "can Ilya create deployments?"; the
   three read-only tools, and who can ask.
-- [The dashboard](guides/dashboard.md): every run of your toolpass tools, from every agent and MCP
-  server that reports to your toolpass server, with each request it made and who it ran for; and
+- [The dashboard](guides/dashboard.md): every run of your agent-authorizer tools, from every agent and MCP
+  server that reports to your agent-authorizer server, with each request it made and who it ran for; and
   the OpenTelemetry export.
 
 ## Reference
 
-- [Python API](reference/client.md): `Toolpass` in-process and remote, `check`, `require`,
+- [Python API](reference/client.md): `AgentAuthorizer` in-process and remote, `check`, `require`,
   `guarded`, the framework adapters, and the Node client.
 - [The toolkit's observed actions](reference/toolkit.md): the `permissions`, `entitlements`,
   `record`, `strict` and `act_as` settings, `as_user()` and `as_agent()`, `ActionRefused`, `ObservedAction`, the
   entitlements file and the route tables.
 - [HTTP API](reference/api.md): `POST /check`, every decision code, fresh checks, `GET /healthz`,
   `POST /runs`, `GET /dashboard/` and `POST /mcp`.
-- [Configuration](reference/configuration.md): `toolpass.yaml`, top-level and per-connection keys,
+- [Configuration](reference/configuration.md): `agent-authorizer.yaml`, top-level and per-connection keys,
   and the same connections given in code.
 - [Command line](reference/cli.md): `serve`, `validate`, `probe`, `check`, `catalog`, `routes`,
   and `gateway off`.
 - [Integrations](integrations/README.md): the twenty-two systems, their status, and one page each.
-- [Packages and releases](../toolpass-py/RELEASING.md): `toolpass`, the Node client, the image and
+- [Packages and releases](../agent-authorizer-py/RELEASING.md): `agent-authorizer`, the Node client, the image and
   the chart, and how they are released.
-- [Helm chart values](../deploy/helm/toolpass/README.md).
+- [Helm chart values](../deploy/helm/agent-authorizer/README.md).
 
 ## Development
 

@@ -1,9 +1,9 @@
 ---
 name: new-issue
-description: Write and open a well-scoped GitHub issue for toolpass (an integration, a feature, a good first issue or a bug). Use when asked to open, draft or suggest issues.
+description: Write and open a well-scoped GitHub issue for agent-authorizer (an integration, a feature, a good first issue or a bug). Use when asked to open, draft or suggest issues.
 ---
 
-# Writing a toolpass issue
+# Writing an agent-authorizer issue
 
 Argument: the idea, e.g. `/new-issue Linear integration` or `/new-issue 3 good first issues`.
 
@@ -11,18 +11,18 @@ Argument: the idea, e.g. `/new-issue Linear integration` or `/new-issue 3 good f
 
 1. Search open and closed issues for duplicates. If one exists, link it instead of opening a new one.
 2. Read the parts of the repo the issue touches, so every name in the issue is real: action names from
-   `toolpass catalog <integration>`, resource forms from `docs/integrations/<name>.md`, file paths that
+   `agent-authorizer catalog <integration>`, resource forms from `docs/integrations/<name>.md`, file paths that
    exist. Never invent an API endpoint; if unsure how the vendor exposes something, say so in the issue.
 3. For a batch ("3 good first issues"), pick work that is small, self-contained and useful now
    (docs, examples, tests, a missing action), not the hardest items on the roadmap.
 
 ## Shape
 
-Title: `Integration: <Product>`, or an imperative summary (`Helm chart`, `Example: calling toolpass from an MCP tool`).
+Title: `Integration: <Product>`, or an imperative summary (`Helm chart`, `Example: calling agent-authorizer from an MCP tool`).
 
 Body, in this order, leaving out sections that do not apply:
 
-- **Goal**: one or two sentences on the question toolpass should answer or the thing a user gets
+- **Goal**: one or two sentences on the question agent-authorizer should answer or the thing a user gets
   ("may this user acknowledge incidents on this service").
 - **How**: the vendor API calls that answer it for a *named user*, and how the email maps to the
   vendor's identity. Say which cases must be `unknown` (conditions, missing scopes, info the

@@ -1,0 +1,12 @@
+{{- if not .Values.existingConfigMap -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-authorizer.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-authorizer.labels" . | nindent 4 }}
+data:
+  agent-authorizer.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
+{{- end }}

@@ -1,6 +1,6 @@
 # datadog
 
-One connection is one Datadog organization. toolpass authenticates with an API key and a scoped
+One connection is one Datadog organization. agent-authorizer authenticates with an API key and a scoped
 application key, finds the user by email, reads the permissions carried by the user's roles, and for
 a monitor, dashboard, SLO or notebook reads the asset's restriction policy and its legacy
 `restricted_roles` and author fields. A user may change such an asset only when a role carries the
@@ -14,9 +14,9 @@ teams, or the whole org. Nothing is written.
    **scoped** to `user_access_read`, `teams_read` and the read scope of each asset type asked about:
    `monitors_read`, `dashboards_read`, `slos_read`, `notebooks_read`. Reading a restriction policy
    needs no named scope. An unscoped application key carries every permission of its creator, which
-   is far more than toolpass needs.
+   is far more than agent-authorizer needs.
 
-`toolpass probe` validates the API key, lists one user (which proves `user_access_read`) and reminds
+`agent-authorizer probe` validates the API key, lists one user (which proves `user_access_read`) and reminds
 you of the other scopes.
 
 ## Connection
@@ -87,7 +87,7 @@ sent by the caller are ignored.
 
 ## Decisions
 
-| Situation | toolpass answers |
+| Situation | agent-authorizer answers |
 |---|---|
 | a role carries the permission and the asset has no restriction | allow |
 | a role carries the permission and a binding at the relation names the user, a role, a team the user is on, or the org | allow, naming the principal kind |
@@ -107,7 +107,7 @@ Error bodies are never copied into a decision text.
 ## Routes
 
 The secure-tools toolkit maps a tool's requests to the API (`api.<site>`, the site's web host and
-its logs intake host, from `url`) to these actions; `toolpass routes datadog` prints the table.
+its logs intake host, from `url`) to these actions; `agent-authorizer routes datadog` prints the table.
 
 | Requests | Action and resource |
 |---|---|
@@ -134,7 +134,7 @@ Reads with no route are allowed and marked untrusted.
 ## What it cannot see
 
 - Self-elevation: a user with `user_access_manage` can add themselves to any restriction policy.
-  toolpass answers for the policy as it stands, so such a user is denied until they do.
+  agent-authorizer answers for the policy as it stands, so such a user is denied until they do.
 - Assets other than monitors, dashboards, SLOs and notebooks (synthetics tests, security rules,
   workflows, ...), which have restriction policies of their own but no action here yet; use
   `raw:<permission>` on `org` for their permissions alone.
@@ -149,7 +149,7 @@ Marked `# UNVERIFIED:` in the code:
   author does. Datadog documents roles only for monitors, so the creator is not exempted.
 - That a restriction policy without a `viewer` binding leaves viewing to the permission. The UI
   writes an explicit `viewer` binding for the org whenever it restricts an asset, which is why
-  toolpass reads a policy without one as restricting editing only.
+  agent-authorizer reads a policy without one as restricting editing only.
 
 Assumed from Datadog's documentation rather than tested live: that the write permission is still
 required when a restriction policy grants `editor` ("the limitations are applied both in the UI and
@@ -161,5 +161,5 @@ for an asset without a policy (a 404 is treated the same).
 Unit tests run against a fake that serves users (paged), role permissions, monitors, dashboards,
 SLOs, notebooks, restriction policies and team memberships (paged), validating every request against
 Datadog's v1 and v2 OpenAPI descriptions (`datadog-v1` and `datadog-v2` in `test/specs/fetch.sh`).
-There is no live test; after configuring, run `toolpass probe` and one check for a user you know is
+There is no live test; after configuring, run `agent-authorizer probe` and one check for a user you know is
 allowed.

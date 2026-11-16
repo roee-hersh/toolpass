@@ -1,6 +1,6 @@
 # github
 
-toolpass authenticates as a GitHub App installed in one organization, or with a plain token, maps
+agent-authorizer authenticates as a GitHub App installed in one organization, or with a plain token, maps
 the user's email to a GitHub login (through the organization's SAML identities, a login template, a
 mapping file, an HTTP identity service or a callable given in code), and
 asks the REST API for that login's effective permission: the collaborator permission endpoint for
@@ -28,7 +28,7 @@ The App's JWT is signed RS256 with `iat` 60 s in the past and `exp` 9 minutes ah
 installation token it buys lasts one hour and is cached and refreshed five minutes before expiry. A
 401 from the API drops the token and retries the call once with a fresh one.
 
-Signing with the App's private key needs `cryptography`: install `toolpass[crypto]` (the Docker image has it).
+Signing with the App's private key needs `cryptography`: install `agent-authorizer[crypto]` (the Docker image has it).
 
 ### A token instead of an App
 
@@ -65,7 +65,7 @@ Use `identity_mode: http`, `callable`, `template` or `map_file` with a token unl
     # identity_mode: saml                 # saml (default), template, map_file, http or callable
     # login_template: "{local}"           # template mode
     # email_domains: acme.com,acme.io     # template mode, required
-    # user_map_file: /etc/toolpass/github-users.txt   # map_file mode
+    # user_map_file: /etc/agent-authorizer/github-users.txt   # map_file mode
 ```
 
 With a token and an identity service:
@@ -85,8 +85,8 @@ Or in code, with the lookup as a callable (`identity_mode: callable` is implied)
 async def github_login(email: str) -> str | None:
     return await groot.login_for(email)          # None: no identity
 
-tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github", "organization": "acme",
-                                     "token": toolpass.env("GITHUB_READ_TOKEN"), "identity": github_login}])
+tp = agent_authorizer.AgentAuthorizer(connections=[{"id": "github-acme", "integration": "github", "organization": "acme",
+                                     "token": agent_authorizer.env("GITHUB_READ_TOKEN"), "identity": github_login}])
 ```
 
 | Key | Meaning |
@@ -103,7 +103,7 @@ tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github
 | `user_map_file` | lines of `email login` or `email=login`, `#` comments; must exist at startup; re-read at most every 60 s (a broken rewrite keeps the previous map) |
 | `identity_url` | http mode: the identity service, an `https://` URL without a query (plain `http://` for loopback, or anywhere with `identity_allow_http`) |
 | `identity_allow_http` | http mode only, `false` by default: `true` lets `identity_url` be plain `http://` on any host, for a network that carries TLS itself (a service mesh such as `http://groot.security.svc.cluster.local`). `identity_token` then travels in that request |
-| `collaborator_404` | `unknown` (default) or `deny`: what a 404 from the collaborator permission read means. GitHub answers 200 with permission `none` for an organization member without access, so a 404 means the repository is not visible to toolpass or the login is not a collaborator on a private repository. With `deny` toolpass reads the repository: visible, the 404 is a deny; not visible, the answer stays unknown (`resource_not_visible`), since nothing about the login was checked |
+| `collaborator_404` | `unknown` (default) or `deny`: what a 404 from the collaborator permission read means. GitHub answers 200 with permission `none` for an organization member without access, so a 404 means the repository is not visible to agent-authorizer or the login is not a collaborator on a private repository. With `deny` agent-authorizer reads the repository: visible, the 404 is a deny; not visible, the answer stays unknown (`resource_not_visible`), since nothing about the login was checked |
 | `identity_token` | http mode, optional: sent to the identity service as `Authorization: Bearer`, `env:` or `file:` |
 | `identity` | callable mode, in code only: `identity(email)` returns a login or `None`, sync or async; a config file cannot carry it |
 
@@ -114,7 +114,7 @@ tp = toolpass.Toolpass(connections=[{"id": "github-acme", "integration": "github
   `scimIdentity.username` equals the email (case-insensitively) count. One such identity with a
   linked GitHub user is the login; several linked to different accounts is `user_ambiguous`. If no
   returned identity carries the email (some identity providers only send the address as the SAML
-  `nameId`), toolpass lists every external identity (100 per page, at most 50 pages or 5,000
+  `nameId`), agent-authorizer lists every external identity (100 per page, at most 50 pages or 5,000
   identities), builds an address-to-login map from the three fields above, caches it for 10 minutes
   and looks the email up case-insensitively. An address that appears on identities linked to
   different accounts is recorded as a conflict and answers `user_ambiguous`. When the listing
@@ -191,7 +191,7 @@ role is unknown too.
 ### Branch rules and protection
 
 For `repo.push` and `pr.merge` on `repo:<owner>/<name>@<branch>`, after the permission allows,
-toolpass reads two records and never reads either for a deny:
+agent-authorizer reads two records and never reads either for a deny:
 
 1. `GET /repos/{owner}/{repo}/rules/branches/{branch}`, the ruleset rules that apply. The endpoint
    answers `200 []` for a branch without rules, so a 404 means the repository or branch is not
@@ -322,12 +322,12 @@ Each item is marked `# UNVERIFIED:` in the code.
 
 ## Test
 
-`python -m pytest tests/integrations/github` (in `toolpass-py`) runs against a fake GitHub (REST and GraphQL) that
+`python -m pytest tests/integrations/github` (in `agent-authorizer-py`) runs against a fake GitHub (REST and GraphQL) that
 verifies the App JWT signature and claims with the test key, hands out installation tokens, and
 serves the repository, permission, membership, rules, branch protection and SAML identity endpoints.
 `test_token_and_identity.py` runs the same fake on token auth, with a fake identity service for
 `http` mode and callables for `callable` mode.
-With `TOOLPASS_SPECS_DIR` set (see `test/specs/fetch.sh`) every REST request is validated against
+With `AGENT_AUTHORIZER_SPECS_DIR` set (see `test/specs/fetch.sh`) every REST request is validated against
 GitHub's OpenAPI description. Against a real organization: install the App, configure a connection,
-run `toolpass probe` and one check for a user you know has `push` on some repository, then one for
+run `agent-authorizer probe` and one check for a user you know has `push` on some repository, then one for
 `repo.push` on `repo:<org>/<name>@<protected branch>` to confirm the protection record shapes.
